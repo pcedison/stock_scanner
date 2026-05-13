@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>台股財報事件驅動掃描器</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="app-sidebar" aria-label="功能列">
+        <div class="brand-block">
+          <p class="eyebrow">官方資料 MVP</p>
+          <h1>台股財報事件驅動掃描器</h1>
+          <p>非逐筆行情；預設使用官方上市櫃清單與最新月營收。</p>
+        </div>
+        <nav class="side-nav">
+          <button class="nav-item active" type="button" data-view="overview">總覽</button>
+          <button class="nav-item" type="button" data-view="search">搜尋與單檔分析</button>
+          <button class="nav-item" type="button" data-view="holdings">我的持股</button>
+          <button class="nav-item" type="button" data-view="scan">掃描結果</button>
+          <button class="nav-item" type="button" data-view="settings">設定</button>
+          <button class="nav-item" type="button" data-view="strategy">策略規則</button>
+          <button class="nav-item" type="button" data-view="data">資料與排程</button>
+        </nav>
+        <div class="sidebar-note">
+          <strong>目前狀態</strong>
+          <span>官方 TWSE / TPEx universe；財報因子不足時會標示資料不足。</span>
+        </div>
+      </aside>
+
+      <div class="content-shell">
+        <header class="top-header">
+          <div>
+            <span id="api-status" class="status-pill neutral">連線中</span>
+            <h2 id="view-title">總覽</h2>
+            <p id="view-subtitle">快速查看資料來源、持股狀態與策略完成度。</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="scan-market-btn" class="primary-btn" type="button">掃描目前市場</button>
+            <button id="scan-holdings-btn" class="secondary-btn" type="button">掃描我的持股</button>
+            <button id="open-onboarding-btn" class="ghost-btn" type="button">初次設定</button>
+          </div>
+        </header>
+
+        <main class="workspace">
+          <section class="view-panel" data-view-panel="overview">
+            <div class="summary-grid">
+              <article class="panel summary-card">
+                <span class="status-pill status-watch">資料來源</span>
+                <h3>官方月營收，不是逐筆即時行情</h3>
+                <p>預設抓取 TWSE / TPEx 上市櫃清單與最新月營收；完整財報因子不足時不硬判斷。</p>
+              </article>
+              <article class="panel summary-card">
+                <span class="status-pill status-entry">核心策略</span>
+                <h3>長期賺錢 + 高成長 + 估值不貴</h3>
+                <p>進場、續抱、加碼觀察、警戒與出場都會列出原因。</p>
+              </article>
+              <article class="panel summary-card">
+                <span class="status-pill neutral">下一步</span>
+                <h3>從左側功能列選服務</h3>
+                <p>你可以先搜尋單檔、建立持股，再掃描目前市場或持股。</p>
+              </article>
+            </div>
+            <section class="panel">
+              <div class="section-heading">
+                <div>
+                  <h2>策略落地狀態</h2>
+                  <p class="section-subtitle">目前已補強春節保護、毛利率追蹤、A1-A7 加碼規則、金融業專用策略缺口標示與資料不足狀態。</p>
+                </div>
+              </div>
+              <div class="checklist-grid">
+                <span>進場 E1-E6</span>
+                <span>出場 X1-X5</span>
+                <span>毛利率追蹤</span>
+                <span>春節輔助營收</span>
+                <span>金融業不套主策略</span>
+                <span>資料不足不硬判斷</span>
+              </div>
+            </section>
+          </section>
+
+          <section class="view-panel hidden" data-view-panel="search">
+            <section class="panel search-panel" aria-labelledby="search-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="search-title">股票搜尋與單檔分析</h2>
+                  <p class="section-subtitle">支援股票代碼、公司名稱，或代碼加名稱的混合輸入。</p>
+                </div>
+              </div>
+              <div class="search-box">
+                <label for="stock-search" class="field-label">搜尋股票</label>
+                <input id="stock-search" type="search" autocomplete="off" placeholder="例如：2330、台積電、2357 華碩" />
+                <div id="search-suggestions" class="suggestions" role="listbox"></div>
+              </div>
+              <div id="selected-company" class="selected-company empty-state">尚未選擇股票</div>
+              <div id="single-analysis" class="analysis-zone"></div>
+            </section>
+          </section>
+
+          <section class="view-panel hidden" data-view-panel="holdings">
+            <section class="panel holdings-panel" aria-labelledby="holdings-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="holdings-title">我的持股</h2>
+                  <p class="section-subtitle">資料存在瀏覽器 localStorage，不會主動上傳。</p>
+                </div>
+              </div>
+              <form id="manual-add-form" class="holding-form">
+                <div class="field">
+                  <label for="manual-stock-input">股票代碼或公司名稱</label>
+                  <input id="manual-stock-input" type="text" autocomplete="off" placeholder="例如：2357、華碩、2357 華碩" />
+                  <span class="field-help">必填。找不到資料時不會新增。</span>
+                </div>
+                <div class="form-row">
+                  <div class="field">
+                    <label for="manual-shares-input">持有股數</label>
+                    <input id="manual-shares-input" type="number" min="0" step="1" placeholder="例如：1000" />
+                    <span class="field-help">選填。</span>
+                  </div>
+                  <div class="field">
+                    <label for="manual-cost-input">平均成本</label>
+                    <input id="manual-cost-input" type="number" min="0" step="0.01" placeholder="例如：320.5" />
+                    <span class="field-help">選填。</span>
+                  </div>
+                </div>
+                <button class="primary-btn full-btn" type="submit">新增／更新持股</button>
+              </form>
+              <p id="holding-error" class="form-error" role="alert"></p>
+              <div id="holdings-list" class="stack"></div>
+            </section>
+          </section>
+
+          <section class="view-panel hidden" data-view-panel="scan">
+            <section class="panel results-panel" aria-labelledby="results-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="results-title">掃描結果</h2>
+                  <p class="section-subtitle">依設定掃描 Mock 樣本或官方 TWSE/TPEx 月營收 universe。</p>
+                </div>
+                <span id="scan-time" class="muted"></span>
+              </div>
+              <div class="tabs" aria-label="掃描結果分類">
+                <button class="tab active" type="button" data-tab="market">市場掃描</button>
+                <button class="tab" type="button" data-tab="holdings">我的持股</button>
+              </div>
+              <div id="market-results" class="result-tab"></div>
+              <div id="holding-results" class="result-tab hidden"></div>
+            </section>
+          </section>
+
+          <section class="view-panel hidden" data-view-panel="settings">
+            <section class="panel settings-panel" aria-labelledby="settings-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="settings-title">設定</h2>
+                  <p class="section-subtitle">調整掃描範圍與策略保護條件。</p>
+                </div>
+                <span id="settings-status" class="status-pill neutral">讀取中</span>
+              </div>
+              <div class="settings-grid">
+                <label><input type="checkbox" data-setting="auto_scan_full_market" /><span><strong>自動掃描市場</strong><small>官方模式會掃描 TWSE / TPEx 月營收 universe</small></span></label>
+                <label><input type="checkbox" data-setting="manual_scan_enabled" /><span><strong>允許手動掃描</strong><small>開啟上方掃描按鈕</small></span></label>
+                <label><input type="checkbox" data-setting="exclude_financial_industry" /><span><strong>排除金融業</strong><small>金融業不套用主策略</small></span></label>
+                <label><input type="checkbox" data-setting="use_mock_data" /><span><strong>使用 Mock Data</strong><small>僅作離線示範與測試；關閉後使用官方資料</small></span></label>
+                <label><input type="checkbox" data-setting="scan_twse" /><span><strong>掃描上市公司</strong><small>官方模式納入 TWSE universe</small></span></label>
+                <label><input type="checkbox" data-setting="scan_tpex" /><span><strong>掃描上櫃公司</strong><small>官方模式納入 TPEx universe</small></span></label>
+                <label><input type="checkbox" data-setting="spring_festival_guard" /><span><strong>春節保護</strong><small>春節月不因單月營收直接出場</small></span></label>
+              </div>
+            </section>
+          </section>
+
+          <section class="view-panel hidden" data-view-panel="strategy">
+            <section class="panel">
+              <div class="section-heading">
+                <div>
+                  <h2>策略規則</h2>
+                  <p class="section-subtitle">直接對應長輩懶人包：進場、持有追蹤、出場、特殊情況、資料節奏。</p>
+                </div>
+              </div>
+              <div class="rule-card-grid">
+                <article class="rule-card"><h3>進場條件</h3><p>近 5 年無虧損、近 3 年淨利正成長、累計營收年增 >= 50%、PER < 15、存貨週轉 > 2.5、排除金融業。</p></article>
+                <article class="rule-card"><h3>持有追蹤</h3><p>每月看月營收，每季看 EPS、淨利、毛利率，每年看 5 年虧損與 3 年淨利趨勢。</p></article>
+                <article class="rule-card"><h3>出場條件</h3><p>月營收跌破 30%、較上月降溫超過 20 個百分點、EPS 衰退、季度 EPS 減少超過 10%、淨利衰退。</p></article>
+                <article class="rule-card"><h3>特殊情況</h3><p>春節月搭配 1+2 月或近 3 個月平均；金融業需另建專用策略，不套主策略。</p></article>
+              </div>
+            </section>
+          </section>
+
+          <section class="view-panel hidden" data-view-panel="data">
+            <section class="panel">
+              <div class="section-heading">
+                <div>
+                  <h2>資料與排程</h2>
+                  <p class="section-subtitle">官方月營收 adapter 已建立，但完整真實掃描仍缺季報、年報、PER、存貨週轉率與毛利率整合。</p>
+                </div>
+              </div>
+              <div id="data-source-status" class="data-status-grid"></div>
+              <div id="scheduler-status" class="data-source-note"></div>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="onboarding-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <div class="modal">
+        <p class="eyebrow">第一次使用設定</p>
+        <h2 id="onboarding-title">目前手上有持股嗎？</h2>
+        <p class="modal-copy">先用清楚欄位新增一檔股票到清單。股數與平均成本都可留空；股票找不到時不會加入。</p>
+        <form id="onboarding-add-form" class="onboarding-add-form">
+          <div class="field">
+            <label for="onboarding-stock-input">股票代碼或公司名稱</label>
+            <input id="onboarding-stock-input" type="text" autocomplete="off" placeholder="例如：2357、華碩、2330" />
+            <span class="field-help">必填。可輸入代碼或繁體中文公司名。</span>
+          </div>
+          <div class="onboarding-number-grid">
+            <div class="field">
+              <label for="onboarding-shares-input">持有股數</label>
+              <input id="onboarding-shares-input" type="number" min="0" step="1" placeholder="例如：1000" />
+              <span class="field-help">選填。</span>
+            </div>
+            <div class="field">
+              <label for="onboarding-cost-input">平均成本</label>
+              <input id="onboarding-cost-input" type="number" min="0" step="0.01" placeholder="例如：300" />
+              <span class="field-help">選填。</span>
+            </div>
+          </div>
+          <button id="add-onboarding-holding-btn" class="secondary-btn full-btn" type="submit">加入清單</button>
+        </form>
+        <section class="draft-panel" aria-labelledby="onboarding-draft-title">
+          <div class="draft-heading">
+            <h3 id="onboarding-draft-title">待儲存持股</h3>
+            <span id="onboarding-draft-count" class="status-pill neutral">0 檔</span>
+          </div>
+          <div id="onboarding-draft-list" class="draft-list empty-state">尚未加入任何持股</div>
+        </section>
+        <p id="onboarding-error" class="form-error" role="alert"></p>
+        <div class="modal-actions">
+          <button id="save-onboarding-btn" class="primary-btn" type="button">儲存清單並開始使用</button>
+          <button id="skip-onboarding-btn" class="ghost-btn" type="button">目前沒有持股</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

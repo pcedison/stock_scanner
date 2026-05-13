@@ -1,0 +1,170 @@
+{
+  "2330": {
+    "monthlyRevenue": {
+      "month": "2026-04",
+      "monthlyRevenueYoY": 42.5,
+      "previousMonthRevenueYoY": 45.2,
+      "cumulativeRevenueYoY": 38.6,
+      "trailingThreeMonthAverageYoY": 41.9,
+      "janFebCombinedRevenueYoY": 39.4,
+      "isSpringFestivalMonth": false
+    },
+    "quarterlyFinancial": {
+      "quarter": "2026Q1",
+      "epsYoY": 14.8,
+      "netIncomeYoY": 17.3,
+      "grossMarginYoY": 2.1
+    },
+    "valuation": {
+      "per": 21.4,
+      "inventoryTurnover": 4.9
+    },
+    "annualFinancials": [
+      { "year": 2021, "netIncome": 5965.4 },
+      { "year": 2022, "netIncome": 10165.3 },
+      { "year": 2023, "netIncome": 8384.9 },
+      { "year": 2024, "netIncome": 10017.1 },
+      { "year": 2025, "netIncome": 12110.6 }
+    ]
+  },
+  "2357": {
+    "monthlyRevenue": {
+      "month": "2026-04",
+      "monthlyRevenueYoY": 53.8,
+      "previousMonthRevenueYoY": 55.4,
+      "cumulativeRevenueYoY": 56.2,
+      "trailingThreeMonthAverageYoY": 54.9,
+      "janFebCombinedRevenueYoY": 52.6,
+      "isSpringFestivalMonth": false
+    },
+    "quarterlyFinancial": {
+      "quarter": "2026Q1",
+      "epsYoY": 18.4,
+      "netIncomeYoY": 22.7,
+      "grossMarginYoY": 3.4
+    },
+    "valuation": {
+      "per": 12.3,
+      "inventoryTurnover": 3.18
+    },
+    "annualFinancials": [
+      { "year": 2021, "netIncome": 324.8 },
+      { "year": 2022, "netIncome": 366.4 },
+      { "year": 2023, "netIncome": 411.9 },
+      { "year": 2024, "netIncome": 498.2 },
+      { "year": 2025, "netIncome": 612.5 }
+    ]
+  },
+  "2454": {
+    "monthlyRevenue": {
+      "month": "2026-04",
+      "monthlyRevenueYoY": 36.2,
+      "previousMonthRevenueYoY": 41.5,
+      "cumulativeRevenueYoY": 44.1,
+      "trailingThreeMonthAverageYoY": 39.1,
+      "janFebCombinedRevenueYoY": 35.4,
+      "isSpringFestivalMonth": false
+    },
+    "quarterlyFinancial": {
+      "quarter": "2026Q1",
+      "epsYoY": 8.2,
+      "netIncomeYoY": 9.1,
+      "grossMarginYoY": 1.2
+    },
+    "valuation": {
+      "per": 16.8,
+      "inventoryTurnover": 3.7
+    },
+    "annualFinancials": [
+      { "year": 2021, "netIncome": 1118.6 },
+      { "year": 2022, "netIncome": 1181.2 },
+      { "year": 2023, "netIncome": 769.8 },
+      { "year": 2024, "netIncome": 934.4 },
+      { "year": 2025, "netIncome": 1102.0 }
+    ]
+  },
+  "3008": {
+    "monthlyRevenue": {
+      "month": "2026-04",
+      "monthlyRevenueYoY": 18.1,
+      "previousMonthRevenueYoY": 48.9,
+      "cumulativeRevenueYoY": 27.2,
+      "trailingThreeMonthAverageYoY": 25.4,
+      "janFebCombinedRevenueYoY": 29.1,
+      "isSpringFestivalMonth": false
+    },
+    "quarterlyFinancial": {
+      "quarter": "2026Q1",
+      "epsYoY": -12.6,
+      "netIncomeYoY": -15.4,
+      "grossMarginYoY": -4.8
+    },
+    "valuation": {
+      "per": 18.9,
+      "inventoryTurnover": 2.12
+    },
+    "annualFinancials": [
+      { "year": 2021, "netIncome": 258.2 },
+      { "year": 2022, "netIncome": 287.9 },
+      { "year": 2023, "netIncome": 265.6 },
+      { "year": 2024, "netIncome": 241.0 },
+      { "year": 2025, "netIncome": 218.7 }
+    ]
+  },
+  "5274": {
+    "monthlyRevenue": {
+      "month": "2026-04",
+      "monthlyRevenueYoY": 71.4,
+      "previousMonthRevenueYoY": 68.2,
+      "cumulativeRevenueYoY": 66.8,
+      "trailingThreeMonthAverageYoY": 69.2,
+      "janFebCombinedRevenueYoY": 61.6,
+      "isSpringFestivalMonth": false
+    },
+    "quarterlyFinancial": {
+      "quarter": "2026Q1",
+      "epsYoY": 31.5,
+      "netIncomeYoY": 35.6,
+      "grossMarginYoY": 4.2
+    },
+    "valuation": {
+      "per": 13.7,
+      "inventoryTurnover": 4.32
+    },
+    "annualFinancials": [
+      { "year": 2021, "netIncome": 55.6 },
+      { "year": 2022, "netIncome": 71.2 },
+      { "year": 2023, "netIncome": 86.9 },
+      { "year": 2024, "netIncome": 111.4 },
+      { "year": 2025, "netIncome": 146.8 }
+    ]
+  },
+  "2881": {
+    "monthlyRevenue": {
+      "month": "2026-04",
+      "monthlyRevenueYoY": 58.0,
+      "previousMonthRevenueYoY": 61.1,
+      "cumulativeRevenueYoY": 63.4,
+      "trailingThreeMonthAverageYoY": 60.2,
+      "janFebCombinedRevenueYoY": 58.7,
+      "isSpringFestivalMonth": false
+    },
+    "quarterlyFinancial": {
+      "quarter": "2026Q1",
+      "epsYoY": 20.4,
+      "netIncomeYoY": 22.1,
+      "grossMarginYoY": null
+    },
+    "valuation": {
+      "per": 9.2,
+      "inventoryTurnover": 99.0
+    },
+    "annualFinancials": [
+      { "year": 2021, "netIncome": 1446.5 },
+      { "year": 2022, "netIncome": 469.3 },
+      { "year": 2023, "netIncome": 661.1 },
+      { "year": 2024, "netIncome": 933.4 },
+      { "year": 2025, "netIncome": 1118.2 }
+    ]
+  }
+}
