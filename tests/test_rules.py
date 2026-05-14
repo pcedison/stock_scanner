@@ -43,6 +43,12 @@ def test_holding_add_watch_requires_a1_to_a7():
     assert result.status == "ADD_WATCH"
     assert {reason.code for reason in result.reasons} >= {"A1", "A2", "A3", "A4", "A5", "A6", "A7", "T3"}
     assert all(reason.passed for reason in result.reasons if reason.code.startswith("A"))
+    ordered_codes = [reason.code for reason in result.reasons]
+    assert ordered_codes.index("E1") < ordered_codes.index("X1")
+    if "OFFICIAL_Q" in ordered_codes:
+        assert ordered_codes.index("OFFICIAL_Q") < ordered_codes.index("X1")
+    assert ordered_codes.index("X5") < ordered_codes.index("T3") < ordered_codes.index("A1")
+    assert ordered_codes.index("A7") < ordered_codes.index("HOLDING")
 
 
 def test_financial_company_included_still_requires_dedicated_strategy():

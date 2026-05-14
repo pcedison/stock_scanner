@@ -509,6 +509,6 @@ class RuleEngine:
             companyName=company.name,
             status=status,
             summary=summary,
-            reasons=[holding_note, *exit_reasons, *entry_reasons, *add_reasons],
+            reasons=[*entry_reasons, *exit_reasons, *add_reasons, holding_note],
             company=company,
         )

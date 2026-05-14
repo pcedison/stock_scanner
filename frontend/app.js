@@ -68,6 +68,20 @@ const STRATEGY_STATUS_DETAILS = [
     ],
   },
   {
+    key: "addWatch",
+    label: "加碼 A1-A7",
+    summary: "A1-A7 是持股續抱後是否可列入加碼觀察的確認清單：先確認原進場條件仍成立，再確認成長、估值、存貨與出場風險。",
+    items: [
+      ["A1", "原進場條件仍符合", "E1-E6 全部通過，才有資格進入加碼觀察。"],
+      ["A2", "累計營收年增率仍 >= 50%", "確認營收動能沒有退潮。"],
+      ["A3", "最新季 EPS 年增率 > 0", "確認每股盈餘仍維持正成長。"],
+      ["A4", "最新季淨利年增率 > 0", "確認獲利仍維持正成長。"],
+      ["A5", "PER 仍 < 15", "避免加碼在估值已偏貴的位置。"],
+      ["A6", "存貨週轉率仍 > 2.5", "確認存貨去化仍維持健康。"],
+      ["A7", "未觸發任何出場條件", "X1-X5 沒有觸發時，才列入加碼觀察。"],
+    ],
+  },
+  {
     key: "exit",
     label: "出場 X1-X5",
     summary: "用來檢查持股是否出現營收降溫、EPS 或淨利轉弱等需要警戒或出場的訊號。",
@@ -81,10 +95,11 @@ const STRATEGY_STATUS_DETAILS = [
   },
   {
     key: "grossMargin",
-    label: "毛利率追蹤",
-    summary: "用官方季報毛利率與 YoY 變化追蹤產品力或成本壓力是否惡化。",
+    label: "T 系列追蹤",
+    summary: "T 系列是持股追蹤輔助訊號，目前正式落地的是 T3 毛利率追蹤；T1、T2 尚未建立，不參與掃描判斷。",
     items: [
-      ["T3", "毛利率年增率追蹤", "最新季毛利率 YoY 低於 0 時列入警戒，表示獲利結構可能轉弱。"],
+      ["T1/T2", "尚未啟用", "目前沒有 T1、T2 的實際規則，保留給後續持股追蹤因子。"],
+      ["T3", "毛利率年增率追蹤", "最新季毛利率 YoY 低於 0 時列入警戒，表示營收成長可能沒有同步轉化為獲利品質。"],
       ["OFFICIAL_Q", "官方最新季損益資料", "若已抓到 EPS、淨利、營收與毛利率，會在展開細節中列出官方季報訊號。"],
       ["資料待補", "歷史同期毛利率不足時不硬判斷", "缺少去年同季毛利率時只標示待補，避免把缺資料誤當成通過或失敗。"],
     ],
@@ -533,6 +548,32 @@ function statusClass(status) {
   return `status-${String(status || "neutral").toLowerCase()}`;
 }
 
+function ruleDisplayOrder(rule = {}) {
+  const code = String(rule.code || "").toUpperCase();
+  let match = code.match(/^E([1-6])$/);
+  if (match) return 100 + Number(match[1]);
+  if (code === "OFFICIAL_Q") return 170;
+  if (code === "OFFICIAL_VALUATION") return 180;
+  match = code.match(/^X([1-5])$/);
+  if (match) return 200 + Number(match[1]);
+  if (code === "SPRING_FESTIVAL_WATCH") return 230;
+  match = code.match(/^T(\d+)$/);
+  if (match) return 240 + Number(match[1]);
+  match = code.match(/^A([1-7])$/);
+  if (match) return 300 + Number(match[1]);
+  if (code === "HOLDING") return 400;
+  match = code.match(/^FIN(\d+)$/);
+  if (match) return 110 + Number(match[1]);
+  return 900;
+}
+
+function sortRulesForDisplay(reasons = []) {
+  return reasons
+    .map((reason, index) => ({ reason, index }))
+    .sort((left, right) => ruleDisplayOrder(left.reason) - ruleDisplayOrder(right.reason) || left.index - right.index)
+    .map((item) => item.reason);
+}
+
 function formatEvidenceValue(item = {}) {
   const value = Number(item.value);
   if (!Number.isFinite(value)) return "待補";
@@ -644,7 +685,7 @@ function renderAnalysisCard(result, options = {}) {
   result = result || {};
   const companyName = result.companyName || safeCompanyName(result);
   const stockCode = safeText(result.stockCode, "未知代碼");
-  const reasons = Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : [];
+  const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
   const { status: displayStatus, summary: displaySummary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <article class="card">
@@ -950,7 +991,7 @@ function renderMarketPagination(groupKey, columnKey, total) {
 }
 
 function renderMarketResultDetails(result, options = {}) {
-  const reasons = Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : [];
+  const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
   const { status: displayStatus, summary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <div class="market-result-details">
@@ -1639,6 +1680,8 @@ if (typeof module !== "undefined") {
     formatEvidenceValue,
     renderRuleEvidence,
     renderRule,
+    ruleDisplayOrder,
+    sortRulesForDisplay,
     renderAnalysisCard,
     renderStrategyStatusDetail,
     renderMarketResultRow,

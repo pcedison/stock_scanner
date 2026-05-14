@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -104,7 +104,31 @@ const evidenceRule = {
 const evidenceValue = formatEvidenceValue(evidenceRule.evidence[0]);
 const evidenceHtml = renderRuleEvidence(evidenceRule);
 const evidenceRuleHtml = renderRule(evidenceRule);
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+const orderedCodes = sortRulesForDisplay([
+  { code: "HOLDING" },
+  { code: "X2" },
+  { code: "T3" },
+  { code: "E1" },
+  { code: "OFFICIAL_Q" },
+  { code: "A1" },
+  { code: "OFFICIAL_VALUATION" },
+]).map((rule) => rule.code);
+const orderedHtml = renderAnalysisCard({
+  stockCode: "3135",
+  companyName: "凌航",
+  status: "HOLD",
+  summary: "order test",
+  reasons: [
+    { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "持股狀態" },
+    { code: "X1", title: "月營收年增率不可低於 30%", passed: true, severity: "INFO", message: "X1" },
+    { code: "T3", title: "毛利率追蹤", passed: true, severity: "INFO", message: "T3" },
+    { code: "E1", title: "近 5 年沒有虧損", passed: true, severity: "INFO", message: "E1" },
+    { code: "OFFICIAL_Q", title: "最新季官方財報資料", passed: true, severity: "INFO", message: "OFFICIAL_Q" },
+    { code: "OFFICIAL_VALUATION", title: "官方估值資料", passed: true, severity: "INFO", message: "OFFICIAL_VALUATION" },
+    { code: "A1", title: "原進場條件仍符合", passed: true, severity: "INFO", message: "A1" },
+  ],
+});
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -162,8 +186,14 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert "evidence-table" in payload["evidenceHtml"]
     assert "2025" in payload["evidenceHtml"]
     assert "虧損" in payload["evidenceRuleHtml"]
-    assert payload["strategyDetailLabels"] == ["進場 E1-E6", "出場 X1-X5", "毛利率追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
+    assert payload["orderedCodes"] == ["E1", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X2", "T3", "A1", "HOLDING"]
+    assert payload["orderedHtml"].find("E1 通過") < payload["orderedHtml"].find("OFFICIAL_Q 通過")
+    assert payload["orderedHtml"].find("OFFICIAL_VALUATION 通過") < payload["orderedHtml"].find("X1 通過")
+    assert payload["orderedHtml"].find("T3 通過") < payload["orderedHtml"].find("A1 通過")
+    assert payload["strategyDetailLabels"] == ["進場 E1-E6", "加碼 A1-A7", "出場 X1-X5", "T 系列追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
     assert [item[0] for item in payload["entryDetail"]["items"]] == ["E1", "E2", "E3", "E4", "E5", "E6"]
+    assert [item[0] for item in payload["addWatchDetail"]["items"]] == ["A1", "A2", "A3", "A4", "A5", "A6", "A7"]
+    assert [item[0] for item in payload["tSeriesDetail"]["items"]][:2] == ["T1/T2", "T3"]
     assert payload["hasInsufficient"] is True
     assert payload["hasFinancialForContext"] is True
     assert payload["hasPublished"] is True
