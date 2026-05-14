@@ -45,6 +45,9 @@ button {
   border-radius: 8px;
   padding: 0 14px;
   font-weight: 800;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
   transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease, border-color 0.16s ease;
 }
@@ -162,6 +165,34 @@ textarea {
 .nav-item:hover,
 .nav-item.active {
   background: #eef4ff;
+  color: var(--primary);
+  transform: none;
+}
+
+.nav-subitems {
+  display: grid;
+  gap: 6px;
+  margin: -2px 0 6px 12px;
+  padding-left: 12px;
+  border-left: 2px solid #dbeafe;
+}
+
+.nav-subitem {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 10px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.nav-subitem:hover,
+.nav-subitem.active {
+  border-color: #dbeafe;
+  background: #f7fbff;
   color: var(--primary);
   transform: none;
 }
@@ -633,11 +664,15 @@ textarea {
   margin: 0;
   font-size: 18px;
   font-weight: 1000;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .muted {
   color: var(--muted);
   font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .status-pill {
@@ -649,7 +684,9 @@ textarea {
   padding: 3px 9px;
   font-size: 13px;
   font-weight: 900;
-  white-space: nowrap;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .neutral {
@@ -709,33 +746,48 @@ textarea {
 
 .rule {
   display: grid;
-  grid-template-columns: 100px 1fr;
+  grid-template-columns: minmax(84px, 104px) minmax(0, 1fr);
   gap: 10px;
   border-top: 1px solid #edf2f7;
   padding-top: 9px;
+  min-width: 0;
+}
+
+.rule > * {
+  min-width: 0;
 }
 
 .rule-code {
   font-weight: 900;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.rule strong {
+  display: block;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .rule-evidence {
   display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
   gap: 10px;
   margin-top: 8px;
   min-width: 0;
+  align-items: start;
 }
 
 .evidence-bars {
   display: grid;
   gap: 6px;
   align-content: start;
+  min-width: 0;
 }
 
 .evidence-bar-row {
   display: grid;
-  grid-template-columns: 46px minmax(80px, 1fr) minmax(82px, auto);
+  grid-template-columns: 46px minmax(54px, 1fr) minmax(68px, auto);
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -790,6 +842,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 8px;
   font-size: 13px;
+  table-layout: fixed;
 }
 
 .evidence-table th,
@@ -798,6 +851,7 @@ textarea {
   padding: 6px 8px;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .evidence-table thead th {
@@ -865,7 +919,7 @@ textarea {
 .tab {
   background: transparent;
   color: var(--muted);
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .tab.active {
@@ -873,7 +927,13 @@ textarea {
   color: #fff;
 }
 
-.result-columns,
+.result-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
 .rule-card-grid,
 .data-status-grid {
   display: grid;
@@ -896,7 +956,17 @@ textarea {
 }
 
 .result-column-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
   min-height: 30px;
+}
+
+.result-column-note {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .market-result-list {
@@ -914,13 +984,16 @@ textarea {
 .market-result-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
-  align-items: center;
+  align-items: start;
   width: 100%;
   min-height: 48px;
   border-radius: 0;
   background: transparent;
   color: var(--text);
   text-align: left;
+  gap: 10px;
+  padding-top: 11px;
+  padding-bottom: 11px;
 }
 
 .market-result-summary:hover {
@@ -930,10 +1003,9 @@ textarea {
 
 .market-result-name {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 900;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .market-expand-icon {
@@ -952,6 +1024,32 @@ textarea {
 .market-result-details {
   border-top: 1px solid #edf2f7;
   padding: 12px;
+}
+
+.market-result-details .rule {
+  grid-template-columns: minmax(84px, 108px) minmax(0, 1fr);
+  gap: 8px;
+  overflow: visible;
+}
+
+.market-result-details .rule-evidence {
+  display: block;
+}
+
+.market-result-details .evidence-bar-row {
+  grid-template-columns: 42px minmax(84px, 1fr) minmax(74px, auto);
+  gap: 6px;
+}
+
+.market-result-details .evidence-table {
+  display: none;
+}
+
+.market-result-details .muted {
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .detail-summary {
@@ -1008,8 +1106,14 @@ textarea {
   font-size: 14px;
 }
 
+.data-source-note > * {
+  min-width: 0;
+}
+
 .data-source-note span {
+  flex: 1 1 260px;
   color: #7c4a03;
+  overflow-wrap: anywhere;
 }
 
 .modal-backdrop {
@@ -1111,6 +1215,11 @@ textarea {
 
   .side-nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .nav-subitems {
+    grid-column: 1 / -1;
+    margin-left: 0;
   }
 
   .summary-grid,

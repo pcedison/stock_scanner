@@ -11,6 +11,8 @@ def test_run_backtest_from_csv(tmp_path):
                 "2357,2025-02,120,58,28,18,18,13,3",
                 "5274,2025-01,80,66,70,30,35,10,4",
                 "5274,2025-02,72,67,65,-12,30,11,4",
+                "9999,2025-01,50,70,75,25,25,18,4",
+                "9999,2025-02,55,72,20,25,25,18,4",
             ]
         ),
         encoding="utf-8",
@@ -19,8 +21,8 @@ def test_run_backtest_from_csv(tmp_path):
     result = run_backtest(path)
 
     assert result["status"] == "OK"
-    assert result["metrics"]["tradeCount"] == 2
-    assert result["metrics"]["winRate"] == 0.5
+    assert result["metrics"]["tradeCount"] == 3
+    assert result["metrics"]["winRate"] == 2 / 3
     assert result["metrics"]["totalReturn"] > 0
 
 

@@ -17,6 +17,40 @@ def test_2357_passes_entry_rules_with_reasons():
     assert e1.evidence[0]["metric"] == "annual_net_income"
 
 
+def test_e4_per_threshold_is_twenty_not_fifteen():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            "valuation": base_snapshot.valuation.model_copy(update={"per": 18.5}),
+        }
+    )
+
+    result = RuleEngine().evaluate_entry(snapshot, ScannerSettings())
+    e4 = next(reason for reason in result.reasons if reason.code == "E4")
+
+    assert result.status == "ENTRY"
+    assert e4.passed is True
+    assert e4.title == "本益比小於 20"
+
+
+def test_e4_per_threshold_excludes_twenty_and_above():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            "valuation": base_snapshot.valuation.model_copy(update={"per": 20.0}),
+        }
+    )
+
+    result = RuleEngine().evaluate_entry(snapshot, ScannerSettings())
+    e4 = next(reason for reason in result.reasons if reason.code == "E4")
+
+    assert result.status == "WATCH"
+    assert e4.passed is False
+    assert e4.severity == "WATCH"
+
+
 def test_financial_company_is_excluded_by_default():
     provider = MockDataProvider()
     result = RuleEngine().evaluate_entry(provider.get_snapshot("2881"), ScannerSettings())

@@ -37,6 +37,7 @@ const state = {
   integrationStatus: null,
   backtestStatus: null,
   activeMarketDisclosureTab: "announced",
+  activeMarketColumn: "entry",
   marketListPages: {
     announced: { entry: 0, watch: 0, excluded: 0 },
     pending: { entry: 0, watch: 0, excluded: 0 },
@@ -51,6 +52,7 @@ const state = {
     message: "",
   },
   isSyncingHoldings: false,
+  pendingHoldingsSync: false,
 };
 
 const STRATEGY_STATUS_DETAILS = [
@@ -62,7 +64,7 @@ const STRATEGY_STATUS_DETAILS = [
       ["E1", "近 5 年沒有虧損", "最近 5 個年度淨利都需要為正；歷史年報不足時會標示待補，不會硬判定。"],
       ["E2", "近 3 年淨利正成長", "最近 3 個年度淨利需逐年增加，用來確認成長不是單一年度偶發。"],
       ["E3", "今年累計營收年增率 >= 50%", "依設定採用累計營收、單月營收或近 3 個月平均年增率。"],
-      ["E4", "本益比小於 15", "採用官方估值 PER；缺資料或 PER 不適用時列為待補。"],
+      ["E4", "本益比小於 20", "採用官方估值 PER；缺資料或 PER 不適用時列為待補。"],
       ["E5", "存貨週轉率大於 2.5", "以官方損益與資產負債表估算，確認庫存沒有明顯堆積。"],
       ["E6", "排除金融業", "預設金融業不套用一般產業主策略，避免用存貨、毛利率等不適用指標誤判。"],
     ],
@@ -76,7 +78,7 @@ const STRATEGY_STATUS_DETAILS = [
       ["A2", "累計營收年增率仍 >= 50%", "確認營收動能沒有退潮。"],
       ["A3", "最新季 EPS 年增率 > 0", "確認每股盈餘仍維持正成長。"],
       ["A4", "最新季淨利年增率 > 0", "確認獲利仍維持正成長。"],
-      ["A5", "PER 仍 < 15", "避免加碼在估值已偏貴的位置。"],
+      ["A5", "PER 仍 < 20", "避免加碼在估值已偏貴的位置。"],
       ["A6", "存貨週轉率仍 > 2.5", "確認存貨去化仍維持健康。"],
       ["A7", "未觸發任何出場條件", "X1-X5 沒有觸發時，才列入加碼觀察。"],
     ],
@@ -297,33 +299,58 @@ function saveHoldingsLocalOnly(holdings = state.holdings, storage = localStorage
 
 function saveHoldings(holdings = state.holdings, storage = localStorage) {
   const normalized = normalizeHoldingRecords(holdings, state.companies);
+  state.holdings = normalized;
   saveHoldingsLocalOnly(normalized, storage);
   if (storage === localStorage && state.auth?.authenticated) {
+    state.pendingHoldingsSync = true;
     syncHoldingsToServer(normalized);
   }
 }
 
 async function syncHoldingsToServer(holdings = state.holdings) {
-  if (!state.auth?.authenticated || state.isSyncingHoldings) return false;
+  if (!state.auth?.authenticated) return false;
+  if (state.isSyncingHoldings) {
+    state.pendingHoldingsSync = true;
+    return false;
+  }
+  state.pendingHoldingsSync = false;
   state.isSyncingHoldings = true;
   renderAccountPanel();
   try {
+    const submittedHoldings = normalizeHoldingRecords(holdings, state.companies);
     const payload = await apiJson("/api/me/holdings", {
       method: "PUT",
-      body: JSON.stringify({ holdings: normalizeHoldingRecords(holdings, state.companies) }),
+      body: JSON.stringify({ holdings: submittedHoldings }),
     });
-    state.holdings = normalizeHoldingRecords(payload.holdings, state.companies);
-    saveHoldingsLocalOnly(state.holdings);
+    if (!state.pendingHoldingsSync) {
+      state.holdings = normalizeHoldingRecords(payload.holdings, state.companies);
+      saveHoldingsLocalOnly(state.holdings);
+      refreshHoldingsDependentViews();
+    }
     state.auth.message = "持股已同步到帳號。";
     return true;
   } catch (error) {
     state.auth.available = false;
+    state.pendingHoldingsSync = false;
     state.auth.message = "伺服器同步失敗，已保留本機持股。";
     return false;
   } finally {
     state.isSyncingHoldings = false;
     renderAccountPanel();
+    if (state.pendingHoldingsSync) {
+      syncHoldingsToServer(state.holdings);
+    }
   }
+}
+
+function isHoldingTracked(stockCode) {
+  const normalized = safeText(stockCode);
+  return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
+}
+
+function refreshHoldingsDependentViews() {
+  renderHoldings();
+  if (state.marketScan) renderMarketResults();
 }
 
 function upsertHolding(holding) {
@@ -349,7 +376,7 @@ function upsertHolding(holding) {
   }
   state.holdings.sort((a, b) => a.stockCode.localeCompare(b.stockCode));
   saveHoldings();
-  renderHoldings();
+  refreshHoldingsDependentViews();
   return true;
 }
 
@@ -364,14 +391,14 @@ function reduceHolding(stockCode, amount) {
     return;
   }
   saveHoldings();
-  renderHoldings();
+  refreshHoldingsDependentViews();
 }
 
 function clearHolding(stockCode) {
   state.holdings = state.holdings.filter((item) => item.stockCode !== stockCode);
   if (state.editingHoldingCode === stockCode) state.editingHoldingCode = null;
   saveHoldings();
-  renderHoldings();
+  refreshHoldingsDependentViews();
 }
 
 async function apiJson(url, options = {}) {
@@ -669,6 +696,7 @@ function displayResultStatus(result = {}, disclosureGroup = "") {
 
 function resultActionButtons(result, options = {}) {
   const companyName = result.companyName || safeCompanyName(result);
+  const tracked = isHoldingTracked(result.stockCode);
   const stockCode = safeText(result.stockCode, "未知代碼");
   const exitButton =
     options.allowExitAction && result.status === "EXIT"
@@ -676,7 +704,9 @@ function resultActionButtons(result, options = {}) {
       : "";
   const addButton =
     options.allowAddAction && result.status !== "EXCLUDED"
-      ? `<button class="secondary-btn" type="button" data-add-from-result="${escapeHtml(stockCode)}" data-add-name="${escapeHtml(companyName)}">加入持股</button>`
+      ? tracked
+        ? `<button class="secondary-btn holding-state-btn" type="button" disabled>已在持股</button>`
+        : `<button class="secondary-btn" type="button" data-add-from-result="${escapeHtml(stockCode)}" data-add-name="${escapeHtml(companyName)}">加入持股</button>`
       : "";
   return exitButton || addButton ? `<div class="button-row">${addButton}${exitButton}</div>` : "";
 }
@@ -884,6 +914,7 @@ const MARKET_RESULT_COLUMNS = [
   ["excluded", "排除清單"],
 ];
 const MARKET_LIST_PAGE_SIZE = 6;
+const MARKET_COLUMN_LABELS = Object.fromEntries(MARKET_RESULT_COLUMNS);
 
 const MARKET_DISCLOSURE_TABS = [
   {
@@ -943,6 +974,56 @@ function groupMarketScanResults(scan) {
 
 function countMarketGroup(group) {
   return MARKET_RESULT_COLUMNS.reduce((total, [key]) => total + (group?.[key]?.length || 0), 0);
+}
+
+function activeMarketColumnKey() {
+  return MARKET_COLUMN_LABELS[state.activeMarketColumn] ? state.activeMarketColumn : "entry";
+}
+
+function ruleByCode(result = {}, code = "") {
+  const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+  return reasons.find((reason) => reason?.code === code) || null;
+}
+
+function numericFromText(value) {
+  const match = String(value || "").replace(",", "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+function e4PerValue(result = {}) {
+  const e4 = ruleByCode(result, "E4");
+  const fromMessage = numericFromText(e4?.message);
+  if (Number.isFinite(fromMessage)) return fromMessage;
+  return null;
+}
+
+function sortMarketResultsForDisplay(columnKey, results = []) {
+  const normalized = Array.isArray(results) ? [...results] : [];
+  if (columnKey !== "entry") return normalized;
+  return normalized.sort((left, right) => {
+    const leftPer = e4PerValue(left);
+    const rightPer = e4PerValue(right);
+    if (Number.isFinite(leftPer) && Number.isFinite(rightPer) && leftPer !== rightPer) return leftPer - rightPer;
+    if (Number.isFinite(leftPer) !== Number.isFinite(rightPer)) return Number.isFinite(leftPer) ? -1 : 1;
+    return safeText(left.stockCode).localeCompare(safeText(right.stockCode));
+  });
+}
+
+function marketColumnNote(columnKey) {
+  if (columnKey === "entry") return "排序：E4 PER 低 → 高";
+  if (columnKey === "watch") return "依股票代號排序；展開可看未通過或待補原因";
+  if (columnKey === "excluded") return "依股票代號排序；展開可看排除原因";
+  return "";
+}
+
+function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDisclosureTab) {
+  $$("[data-market-column-nav]").forEach((button) => {
+    const columnKey = button.dataset.marketColumnNav;
+    const label = MARKET_COLUMN_LABELS[columnKey] || columnKey;
+    const count = grouped ? grouped?.[activeTab]?.[columnKey]?.length ?? 0 : null;
+    button.classList.toggle("active", columnKey === activeMarketColumnKey());
+    button.textContent = count === null ? label : `${label} (${count})`;
+  });
 }
 
 function marketResultId(result = {}, groupKey = "", columnKey = "") {
@@ -1024,11 +1105,14 @@ function renderMarketResultRow(result, options = {}) {
 function renderMarketColumn(groupKey, columnKey, title, results) {
   const page = getMarketPage(groupKey, columnKey);
   const pageStart = page * MARKET_LIST_PAGE_SIZE;
-  const visibleResults = results.slice(pageStart, pageStart + MARKET_LIST_PAGE_SIZE);
+  const sortedResults = sortMarketResultsForDisplay(columnKey, results);
+  const visibleResults = sortedResults.slice(pageStart, pageStart + MARKET_LIST_PAGE_SIZE);
+  const note = marketColumnNote(columnKey);
   return `
     <div class="result-column">
       <div class="result-column-head">
-        <h3>${escapeHtml(title)} (${escapeHtml(results.length)})</h3>
+        <h3>${escapeHtml(title)} (${escapeHtml(sortedResults.length)})</h3>
+        ${note ? `<span class="result-column-note">${escapeHtml(note)}</span>` : ""}
       </div>
       ${
         visibleResults.length
@@ -1043,7 +1127,7 @@ function renderMarketColumn(groupKey, columnKey, title, results) {
               .join("")}</div>`
           : `<div class="empty-state">無資料</div>`
       }
-      ${renderMarketPagination(groupKey, columnKey, results.length)}
+      ${renderMarketPagination(groupKey, columnKey, sortedResults.length)}
     </div>
   `;
 }
@@ -1052,6 +1136,7 @@ function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
     target.innerHTML = `<div class="empty-state">尚未掃描市場</div>`;
+    updateMarketColumnNav();
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
@@ -1062,6 +1147,9 @@ function renderMarketResults() {
     : "announced";
   const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
   const activeGroup = grouped[activeTab];
+  const activeColumn = activeMarketColumnKey();
+  const activeColumnTitle = MARKET_COLUMN_LABELS[activeColumn] || "掃描結果";
+  updateMarketColumnNav(grouped, activeTab);
   const filingSummary = state.marketScan.filingContext?.activeFinancialReport
     ? `目前依 ${state.marketScan.filingContext.activeFinancialReport.label}（一般公司期限 ${state.marketScan.filingContext.activeFinancialReport.generalDeadline}${
         state.marketScan.filingContext.activeFinancialReport.financialDeadline
@@ -1086,12 +1174,10 @@ function renderMarketResults() {
     </div>
     <div class="data-source-note disclosure-note">
       <strong>${escapeHtml(activeMeta.title)}</strong>
-      <span>${escapeHtml(filingSummary)} ${escapeHtml(activeMeta.note)} 各分類每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家；按 + 展開條件細節，也可匯出完整清單。</span>
+      <span>${escapeHtml(filingSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span>
     </div>
-    <div class="result-columns">
-      ${MARKET_RESULT_COLUMNS
-        .map(([key, title]) => renderMarketColumn(activeTab, key, title, activeGroup[key] || []))
-        .join("")}
+    <div class="result-columns single-result-column">
+      ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
     </div>
   `;
 }
@@ -1202,6 +1288,7 @@ function showView(view) {
   $("#view-subtitle").textContent = subtitle;
   $("#view-subtitle").classList.toggle("hidden", !subtitle);
   if (view === "data") renderDataAndScheduler();
+  updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
 }
 
 async function loadCompanies() {
@@ -1525,7 +1612,7 @@ function bindEvents() {
       holding.averageCost = averageCostValue === "" ? null : Math.max(0, Number(averageCostValue));
       state.editingHoldingCode = null;
       saveHoldings();
-      renderHoldings();
+      refreshHoldingsDependentViews();
     }
     if (action === "reduce") {
       reduceHolding(code, card.querySelector('[data-field="reduce"]').value);
@@ -1641,6 +1728,15 @@ function bindEvents() {
   $$(".nav-item").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
+
+  $$("[data-market-column-nav]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeMarketColumn = button.dataset.marketColumnNav;
+      showView("scan");
+      showTab("market");
+      renderMarketResults();
+    });
+  });
 }
 
 async function init() {
@@ -1668,6 +1764,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     DEFAULT_COMPANIES,
     STRATEGY_STATUS_DETAILS,
+    state,
     findCompanyByCodeOrName,
     findStrategyStatusDetail,
     normalizeCompany,
@@ -1687,6 +1784,9 @@ if (typeof module !== "undefined") {
     renderMarketResultRow,
     renderMarketPagination,
     groupMarketScanResults,
+    sortMarketResultsForDisplay,
+    e4PerValue,
+    isHoldingTracked,
     hasInsufficientData,
     hasFinancialReportForContext,
     hasPublishedScanData,

@@ -114,6 +114,34 @@ def test_lightweight_auth_persists_server_side_holdings():
     ]
 
 
+def test_market_scan_is_independent_from_holding_add_and_delete():
+    test_client = TestClient(app)
+    username = f"user_{uuid4().hex[:10]}"
+    password = "test-password-123"
+    settings = MOCK_SETTINGS.model_dump()
+
+    before = test_client.post("/api/scan/market", json={"settings": settings}).json()
+    before_entry_codes = [item["stockCode"] for item in before["entry"]]
+    assert "2357" in before_entry_codes
+
+    register_response = test_client.post("/api/auth/register", json={"username": username, "password": password})
+    assert register_response.status_code == 200
+
+    replace_response = test_client.put(
+        "/api/me/holdings",
+        json={"holdings": [{"stockCode": "2357", "name": "華碩", "shares": 0, "averageCost": None}]},
+    )
+    assert replace_response.status_code == 200
+
+    delete_response = test_client.delete("/api/me/holdings/2357")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["holdings"] == []
+
+    after = test_client.post("/api/scan/market", json={"settings": settings}).json()
+    after_entry_codes = [item["stockCode"] for item in after["entry"]]
+    assert after_entry_codes == before_entry_codes
+
+
 def test_manual_scan_disabled_blocks_manual_scan_api():
     response = client.post(
         "/api/scan/market",

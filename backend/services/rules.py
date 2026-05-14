@@ -7,6 +7,9 @@ from backend.models.settings import ScannerSettings
 from backend.services.calendar import load_market_calendar
 
 
+ENTRY_PER_THRESHOLD = 20
+
+
 def _latest_annual_net_incomes(snapshot: FundamentalSnapshot, years: int) -> list[float | None]:
     ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
     return [item.netIncome for item in ordered[-years:]]
@@ -178,13 +181,13 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
     e4 = (
-        _rule_missing("E4", "本益比小於 15", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。")
+        _rule_missing("E4", f"本益比小於 {ENTRY_PER_THRESHOLD}", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。")
         if snapshot.valuation.per is None
         else RuleResult(
             code="E4",
-            title="本益比小於 15",
-            passed=snapshot.valuation.per < 15,
-            severity="WATCH" if snapshot.valuation.per >= 15 else "INFO",
+            title=f"本益比小於 {ENTRY_PER_THRESHOLD}",
+            passed=snapshot.valuation.per < ENTRY_PER_THRESHOLD,
+            severity="WATCH" if snapshot.valuation.per >= ENTRY_PER_THRESHOLD else "INFO",
             message=f"PER 為 {snapshot.valuation.per:.1f}。",
         )
     )
@@ -415,7 +418,7 @@ def _add_watch_rules(entry_reasons: list[RuleResult], exit_reasons: list[RuleRes
         RuleResult(code="A2", title="累計營收年增率仍 >= 50%", passed=snapshot.monthlyRevenue.cumulativeRevenueYoY is not None and snapshot.monthlyRevenue.cumulativeRevenueYoY >= 50, severity="WATCH" if not (snapshot.monthlyRevenue.cumulativeRevenueYoY is not None and snapshot.monthlyRevenue.cumulativeRevenueYoY >= 50) else "INFO", message=f"累計營收年增率為 {snapshot.monthlyRevenue.cumulativeRevenueYoY if snapshot.monthlyRevenue.cumulativeRevenueYoY is not None else '缺資料'}%。"),
         RuleResult(code="A3", title="最新季 EPS 年增率 > 0", passed=snapshot.quarterlyFinancial.epsYoY is not None and snapshot.quarterlyFinancial.epsYoY > 0, severity="WATCH" if not (snapshot.quarterlyFinancial.epsYoY is not None and snapshot.quarterlyFinancial.epsYoY > 0) else "INFO", message=f"最新季 EPS 年增率為 {snapshot.quarterlyFinancial.epsYoY if snapshot.quarterlyFinancial.epsYoY is not None else '缺資料'}%。"),
         RuleResult(code="A4", title="最新季淨利年增率 > 0", passed=snapshot.quarterlyFinancial.netIncomeYoY is not None and snapshot.quarterlyFinancial.netIncomeYoY > 0, severity="WATCH" if not (snapshot.quarterlyFinancial.netIncomeYoY is not None and snapshot.quarterlyFinancial.netIncomeYoY > 0) else "INFO", message=f"最新季淨利年增率為 {snapshot.quarterlyFinancial.netIncomeYoY if snapshot.quarterlyFinancial.netIncomeYoY is not None else '缺資料'}%。"),
-        RuleResult(code="A5", title="PER 仍 < 15", passed=snapshot.valuation.per is not None and snapshot.valuation.per < 15, severity="WATCH" if not (snapshot.valuation.per is not None and snapshot.valuation.per < 15) else "INFO", message=f"PER 為 {snapshot.valuation.per if snapshot.valuation.per is not None else '缺資料'}。"),
+        RuleResult(code="A5", title=f"PER 仍 < {ENTRY_PER_THRESHOLD}", passed=snapshot.valuation.per is not None and snapshot.valuation.per < ENTRY_PER_THRESHOLD, severity="WATCH" if not (snapshot.valuation.per is not None and snapshot.valuation.per < ENTRY_PER_THRESHOLD) else "INFO", message=f"PER 為 {snapshot.valuation.per if snapshot.valuation.per is not None else '缺資料'}。"),
         RuleResult(code="A6", title="存貨週轉率仍 > 2.5", passed=snapshot.valuation.inventoryTurnover is not None and snapshot.valuation.inventoryTurnover > 2.5, severity="WATCH" if not (snapshot.valuation.inventoryTurnover is not None and snapshot.valuation.inventoryTurnover > 2.5) else "INFO", message=f"存貨週轉率為 {snapshot.valuation.inventoryTurnover if snapshot.valuation.inventoryTurnover is not None else '缺資料'}。"),
         RuleResult(code="A7", title="未觸發任何出場條件", passed=exit_ok, severity="WATCH" if not exit_ok else "INFO", message="X1-X5 未觸發時才可加碼觀察。"),
     ]

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -57,6 +57,10 @@ const pendingHtml = renderAnalysisCard(partialPublishedResult, { disclosureGroup
 const holdingPartialHtml = renderAnalysisCard(partialPublishedResult, { disclosureGroup: "holding" });
 const compactMarketRow = renderMarketResultRow(partialPublishedResult, { disclosureGroup: "announced", columnKey: "watch" });
 const marketPagination = renderMarketPagination("announced", "watch", 26);
+state.holdings = [{ stockCode: "2357", name: "華碩", shares: 0, averageCost: null }];
+const trackedAddHtml = renderAnalysisCard({ stockCode: "2357", companyName: "華碩", status: "ENTRY", summary: "ok", reasons: [] }, { allowAddAction: true });
+state.holdings = [];
+const untrackedAddHtml = renderAnalysisCard({ stockCode: "2357", companyName: "華碩", status: "ENTRY", summary: "ok", reasons: [] }, { allowAddAction: true });
 const fakeStorage = {
   value: JSON.stringify([
     { stockCode: "2330", shares: "1000", averageCost: "600.5" },
@@ -78,6 +82,13 @@ const marketGroups = groupMarketScanResults({
   ],
   excluded: [{ stockCode: "2881", status: "EXCLUDED", reasons: [{ severity: "EXCLUDED" }] }],
 });
+const sortedEntryByPer = sortMarketResultsForDisplay("entry", [
+  { stockCode: "3000", reasons: [{ code: "E4", message: "PER 為 18.5。" }] },
+  { stockCode: "1000", reasons: [{ code: "E4", message: "PER 為 9.8。" }] },
+  { stockCode: "2000", reasons: [{ code: "E4", message: "PER 為 15.2。" }] },
+  { stockCode: "9999", reasons: [{ code: "E4", message: "PER 缺資料。" }] },
+]).map((item) => item.stockCode);
+const extractedPer = e4PerValue({ reasons: [{ code: "E4", message: "PER 為 12.34。" }] });
 const q1Context = { activeFinancialReport: { period: "2026Q1" } };
 const filingAwareGroups = groupMarketScanResults({
   filingContext: q1Context,
@@ -128,7 +139,7 @@ const orderedHtml = renderAnalysisCard({
     { code: "A1", title: "原進場條件仍符合", passed: true, severity: "INFO", message: "A1" },
   ],
 });
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -170,6 +181,9 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert "E1 待補" not in payload["compactMarketRow"]
     assert "第 1 / 5 頁" in payload["marketPagination"]
     assert "下一頁" in payload["marketPagination"]
+    assert "已在持股" in payload["trackedAddHtml"]
+    assert "data-add-from-result" not in payload["trackedAddHtml"]
+    assert "data-add-from-result" in payload["untrackedAddHtml"]
     assert [item["stockCode"] for item in payload["holdings"]] == ["2330", "2357"]
     assert payload["holdings"][0]["shares"] == 1000
     assert payload["holdings"][1]["averageCost"] is None
@@ -180,6 +194,8 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["marketGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert payload["marketGroups"]["announced"]["excluded"][0]["stockCode"] == "2881"
     assert payload["marketGroups"]["pending"]["watch"][0]["stockCode"] == "9999"
+    assert payload["sortedEntryByPer"] == ["1000", "2000", "3000", "9999"]
+    assert payload["extractedPer"] == 12.34
     assert payload["filingAwareGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert [item["stockCode"] for item in payload["filingAwareGroups"]["pending"]["watch"]] == ["1102", "1103"]
     assert payload["evidenceValue"] == "119.63 億"
