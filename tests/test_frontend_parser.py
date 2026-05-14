@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -57,6 +57,10 @@ const pendingHtml = renderAnalysisCard(partialPublishedResult, { disclosureGroup
 const holdingPartialHtml = renderAnalysisCard(partialPublishedResult, { disclosureGroup: "holding" });
 const compactMarketRow = renderMarketResultRow(partialPublishedResult, { disclosureGroup: "announced", columnKey: "watch" });
 const marketPagination = renderMarketPagination("announced", "watch", 26);
+state.holdings = [{ stockCode: "2357", name: "華碩", shares: 0, averageCost: null }];
+const trackedAddHtml = renderAnalysisCard({ stockCode: "2357", companyName: "華碩", status: "ENTRY", summary: "ok", reasons: [] }, { allowAddAction: true });
+state.holdings = [];
+const untrackedAddHtml = renderAnalysisCard({ stockCode: "2357", companyName: "華碩", status: "ENTRY", summary: "ok", reasons: [] }, { allowAddAction: true });
 const fakeStorage = {
   value: JSON.stringify([
     { stockCode: "2330", shares: "1000", averageCost: "600.5" },
@@ -78,6 +82,13 @@ const marketGroups = groupMarketScanResults({
   ],
   excluded: [{ stockCode: "2881", status: "EXCLUDED", reasons: [{ severity: "EXCLUDED" }] }],
 });
+const sortedEntryByPer = sortMarketResultsForDisplay("entry", [
+  { stockCode: "3000", reasons: [{ code: "E4", message: "PER 為 18.5。" }] },
+  { stockCode: "1000", reasons: [{ code: "E4", message: "PER 為 9.8。" }] },
+  { stockCode: "2000", reasons: [{ code: "E4", message: "PER 為 15.2。" }] },
+  { stockCode: "9999", reasons: [{ code: "E4", message: "PER 缺資料。" }] },
+]).map((item) => item.stockCode);
+const extractedPer = e4PerValue({ reasons: [{ code: "E4", message: "PER 為 12.34。" }] });
 const q1Context = { activeFinancialReport: { period: "2026Q1" } };
 const filingAwareGroups = groupMarketScanResults({
   filingContext: q1Context,
@@ -89,7 +100,46 @@ const filingAwareGroups = groupMarketScanResults({
   ],
   excluded: [],
 });
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, filingAwareGroups, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+const evidenceRule = {
+  code: "E1",
+  title: "近 5 年沒有虧損",
+  passed: false,
+  severity: "WATCH",
+  message: "近 5 年年度淨利有 2 年虧損；詳見年度表格。",
+  evidence: [
+    { label: "2025", value: 11962952, unit: "thousand_twd", metric: "annual_net_income" },
+    { label: "2024", value: 8969775, unit: "thousand_twd", metric: "annual_net_income" },
+    { label: "2023", value: -1699593, unit: "thousand_twd", metric: "annual_net_income" }
+  ],
+};
+const evidenceValue = formatEvidenceValue(evidenceRule.evidence[0]);
+const evidenceHtml = renderRuleEvidence(evidenceRule);
+const evidenceRuleHtml = renderRule(evidenceRule);
+const orderedCodes = sortRulesForDisplay([
+  { code: "HOLDING" },
+  { code: "X2" },
+  { code: "T3" },
+  { code: "E1" },
+  { code: "OFFICIAL_Q" },
+  { code: "A1" },
+  { code: "OFFICIAL_VALUATION" },
+]).map((rule) => rule.code);
+const orderedHtml = renderAnalysisCard({
+  stockCode: "3135",
+  companyName: "凌航",
+  status: "HOLD",
+  summary: "order test",
+  reasons: [
+    { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "持股狀態" },
+    { code: "X1", title: "月營收年增率不可低於 30%", passed: true, severity: "INFO", message: "X1" },
+    { code: "T3", title: "毛利率追蹤", passed: true, severity: "INFO", message: "T3" },
+    { code: "E1", title: "近 5 年沒有虧損", passed: true, severity: "INFO", message: "E1" },
+    { code: "OFFICIAL_Q", title: "最新季官方財報資料", passed: true, severity: "INFO", message: "OFFICIAL_Q" },
+    { code: "OFFICIAL_VALUATION", title: "官方估值資料", passed: true, severity: "INFO", message: "OFFICIAL_VALUATION" },
+    { code: "A1", title: "原進場條件仍符合", passed: true, severity: "INFO", message: "A1" },
+  ],
+});
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -131,6 +181,9 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert "E1 待補" not in payload["compactMarketRow"]
     assert "第 1 / 5 頁" in payload["marketPagination"]
     assert "下一頁" in payload["marketPagination"]
+    assert "已在持股" in payload["trackedAddHtml"]
+    assert "data-add-from-result" not in payload["trackedAddHtml"]
+    assert "data-add-from-result" in payload["untrackedAddHtml"]
     assert [item["stockCode"] for item in payload["holdings"]] == ["2330", "2357"]
     assert payload["holdings"][0]["shares"] == 1000
     assert payload["holdings"][1]["averageCost"] is None
@@ -141,10 +194,22 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["marketGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert payload["marketGroups"]["announced"]["excluded"][0]["stockCode"] == "2881"
     assert payload["marketGroups"]["pending"]["watch"][0]["stockCode"] == "9999"
+    assert payload["sortedEntryByPer"] == ["1000", "2000", "3000", "9999"]
+    assert payload["extractedPer"] == 12.34
     assert payload["filingAwareGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert [item["stockCode"] for item in payload["filingAwareGroups"]["pending"]["watch"]] == ["1102", "1103"]
-    assert payload["strategyDetailLabels"] == ["進場 E1-E6", "出場 X1-X5", "毛利率追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
+    assert payload["evidenceValue"] == "119.63 億"
+    assert "evidence-table" in payload["evidenceHtml"]
+    assert "2025" in payload["evidenceHtml"]
+    assert "虧損" in payload["evidenceRuleHtml"]
+    assert payload["orderedCodes"] == ["E1", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X2", "T3", "A1", "HOLDING"]
+    assert payload["orderedHtml"].find("E1 通過") < payload["orderedHtml"].find("OFFICIAL_Q 通過")
+    assert payload["orderedHtml"].find("OFFICIAL_VALUATION 通過") < payload["orderedHtml"].find("X1 通過")
+    assert payload["orderedHtml"].find("T3 通過") < payload["orderedHtml"].find("A1 通過")
+    assert payload["strategyDetailLabels"] == ["進場 E1-E6", "加碼 A1-A7", "出場 X1-X5", "T 系列追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
     assert [item[0] for item in payload["entryDetail"]["items"]] == ["E1", "E2", "E3", "E4", "E5", "E6"]
+    assert [item[0] for item in payload["addWatchDetail"]["items"]] == ["A1", "A2", "A3", "A4", "A5", "A6", "A7"]
+    assert [item[0] for item in payload["tSeriesDetail"]["items"]][:2] == ["T1/T2", "T3"]
     assert payload["hasInsufficient"] is True
     assert payload["hasFinancialForContext"] is True
     assert payload["hasPublished"] is True

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException, Response
+from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -12,6 +14,7 @@ from pydantic import BaseModel, Field
 from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
+from backend.services.auth import AuthService
 from backend.services.backtest import run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
@@ -22,6 +25,7 @@ from backend.services.official_data_provider import OfficialDataProvider
 from backend.services.reporting import render_csv_report, render_markdown_report
 from backend.services.rules import RuleEngine
 from backend.services.scheduler import should_wake_up
+from backend.services.scan_cache import ScanCacheService
 from backend.services.settings_service import load_settings, save_settings
 
 
@@ -40,7 +44,12 @@ app.add_middleware(
 mock_provider = MockDataProvider()
 official_provider = OfficialDataProvider()
 history_backfill_service = OfficialHistoryBackfillService(official_provider.history_store)
+scan_cache_service = ScanCacheService()
 engine = RuleEngine()
+auth_db_path = os.getenv("AUTH_DB_PATH")
+auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()
+SESSION_COOKIE_NAME = "stock_scanner_session"
+SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 
 
 class AnalyzeRequest(BaseModel):
@@ -49,6 +58,7 @@ class AnalyzeRequest(BaseModel):
 
 class ScanMarketRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
+    refreshMode: str = Field(default="auto", pattern="^(auto|force|cache_only)$")
 
 
 class ScanHoldingsRequest(BaseModel):
@@ -56,8 +66,57 @@ class ScanHoldingsRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
 
 
+class AuthRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=80)
+    password: str = Field(..., min_length=8, max_length=128)
+    displayName: Optional[str] = Field(default=None, max_length=80)
+
+
+class HoldingsReplaceRequest(BaseModel):
+    holdings: list[Holding] = Field(default_factory=list)
+
+
+class HoldingUpsertRequest(BaseModel):
+    holding: Holding
+
+
 class ReportFormatRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
+
+
+def _cookie_secure() -> bool:
+    return os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+
+
+def _current_user(request: Request):
+    return auth_service.get_user_by_session(request.cookies.get(SESSION_COOKIE_NAME))
+
+
+def _require_user(request: Request):
+    user = _current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def _holdings_payload(holdings: list[Holding]) -> dict:
+    return {"holdings": [holding.model_dump() for holding in holdings]}
 
 
 def _effective_settings(settings: Optional[ScannerSettings]) -> ScannerSettings:
@@ -106,6 +165,12 @@ def _scan_market_payload(settings: ScannerSettings) -> dict:
     }
 
 
+def _scan_market_payload_after_official_refresh(settings: ScannerSettings) -> dict:
+    if not settings.use_mock_data:
+        official_provider.refresh(force=True)
+    return _scan_market_payload(settings)
+
+
 def _scan_holdings_payload(holdings: list[Holding], settings: ScannerSettings) -> dict:
     provider = _active_provider(settings)
     results = []
@@ -147,6 +212,66 @@ def health() -> dict:
     return {"status": "ok", "dataSource": "mock", "time": datetime.now(timezone.utc).isoformat()}
 
 
+@app.post("/api/auth/register")
+def register(payload: AuthRequest, response: Response) -> dict:
+    try:
+        user = auth_service.create_user(payload.username, payload.password, payload.displayName)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token = auth_service.create_session(user.id)
+    _set_session_cookie(response, token)
+    return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.post("/api/auth/login")
+def login(payload: AuthRequest, response: Response) -> dict:
+    user = auth_service.authenticate(payload.username, payload.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    token = auth_service.create_session(user.id)
+    _set_session_cookie(response, token)
+    return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict:
+    auth_service.delete_session(request.cookies.get(SESSION_COOKIE_NAME))
+    _clear_session_cookie(response)
+    return {"authenticated": False}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict:
+    user = _current_user(request)
+    if user is None:
+        return {"authenticated": False, "user": None}
+    return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.get("/api/me/holdings")
+def get_my_holdings(request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.list_holdings(user.id))
+
+
+@app.put("/api/me/holdings")
+def replace_my_holdings(payload: HoldingsReplaceRequest, request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.replace_holdings(user.id, payload.holdings))
+
+
+@app.post("/api/me/holdings")
+def upsert_my_holding(payload: HoldingUpsertRequest, request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.upsert_holding(user.id, payload.holding))
+
+
+@app.delete("/api/me/holdings/{stock_code}")
+def delete_my_holding(stock_code: str, request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.delete_holding(user.id, stock_code))
+
+
 @app.get("/api/data-sources/status")
 def data_sources_status(check_network: bool = False) -> dict:
     settings = load_settings()
@@ -171,6 +296,7 @@ def data_sources_status(check_network: bool = False) -> dict:
             "cache": official_status["sourceStatus"].get("officialFundamentalsHistory") if official_status else None,
             "note": "TWSE/TPEx OpenAPI latest statement rows are persisted locally. Historical gaps can be backfilled from the official MOPS JSON APIs via POST /api/data-sources/backfill-history, or by data/fundamentals_import.csv when a licensed/manual source is preferred.",
         },
+        "marketScanCache": scan_cache_service.status(settings if not settings.use_mock_data else None),
         "officialMonthlyRevenueAdapters": {
             "TWSE_COMPANY_PROFILE": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
             "TPEX_COMPANY_PROFILE": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
@@ -301,7 +427,24 @@ def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(defa
 def scan_market(payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
     settings = _effective_settings(payload.settings if payload else None)
     _ensure_manual_scan_enabled(settings)
-    return _scan_market_payload(settings)
+    if settings.use_mock_data:
+        return _scan_market_payload(settings)
+    refresh_mode = payload.refreshMode if payload else "auto"
+    return scan_cache_service.get_or_refresh(
+        settings,
+        build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
+        build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
+        refresh_mode=refresh_mode,
+    )
+
+
+@app.get("/api/cache/status")
+def cache_status() -> dict:
+    settings = load_settings()
+    return {
+        "marketScan": scan_cache_service.status(settings if not settings.use_mock_data else None),
+        "officialHistory": official_provider.history_store.status(),
+    }
 
 
 @app.post("/api/scan/holdings")

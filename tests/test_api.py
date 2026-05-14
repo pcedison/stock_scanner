@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import pytest
+from uuid import uuid4
 
 from backend.main import app
 from backend.models.settings import ScannerSettings
@@ -82,6 +83,63 @@ def test_settings_api_round_trip():
         assert get_response.json()["manual_scan_enabled"] is False
     finally:
         client.put("/api/settings", json=original)
+
+
+def test_lightweight_auth_persists_server_side_holdings():
+    test_client = TestClient(app)
+    username = f"user_{uuid4().hex[:10]}"
+    password = "test-password-123"
+
+    register_response = test_client.post("/api/auth/register", json={"username": username, "password": password})
+    assert register_response.status_code == 200
+    assert register_response.json()["authenticated"] is True
+
+    replace_response = test_client.put(
+        "/api/me/holdings",
+        json={"holdings": [{"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600}]},
+    )
+    assert replace_response.status_code == 200
+    assert replace_response.json()["holdings"][0]["stockCode"] == "2330"
+
+    logout_response = test_client.post("/api/auth/logout", json={})
+    assert logout_response.status_code == 200
+    assert test_client.get("/api/me/holdings").status_code == 401
+
+    login_response = test_client.post("/api/auth/login", json={"username": username, "password": password})
+    assert login_response.status_code == 200
+    holdings_response = test_client.get("/api/me/holdings")
+    assert holdings_response.status_code == 200
+    assert holdings_response.json()["holdings"] == [
+        {"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600.0}
+    ]
+
+
+def test_market_scan_is_independent_from_holding_add_and_delete():
+    test_client = TestClient(app)
+    username = f"user_{uuid4().hex[:10]}"
+    password = "test-password-123"
+    settings = MOCK_SETTINGS.model_dump()
+
+    before = test_client.post("/api/scan/market", json={"settings": settings}).json()
+    before_entry_codes = [item["stockCode"] for item in before["entry"]]
+    assert "2357" in before_entry_codes
+
+    register_response = test_client.post("/api/auth/register", json={"username": username, "password": password})
+    assert register_response.status_code == 200
+
+    replace_response = test_client.put(
+        "/api/me/holdings",
+        json={"holdings": [{"stockCode": "2357", "name": "華碩", "shares": 0, "averageCost": None}]},
+    )
+    assert replace_response.status_code == 200
+
+    delete_response = test_client.delete("/api/me/holdings/2357")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["holdings"] == []
+
+    after = test_client.post("/api/scan/market", json={"settings": settings}).json()
+    after_entry_codes = [item["stockCode"] for item in after["entry"]]
+    assert after_entry_codes == before_entry_codes
 
 
 def test_manual_scan_disabled_blocks_manual_scan_api():

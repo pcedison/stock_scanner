@@ -63,7 +63,7 @@ def _entry_signal(row: BacktestRow) -> bool:
         row.cumulativeRevenueYoY is not None
         and row.cumulativeRevenueYoY >= 50
         and row.per is not None
-        and row.per < 15
+        and row.per < 20
         and row.inventoryTurnover is not None
         and row.inventoryTurnover > 2.5
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ class RuleResult(BaseModel):
     passed: bool
     severity: Literal["INFO", "WATCH", "WARNING", "EXIT", "EXCLUDED", "INSUFFICIENT_DATA"] = "INFO"
     message: str
+    evidence: Optional[list[dict[str, Any]]] = None
 
 
 class AnalysisResult(BaseModel):

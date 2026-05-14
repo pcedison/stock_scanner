@@ -37,12 +37,22 @@ const state = {
   integrationStatus: null,
   backtestStatus: null,
   activeMarketDisclosureTab: "announced",
+  activeMarketColumn: "entry",
   marketListPages: {
     announced: { entry: 0, watch: 0, excluded: 0 },
     pending: { entry: 0, watch: 0, excluded: 0 },
   },
   expandedMarketResultIds: new Set(),
   activeStrategyStatusKey: null,
+  auth: {
+    checked: false,
+    available: true,
+    authenticated: false,
+    user: null,
+    message: "",
+  },
+  isSyncingHoldings: false,
+  pendingHoldingsSync: false,
 };
 
 const STRATEGY_STATUS_DETAILS = [
@@ -54,9 +64,23 @@ const STRATEGY_STATUS_DETAILS = [
       ["E1", "近 5 年沒有虧損", "最近 5 個年度淨利都需要為正；歷史年報不足時會標示待補，不會硬判定。"],
       ["E2", "近 3 年淨利正成長", "最近 3 個年度淨利需逐年增加，用來確認成長不是單一年度偶發。"],
       ["E3", "今年累計營收年增率 >= 50%", "依設定採用累計營收、單月營收或近 3 個月平均年增率。"],
-      ["E4", "本益比小於 15", "採用官方估值 PER；缺資料或 PER 不適用時列為待補。"],
+      ["E4", "本益比小於 20", "採用官方估值 PER；缺資料或 PER 不適用時列為待補。"],
       ["E5", "存貨週轉率大於 2.5", "以官方損益與資產負債表估算，確認庫存沒有明顯堆積。"],
       ["E6", "排除金融業", "預設金融業不套用一般產業主策略，避免用存貨、毛利率等不適用指標誤判。"],
+    ],
+  },
+  {
+    key: "addWatch",
+    label: "加碼 A1-A7",
+    summary: "A1-A7 是持股續抱後是否可列入加碼觀察的確認清單：先確認原進場條件仍成立，再確認成長、估值、存貨與出場風險。",
+    items: [
+      ["A1", "原進場條件仍符合", "E1-E6 全部通過，才有資格進入加碼觀察。"],
+      ["A2", "累計營收年增率仍 >= 50%", "確認營收動能沒有退潮。"],
+      ["A3", "最新季 EPS 年增率 > 0", "確認每股盈餘仍維持正成長。"],
+      ["A4", "最新季淨利年增率 > 0", "確認獲利仍維持正成長。"],
+      ["A5", "PER 仍 < 20", "避免加碼在估值已偏貴的位置。"],
+      ["A6", "存貨週轉率仍 > 2.5", "確認存貨去化仍維持健康。"],
+      ["A7", "未觸發任何出場條件", "X1-X5 沒有觸發時，才列入加碼觀察。"],
     ],
   },
   {
@@ -73,10 +97,11 @@ const STRATEGY_STATUS_DETAILS = [
   },
   {
     key: "grossMargin",
-    label: "毛利率追蹤",
-    summary: "用官方季報毛利率與 YoY 變化追蹤產品力或成本壓力是否惡化。",
+    label: "T 系列追蹤",
+    summary: "T 系列是持股追蹤輔助訊號，目前正式落地的是 T3 毛利率追蹤；T1、T2 尚未建立，不參與掃描判斷。",
     items: [
-      ["T3", "毛利率年增率追蹤", "最新季毛利率 YoY 低於 0 時列入警戒，表示獲利結構可能轉弱。"],
+      ["T1/T2", "尚未啟用", "目前沒有 T1、T2 的實際規則，保留給後續持股追蹤因子。"],
+      ["T3", "毛利率年增率追蹤", "最新季毛利率 YoY 低於 0 時列入警戒，表示營收成長可能沒有同步轉化為獲利品質。"],
       ["OFFICIAL_Q", "官方最新季損益資料", "若已抓到 EPS、淨利、營收與毛利率，會在展開細節中列出官方季報訊號。"],
       ["資料待補", "歷史同期毛利率不足時不硬判斷", "缺少去年同季毛利率時只標示待補，避免把缺資料誤當成通過或失敗。"],
     ],
@@ -264,12 +289,68 @@ function loadHoldingsFromStorage(storage = localStorage, companies = state.compa
 
 function loadHoldings() {
   const normalized = loadHoldingsFromStorage(localStorage, state.companies);
-  saveHoldings(normalized);
+  saveHoldingsLocalOnly(normalized);
   return normalized;
 }
 
-function saveHoldings(holdings = state.holdings, storage = localStorage) {
+function saveHoldingsLocalOnly(holdings = state.holdings, storage = localStorage) {
   storage.setItem(HOLDINGS_KEY, JSON.stringify(normalizeHoldingRecords(holdings, state.companies)));
+}
+
+function saveHoldings(holdings = state.holdings, storage = localStorage) {
+  const normalized = normalizeHoldingRecords(holdings, state.companies);
+  state.holdings = normalized;
+  saveHoldingsLocalOnly(normalized, storage);
+  if (storage === localStorage && state.auth?.authenticated) {
+    state.pendingHoldingsSync = true;
+    syncHoldingsToServer(normalized);
+  }
+}
+
+async function syncHoldingsToServer(holdings = state.holdings) {
+  if (!state.auth?.authenticated) return false;
+  if (state.isSyncingHoldings) {
+    state.pendingHoldingsSync = true;
+    return false;
+  }
+  state.pendingHoldingsSync = false;
+  state.isSyncingHoldings = true;
+  renderAccountPanel();
+  try {
+    const submittedHoldings = normalizeHoldingRecords(holdings, state.companies);
+    const payload = await apiJson("/api/me/holdings", {
+      method: "PUT",
+      body: JSON.stringify({ holdings: submittedHoldings }),
+    });
+    if (!state.pendingHoldingsSync) {
+      state.holdings = normalizeHoldingRecords(payload.holdings, state.companies);
+      saveHoldingsLocalOnly(state.holdings);
+      refreshHoldingsDependentViews();
+    }
+    state.auth.message = "持股已同步到帳號。";
+    return true;
+  } catch (error) {
+    state.auth.available = false;
+    state.pendingHoldingsSync = false;
+    state.auth.message = "伺服器同步失敗，已保留本機持股。";
+    return false;
+  } finally {
+    state.isSyncingHoldings = false;
+    renderAccountPanel();
+    if (state.pendingHoldingsSync) {
+      syncHoldingsToServer(state.holdings);
+    }
+  }
+}
+
+function isHoldingTracked(stockCode) {
+  const normalized = safeText(stockCode);
+  return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
+}
+
+function refreshHoldingsDependentViews() {
+  renderHoldings();
+  if (state.marketScan) renderMarketResults();
 }
 
 function upsertHolding(holding) {
@@ -295,7 +376,7 @@ function upsertHolding(holding) {
   }
   state.holdings.sort((a, b) => a.stockCode.localeCompare(b.stockCode));
   saveHoldings();
-  renderHoldings();
+  refreshHoldingsDependentViews();
   return true;
 }
 
@@ -310,26 +391,168 @@ function reduceHolding(stockCode, amount) {
     return;
   }
   saveHoldings();
-  renderHoldings();
+  refreshHoldingsDependentViews();
 }
 
 function clearHolding(stockCode) {
   state.holdings = state.holdings.filter((item) => item.stockCode !== stockCode);
   if (state.editingHoldingCode === stockCode) state.editingHoldingCode = null;
   saveHoldings();
-  renderHoldings();
+  refreshHoldingsDependentViews();
 }
 
 async function apiJson(url, options = {}) {
+  const { headers = {}, ...rest } = options;
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    ...rest,
+    headers: { "Content-Type": "application/json", ...headers },
+    credentials: "same-origin",
   });
+  const text = await response.text();
   if (!response.ok) {
-    const detail = await response.text();
+    let detail = text;
+    try {
+      detail = JSON.parse(text).detail || detail;
+    } catch {
+      // Keep the plain response text.
+    }
     throw new Error(detail || `HTTP ${response.status}`);
   }
-  return response.json();
+  return text ? JSON.parse(text) : {};
+}
+
+function renderAccountPanel() {
+  if (typeof document === "undefined") return;
+  const panel = $("#account-panel");
+  if (!panel) return;
+  const status = $("#account-status");
+  const form = $("#auth-form");
+  const userPanel = $("#auth-user-panel");
+  const userLabel = $("#auth-user-label");
+  const message = $("#auth-message");
+  const storageNote = $("#holdings-storage-note");
+  const isLoggedIn = Boolean(state.auth?.authenticated);
+  const displayName = state.auth?.user?.displayName || state.auth?.user?.username || "";
+
+  status.className = `status-pill ${isLoggedIn ? "status-entry" : state.auth?.available ? "neutral" : "status-watch"}`;
+  status.textContent = state.isSyncingHoldings ? "同步中" : isLoggedIn ? "帳號同步" : "本機持股";
+  form.classList.toggle("hidden", isLoggedIn);
+  userPanel.classList.toggle("hidden", !isLoggedIn);
+  userLabel.textContent = isLoggedIn ? `已登入：${displayName}` : "";
+  message.textContent = state.auth?.message || "";
+  if (storageNote) {
+    storageNote.textContent = isLoggedIn
+      ? "持股會同步儲存在伺服器端帳號；瀏覽器也會保留一份本機備援。"
+      : "目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。";
+  }
+}
+
+async function loadAccountState() {
+  const localHoldings = loadHoldings();
+  try {
+    const me = await apiJson("/api/auth/me");
+    state.auth = {
+      checked: true,
+      available: true,
+      authenticated: Boolean(me.authenticated),
+      user: me.user || null,
+      message: "",
+    };
+    if (!state.auth.authenticated) {
+      state.holdings = localHoldings;
+      renderAccountPanel();
+      return;
+    }
+    const serverPayload = await apiJson("/api/me/holdings");
+    const serverHoldings = normalizeHoldingRecords(serverPayload.holdings, state.companies);
+    if (!serverHoldings.length && localHoldings.length) {
+      state.holdings = localHoldings;
+      await syncHoldingsToServer(localHoldings);
+      state.auth.message = "已將本機持股匯入帳號。";
+    } else {
+      state.holdings = serverHoldings;
+      saveHoldingsLocalOnly(state.holdings);
+    }
+  } catch {
+    state.auth = {
+      checked: true,
+      available: false,
+      authenticated: false,
+      user: null,
+      message: "帳號服務暫時不可用，已切回本機持股。",
+    };
+    state.holdings = localHoldings;
+  }
+  renderAccountPanel();
+}
+
+async function authenticateFromForm(mode) {
+  const usernameInput = $("#auth-username");
+  const passwordInput = $("#auth-password");
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  state.auth.message = "";
+  renderAccountPanel();
+  try {
+    const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+    const result = await apiJson(mode === "register" ? "/api/auth/register" : "/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    state.auth = {
+      checked: true,
+      available: true,
+      authenticated: Boolean(result.authenticated),
+      user: result.user || null,
+      message: mode === "register" ? "帳號已建立。" : "已登入。",
+    };
+    const serverPayload = await apiJson("/api/me/holdings");
+    const serverHoldings = normalizeHoldingRecords(serverPayload.holdings, state.companies);
+    if (!serverHoldings.length && localHoldings.length) {
+      state.holdings = localHoldings;
+      await syncHoldingsToServer(localHoldings);
+      state.auth.message = "已登入，並將本機持股匯入帳號。";
+    } else {
+      state.holdings = serverHoldings;
+      saveHoldingsLocalOnly(state.holdings);
+    }
+    passwordInput.value = "";
+    renderHoldings();
+  } catch (error) {
+    state.auth.available = true;
+    state.auth.authenticated = false;
+    state.auth.user = null;
+    state.auth.message = error.message || "帳號操作失敗。";
+  }
+  renderAccountPanel();
+}
+
+async function logoutAccount() {
+  try {
+    await apiJson("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
+  } catch {
+    // Logging out should still return the UI to local mode if the server is unreachable.
+  }
+  state.auth = {
+    checked: true,
+    available: true,
+    authenticated: false,
+    user: null,
+    message: "已登出，畫面保留目前本機持股。",
+  };
+  saveHoldingsLocalOnly(state.holdings);
+  renderAccountPanel();
+}
+
+async function importLocalHoldingsToAccount() {
+  if (!state.auth?.authenticated) return;
+  const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+  const merged = normalizeHoldingRecords([...state.holdings, ...localHoldings], state.companies);
+  state.holdings = merged;
+  const ok = await syncHoldingsToServer(merged);
+  state.auth.message = ok ? "已將本機持股合併同步到帳號。" : state.auth.message;
+  renderHoldings();
+  renderAccountPanel();
 }
 
 function statusLabel(status) {
@@ -352,6 +575,96 @@ function statusClass(status) {
   return `status-${String(status || "neutral").toLowerCase()}`;
 }
 
+function ruleDisplayOrder(rule = {}) {
+  const code = String(rule.code || "").toUpperCase();
+  let match = code.match(/^E([1-6])$/);
+  if (match) return 100 + Number(match[1]);
+  if (code === "OFFICIAL_Q") return 170;
+  if (code === "OFFICIAL_VALUATION") return 180;
+  match = code.match(/^X([1-5])$/);
+  if (match) return 200 + Number(match[1]);
+  if (code === "SPRING_FESTIVAL_WATCH") return 230;
+  match = code.match(/^T(\d+)$/);
+  if (match) return 240 + Number(match[1]);
+  match = code.match(/^A([1-7])$/);
+  if (match) return 300 + Number(match[1]);
+  if (code === "HOLDING") return 400;
+  match = code.match(/^FIN(\d+)$/);
+  if (match) return 110 + Number(match[1]);
+  return 900;
+}
+
+function sortRulesForDisplay(reasons = []) {
+  return reasons
+    .map((reason, index) => ({ reason, index }))
+    .sort((left, right) => ruleDisplayOrder(left.reason) - ruleDisplayOrder(right.reason) || left.index - right.index)
+    .map((item) => item.reason);
+}
+
+function formatEvidenceValue(item = {}) {
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) return "待補";
+  if (item.unit === "thousand_twd") {
+    const absValue = Math.abs(value);
+    const divisor = absValue >= 100000 ? 100000 : 10;
+    const unit = absValue >= 100000 ? "億" : "萬";
+    const amount = value / divisor;
+    return `${amount.toLocaleString("zh-TW", {
+      minimumFractionDigits: absValue >= 100000 ? 2 : 0,
+      maximumFractionDigits: 2,
+    })} ${unit}`;
+  }
+  return value.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
+}
+
+function evidenceTone(item = {}) {
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) return { className: "missing", label: "待補" };
+  if (value > 0) return { className: "passed", label: "獲利" };
+  if (value < 0) return { className: "failed", label: "虧損" };
+  return { className: "missing", label: "損益兩平" };
+}
+
+function renderRuleEvidence(rule = {}) {
+  const evidence = Array.isArray(rule.evidence) ? rule.evidence.filter(Boolean) : [];
+  if (!evidence.length) return "";
+  const numericValues = evidence.map((item) => Math.abs(Number(item.value))).filter((value) => Number.isFinite(value));
+  const maxAbs = numericValues.length ? Math.max(...numericValues) : 0;
+  const bars = evidence.map((item) => {
+    const value = Number(item.value);
+    const tone = evidenceTone(item);
+    const width = Number.isFinite(value) && maxAbs > 0 ? Math.max(8, Math.round((Math.abs(value) / maxAbs) * 100)) : 0;
+    return `
+      <div class="evidence-bar-row">
+        <span class="evidence-label">${escapeHtml(item.label || "")}</span>
+        <span class="evidence-track"><span class="evidence-bar ${tone.className}" style="--bar-width: ${width}%"></span></span>
+        <span class="evidence-value ${tone.className}">${escapeHtml(formatEvidenceValue(item))}</span>
+      </div>
+    `;
+  }).join("");
+  const rows = evidence.map((item) => {
+    const tone = evidenceTone(item);
+    return `
+      <tr>
+        <th scope="row">${escapeHtml(item.label || "")}</th>
+        <td class="${tone.className}">${escapeHtml(formatEvidenceValue(item))}</td>
+        <td class="${tone.className}">${escapeHtml(tone.label)}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="rule-evidence" aria-label="${escapeHtml(rule.code || "")} 年度數據">
+      <div class="evidence-bars">${bars}</div>
+      <table class="evidence-table">
+        <thead>
+          <tr><th scope="col">年度</th><th scope="col">淨利</th><th scope="col">判讀</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderRule(rule = {}) {
   const isMissing = rule.severity === "INSUFFICIENT_DATA";
   const stateClass = isMissing ? "missing" : rule.passed ? "passed" : "failed";
@@ -362,6 +675,7 @@ function renderRule(rule = {}) {
       <div>
         <strong>${escapeHtml(rule.title)}</strong>
         <div class="muted">${escapeHtml(rule.message)}</div>
+        ${renderRuleEvidence(rule)}
       </div>
     </div>
   `;
@@ -382,6 +696,7 @@ function displayResultStatus(result = {}, disclosureGroup = "") {
 
 function resultActionButtons(result, options = {}) {
   const companyName = result.companyName || safeCompanyName(result);
+  const tracked = isHoldingTracked(result.stockCode);
   const stockCode = safeText(result.stockCode, "未知代碼");
   const exitButton =
     options.allowExitAction && result.status === "EXIT"
@@ -389,7 +704,9 @@ function resultActionButtons(result, options = {}) {
       : "";
   const addButton =
     options.allowAddAction && result.status !== "EXCLUDED"
-      ? `<button class="secondary-btn" type="button" data-add-from-result="${escapeHtml(stockCode)}" data-add-name="${escapeHtml(companyName)}">加入持股</button>`
+      ? tracked
+        ? `<button class="secondary-btn holding-state-btn" type="button" disabled>已在持股</button>`
+        : `<button class="secondary-btn" type="button" data-add-from-result="${escapeHtml(stockCode)}" data-add-name="${escapeHtml(companyName)}">加入持股</button>`
       : "";
   return exitButton || addButton ? `<div class="button-row">${addButton}${exitButton}</div>` : "";
 }
@@ -398,7 +715,7 @@ function renderAnalysisCard(result, options = {}) {
   result = result || {};
   const companyName = result.companyName || safeCompanyName(result);
   const stockCode = safeText(result.stockCode, "未知代碼");
-  const reasons = Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : [];
+  const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
   const { status: displayStatus, summary: displaySummary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <article class="card">
@@ -597,6 +914,7 @@ const MARKET_RESULT_COLUMNS = [
   ["excluded", "排除清單"],
 ];
 const MARKET_LIST_PAGE_SIZE = 6;
+const MARKET_COLUMN_LABELS = Object.fromEntries(MARKET_RESULT_COLUMNS);
 
 const MARKET_DISCLOSURE_TABS = [
   {
@@ -658,6 +976,56 @@ function countMarketGroup(group) {
   return MARKET_RESULT_COLUMNS.reduce((total, [key]) => total + (group?.[key]?.length || 0), 0);
 }
 
+function activeMarketColumnKey() {
+  return MARKET_COLUMN_LABELS[state.activeMarketColumn] ? state.activeMarketColumn : "entry";
+}
+
+function ruleByCode(result = {}, code = "") {
+  const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+  return reasons.find((reason) => reason?.code === code) || null;
+}
+
+function numericFromText(value) {
+  const match = String(value || "").replace(",", "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+function e4PerValue(result = {}) {
+  const e4 = ruleByCode(result, "E4");
+  const fromMessage = numericFromText(e4?.message);
+  if (Number.isFinite(fromMessage)) return fromMessage;
+  return null;
+}
+
+function sortMarketResultsForDisplay(columnKey, results = []) {
+  const normalized = Array.isArray(results) ? [...results] : [];
+  if (columnKey !== "entry") return normalized;
+  return normalized.sort((left, right) => {
+    const leftPer = e4PerValue(left);
+    const rightPer = e4PerValue(right);
+    if (Number.isFinite(leftPer) && Number.isFinite(rightPer) && leftPer !== rightPer) return leftPer - rightPer;
+    if (Number.isFinite(leftPer) !== Number.isFinite(rightPer)) return Number.isFinite(leftPer) ? -1 : 1;
+    return safeText(left.stockCode).localeCompare(safeText(right.stockCode));
+  });
+}
+
+function marketColumnNote(columnKey) {
+  if (columnKey === "entry") return "排序：E4 PER 低 → 高";
+  if (columnKey === "watch") return "依股票代號排序；展開可看未通過或待補原因";
+  if (columnKey === "excluded") return "依股票代號排序；展開可看排除原因";
+  return "";
+}
+
+function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDisclosureTab) {
+  $$("[data-market-column-nav]").forEach((button) => {
+    const columnKey = button.dataset.marketColumnNav;
+    const label = MARKET_COLUMN_LABELS[columnKey] || columnKey;
+    const count = grouped ? grouped?.[activeTab]?.[columnKey]?.length ?? 0 : null;
+    button.classList.toggle("active", columnKey === activeMarketColumnKey());
+    button.textContent = count === null ? label : `${label} (${count})`;
+  });
+}
+
 function marketResultId(result = {}, groupKey = "", columnKey = "") {
   return [groupKey, columnKey, safeText(result.stockCode, "unknown"), safeText(result.status, "unknown")].join(":");
 }
@@ -704,7 +1072,7 @@ function renderMarketPagination(groupKey, columnKey, total) {
 }
 
 function renderMarketResultDetails(result, options = {}) {
-  const reasons = Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : [];
+  const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
   const { status: displayStatus, summary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <div class="market-result-details">
@@ -737,11 +1105,14 @@ function renderMarketResultRow(result, options = {}) {
 function renderMarketColumn(groupKey, columnKey, title, results) {
   const page = getMarketPage(groupKey, columnKey);
   const pageStart = page * MARKET_LIST_PAGE_SIZE;
-  const visibleResults = results.slice(pageStart, pageStart + MARKET_LIST_PAGE_SIZE);
+  const sortedResults = sortMarketResultsForDisplay(columnKey, results);
+  const visibleResults = sortedResults.slice(pageStart, pageStart + MARKET_LIST_PAGE_SIZE);
+  const note = marketColumnNote(columnKey);
   return `
     <div class="result-column">
       <div class="result-column-head">
-        <h3>${escapeHtml(title)} (${escapeHtml(results.length)})</h3>
+        <h3>${escapeHtml(title)} (${escapeHtml(sortedResults.length)})</h3>
+        ${note ? `<span class="result-column-note">${escapeHtml(note)}</span>` : ""}
       </div>
       ${
         visibleResults.length
@@ -756,7 +1127,42 @@ function renderMarketColumn(groupKey, columnKey, title, results) {
               .join("")}</div>`
           : `<div class="empty-state">無資料</div>`
       }
-      ${renderMarketPagination(groupKey, columnKey, results.length)}
+      ${renderMarketPagination(groupKey, columnKey, sortedResults.length)}
+    </div>
+  `;
+}
+
+function formatCacheTime(value) {
+  if (!value) return "尚無紀錄";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "尚無紀錄";
+  return date.toLocaleString();
+}
+
+function cacheRefreshLabel(status = "") {
+  const labels = {
+    completed_sync: "已同步建立快取",
+    fresh: "快取仍有效",
+    queued: "已排入背景更新",
+    running: "背景更新中",
+    success: "背景更新完成",
+    failed: "背景更新失敗",
+    cache_only: "僅讀取快取",
+  };
+  return labels[status] || status || "未請求更新";
+}
+
+function renderScanCacheStatus(scan = {}) {
+  const cache = scan.cacheStatus;
+  if (!cache) return "";
+  const staleText = cache.isStale ? "快取已過期，會低負載補資料" : "快取仍在有效期限內";
+  return `
+    <div class="cache-status-note">
+      <span><strong>快取狀態</strong>：${cache.cacheHit ? "先讀已存快取" : "同步建立新快取"}</span>
+      <span>刷新狀態：${escapeHtml(cacheRefreshLabel(cache.refreshStatus))}</span>
+      <span>資料時間：${escapeHtml(formatCacheTime(cache.storedAt))}</span>
+      <span>下次檢查：${escapeHtml(formatCacheTime(cache.nextRefreshAfter))}</span>
+      <span>${escapeHtml(staleText)}</span>
     </div>
   `;
 }
@@ -765,6 +1171,7 @@ function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
     target.innerHTML = `<div class="empty-state">尚未掃描市場</div>`;
+    updateMarketColumnNav();
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
@@ -775,6 +1182,9 @@ function renderMarketResults() {
     : "announced";
   const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
   const activeGroup = grouped[activeTab];
+  const activeColumn = activeMarketColumnKey();
+  const activeColumnTitle = MARKET_COLUMN_LABELS[activeColumn] || "掃描結果";
+  updateMarketColumnNav(grouped, activeTab);
   const filingSummary = state.marketScan.filingContext?.activeFinancialReport
     ? `目前依 ${state.marketScan.filingContext.activeFinancialReport.label}（一般公司期限 ${state.marketScan.filingContext.activeFinancialReport.generalDeadline}${
         state.marketScan.filingContext.activeFinancialReport.financialDeadline
@@ -787,6 +1197,7 @@ function renderMarketResults() {
       <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
       <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
     </div>
+    ${renderScanCacheStatus(state.marketScan)}
     <div class="market-disclosure-tabs" aria-label="公告狀態分組">
       ${MARKET_DISCLOSURE_TABS.map((tab) => {
         const total = countMarketGroup(grouped[tab.key]);
@@ -799,12 +1210,10 @@ function renderMarketResults() {
     </div>
     <div class="data-source-note disclosure-note">
       <strong>${escapeHtml(activeMeta.title)}</strong>
-      <span>${escapeHtml(filingSummary)} ${escapeHtml(activeMeta.note)} 各分類每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家；按 + 展開條件細節，也可匯出完整清單。</span>
+      <span>${escapeHtml(filingSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span>
     </div>
-    <div class="result-columns">
-      ${MARKET_RESULT_COLUMNS
-        .map(([key, title]) => renderMarketColumn(activeTab, key, title, activeGroup[key] || []))
-        .join("")}
+    <div class="result-columns single-result-column">
+      ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
     </div>
   `;
 }
@@ -915,6 +1324,7 @@ function showView(view) {
   $("#view-subtitle").textContent = subtitle;
   $("#view-subtitle").classList.toggle("hidden", !subtitle);
   if (view === "data") renderDataAndScheduler();
+  updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
 }
 
 async function loadCompanies() {
@@ -1159,6 +1569,20 @@ function addOnboardingDraftFromFields() {
 }
 
 function bindEvents() {
+  const authForm = $("#auth-form");
+  if (authForm) {
+    authForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      authenticateFromForm("login");
+    });
+  }
+  const registerButton = $("#auth-register-btn");
+  if (registerButton) registerButton.addEventListener("click", () => authenticateFromForm("register"));
+  const logoutButton = $("#auth-logout-btn");
+  if (logoutButton) logoutButton.addEventListener("click", logoutAccount);
+  const importLocalButton = $("#import-local-holdings-btn");
+  if (importLocalButton) importLocalButton.addEventListener("click", importLocalHoldingsToAccount);
+
   let searchTimer = null;
   $("#stock-search").addEventListener("input", (event) => {
     clearTimeout(searchTimer);
@@ -1224,7 +1648,7 @@ function bindEvents() {
       holding.averageCost = averageCostValue === "" ? null : Math.max(0, Number(averageCostValue));
       state.editingHoldingCode = null;
       saveHoldings();
-      renderHoldings();
+      refreshHoldingsDependentViews();
     }
     if (action === "reduce") {
       reduceHolding(code, card.querySelector('[data-field="reduce"]').value);
@@ -1340,13 +1764,22 @@ function bindEvents() {
   $$(".nav-item").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
+
+  $$("[data-market-column-nav]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeMarketColumn = button.dataset.marketColumnNav;
+      showView("scan");
+      showTab("market");
+      renderMarketResults();
+    });
+  });
 }
 
 async function init() {
   bindEvents();
   await loadSettings();
   await loadCompanies();
-  state.holdings = loadHoldings();
+  await loadAccountState();
   await loadDataStatus();
   renderSelectedCompany();
   renderHoldings();
@@ -1367,6 +1800,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     DEFAULT_COMPANIES,
     STRATEGY_STATUS_DETAILS,
+    state,
     findCompanyByCodeOrName,
     findStrategyStatusDetail,
     normalizeCompany,
@@ -1376,11 +1810,19 @@ if (typeof module !== "undefined") {
     parseStockInput,
     loadHoldingsFromStorage,
     normalizeText,
+    formatEvidenceValue,
+    renderRuleEvidence,
+    renderRule,
+    ruleDisplayOrder,
+    sortRulesForDisplay,
     renderAnalysisCard,
     renderStrategyStatusDetail,
     renderMarketResultRow,
     renderMarketPagination,
     groupMarketScanResults,
+    sortMarketResultsForDisplay,
+    e4PerValue,
+    isHoldingTracked,
     hasInsufficientData,
     hasFinancialReportForContext,
     hasPublishedScanData,

@@ -8,3 +8,13 @@ data/backtest_history.csv
 data/official_fundamentals_history.json
 data/official_history_backfill_progress.json
 data/official_history_backfill_run*.log
+data/app.sqlite3*
+data/market_scan_cache.json
+data/cache_refresh_state.json
+cloudflare/seed/
+cloudflare/.venv-workers/
+cloudflare/.wrangler/
+cloudflare/python_modules/
+cloudflare/__pycache__/
+.wrangler/
+node_modules/

@@ -1,15 +1,47 @@
 from __future__ import annotations
 
 from backend.models.analysis import AnalysisResult, RuleResult
-from backend.models.financial import FundamentalSnapshot
+from backend.models.financial import AnnualFinancial, FundamentalSnapshot
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.calendar import load_market_calendar
 
 
+ENTRY_PER_THRESHOLD = 20
+
+
 def _latest_annual_net_incomes(snapshot: FundamentalSnapshot, years: int) -> list[float | None]:
     ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
     return [item.netIncome for item in ordered[-years:]]
+
+
+def _latest_annual_financials(snapshot: FundamentalSnapshot, years: int) -> list[AnnualFinancial]:
+    ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
+    return ordered[-years:]
+
+
+def _annual_net_income_evidence(rows: list[AnnualFinancial]) -> list[dict]:
+    return [
+        {
+            "label": str(item.year),
+            "value": item.netIncome,
+            "unit": "thousand_twd",
+            "metric": "annual_net_income",
+        }
+        for item in sorted(rows, key=lambda row: row.year, reverse=True)
+    ]
+
+
+def _annual_net_income_message(rows: list[AnnualFinancial], years: int, *, growth_rule: bool = False) -> str:
+    values = [item.netIncome for item in rows]
+    available_values = [value for value in values if value is not None]
+    if len(rows) < years or len(available_values) < years:
+        return f"已取得 {len(available_values)} / {years} 年年度淨利，仍有年度待補；詳見年度表格。"
+    if growth_rule:
+        is_growing = all(later > earlier for earlier, later in zip(available_values, available_values[1:]))
+        return "近 3 年年度淨利連續成長；詳見年度表格。" if is_growing else "近 3 年年度淨利未連續成長；詳見年度表格。"
+    loss_count = sum(1 for value in available_values if value < 0)
+    return f"近 {years} 年年度淨利有 {loss_count} 年虧損；詳見年度表格。" if loss_count else f"近 {years} 年年度淨利皆為正；詳見年度表格。"
 
 
 def _annual_net_income_yoy(snapshot: FundamentalSnapshot) -> float | None:
@@ -41,8 +73,8 @@ def _revenue_growth_for_entry(snapshot: FundamentalSnapshot, settings: ScannerSe
     return monthly.cumulativeRevenueYoY
 
 
-def _rule_missing(code: str, title: str, message: str) -> RuleResult:
-    return RuleResult(code=code, title=title, passed=False, severity="INSUFFICIENT_DATA", message=message)
+def _rule_missing(code: str, title: str, message: str, evidence: list[dict] | None = None) -> RuleResult:
+    return RuleResult(code=code, title=title, passed=False, severity="INSUFFICIENT_DATA", message=message, evidence=evidence)
 
 
 def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
@@ -128,6 +160,8 @@ def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
 
 def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> list[RuleResult]:
     company = snapshot.company
+    annual_5_rows = _latest_annual_financials(snapshot, 5)
+    annual_3_rows = _latest_annual_financials(snapshot, 3)
     annual_5y = _latest_annual_net_incomes(snapshot, 5)
     annual_3y = _latest_annual_net_incomes(snapshot, 3)
     revenue_growth = _revenue_growth_for_entry(snapshot, settings)
@@ -147,13 +181,13 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
     e4 = (
-        _rule_missing("E4", "本益比小於 15", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。")
+        _rule_missing("E4", f"本益比小於 {ENTRY_PER_THRESHOLD}", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。")
         if snapshot.valuation.per is None
         else RuleResult(
             code="E4",
-            title="本益比小於 15",
-            passed=snapshot.valuation.per < 15,
-            severity="WATCH" if snapshot.valuation.per >= 15 else "INFO",
+            title=f"本益比小於 {ENTRY_PER_THRESHOLD}",
+            passed=snapshot.valuation.per < ENTRY_PER_THRESHOLD,
+            severity="WATCH" if snapshot.valuation.per >= ENTRY_PER_THRESHOLD else "INFO",
             message=f"PER 為 {snapshot.valuation.per:.1f}。",
         )
     )
@@ -169,30 +203,43 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
 
+    e1_evidence = _annual_net_income_evidence(annual_5_rows)
+    e2_evidence = _annual_net_income_evidence(annual_3_rows)
     e1 = (
-        _rule_missing("E1", "近 5 年沒有虧損", "近 5 年年度淨利尚未自動補齊，不能確認是否長期賺錢。")
+        _rule_missing(
+            "E1",
+            "近 5 年沒有虧損",
+            _annual_net_income_message(annual_5_rows, 5),
+            evidence=e1_evidence,
+        )
         if len(annual_5y) < 5 or any(value is None for value in annual_5y)
         else RuleResult(
             code="E1",
             title="近 5 年沒有虧損",
             passed=all(value >= 0 for value in annual_5y if value is not None),
             severity="WATCH" if any(value < 0 for value in annual_5y if value is not None) else "INFO",
-            message=f"近 5 年年度淨利為 {', '.join(f'{value:.1f}' for value in annual_5y if value is not None)}。",
+            message=_annual_net_income_message(annual_5_rows, 5),
+            evidence=e1_evidence,
         )
     )
+    e2_growth_ok = all(
+        later > earlier for earlier, later in zip(annual_3y, annual_3y[1:]) if earlier is not None and later is not None
+    )
     e2 = (
-        _rule_missing("E2", "近 3 年淨利正成長", "近 3 年年度淨利尚未自動補齊，不能確認是否連續成長。")
+        _rule_missing(
+            "E2",
+            "近 3 年淨利正成長",
+            _annual_net_income_message(annual_3_rows, 3, growth_rule=True),
+            evidence=e2_evidence,
+        )
         if len(annual_3y) < 3 or any(value is None for value in annual_3y)
         else RuleResult(
             code="E2",
             title="近 3 年淨利正成長",
-            passed=all(later > earlier for earlier, later in zip(annual_3y, annual_3y[1:]) if earlier is not None and later is not None),
-            severity=(
-                "WATCH"
-                if not all(later > earlier for earlier, later in zip(annual_3y, annual_3y[1:]) if earlier is not None and later is not None)
-                else "INFO"
-            ),
-            message=f"近 3 年年度淨利為 {', '.join(f'{value:.1f}' for value in annual_3y if value is not None)}。",
+            passed=e2_growth_ok,
+            severity="WATCH" if not e2_growth_ok else "INFO",
+            message=_annual_net_income_message(annual_3_rows, 3, growth_rule=True),
+            evidence=e2_evidence,
         )
     )
 
@@ -371,7 +418,7 @@ def _add_watch_rules(entry_reasons: list[RuleResult], exit_reasons: list[RuleRes
         RuleResult(code="A2", title="累計營收年增率仍 >= 50%", passed=snapshot.monthlyRevenue.cumulativeRevenueYoY is not None and snapshot.monthlyRevenue.cumulativeRevenueYoY >= 50, severity="WATCH" if not (snapshot.monthlyRevenue.cumulativeRevenueYoY is not None and snapshot.monthlyRevenue.cumulativeRevenueYoY >= 50) else "INFO", message=f"累計營收年增率為 {snapshot.monthlyRevenue.cumulativeRevenueYoY if snapshot.monthlyRevenue.cumulativeRevenueYoY is not None else '缺資料'}%。"),
         RuleResult(code="A3", title="最新季 EPS 年增率 > 0", passed=snapshot.quarterlyFinancial.epsYoY is not None and snapshot.quarterlyFinancial.epsYoY > 0, severity="WATCH" if not (snapshot.quarterlyFinancial.epsYoY is not None and snapshot.quarterlyFinancial.epsYoY > 0) else "INFO", message=f"最新季 EPS 年增率為 {snapshot.quarterlyFinancial.epsYoY if snapshot.quarterlyFinancial.epsYoY is not None else '缺資料'}%。"),
         RuleResult(code="A4", title="最新季淨利年增率 > 0", passed=snapshot.quarterlyFinancial.netIncomeYoY is not None and snapshot.quarterlyFinancial.netIncomeYoY > 0, severity="WATCH" if not (snapshot.quarterlyFinancial.netIncomeYoY is not None and snapshot.quarterlyFinancial.netIncomeYoY > 0) else "INFO", message=f"最新季淨利年增率為 {snapshot.quarterlyFinancial.netIncomeYoY if snapshot.quarterlyFinancial.netIncomeYoY is not None else '缺資料'}%。"),
-        RuleResult(code="A5", title="PER 仍 < 15", passed=snapshot.valuation.per is not None and snapshot.valuation.per < 15, severity="WATCH" if not (snapshot.valuation.per is not None and snapshot.valuation.per < 15) else "INFO", message=f"PER 為 {snapshot.valuation.per if snapshot.valuation.per is not None else '缺資料'}。"),
+        RuleResult(code="A5", title=f"PER 仍 < {ENTRY_PER_THRESHOLD}", passed=snapshot.valuation.per is not None and snapshot.valuation.per < ENTRY_PER_THRESHOLD, severity="WATCH" if not (snapshot.valuation.per is not None and snapshot.valuation.per < ENTRY_PER_THRESHOLD) else "INFO", message=f"PER 為 {snapshot.valuation.per if snapshot.valuation.per is not None else '缺資料'}。"),
         RuleResult(code="A6", title="存貨週轉率仍 > 2.5", passed=snapshot.valuation.inventoryTurnover is not None and snapshot.valuation.inventoryTurnover > 2.5, severity="WATCH" if not (snapshot.valuation.inventoryTurnover is not None and snapshot.valuation.inventoryTurnover > 2.5) else "INFO", message=f"存貨週轉率為 {snapshot.valuation.inventoryTurnover if snapshot.valuation.inventoryTurnover is not None else '缺資料'}。"),
         RuleResult(code="A7", title="未觸發任何出場條件", passed=exit_ok, severity="WATCH" if not exit_ok else "INFO", message="X1-X5 未觸發時才可加碼觀察。"),
     ]
@@ -465,6 +512,6 @@ class RuleEngine:
             companyName=company.name,
             status=status,
             summary=summary,
-            reasons=[holding_note, *exit_reasons, *entry_reasons, *add_reasons],
+            reasons=[*entry_reasons, *exit_reasons, *add_reasons, holding_note],
             company=company,
         )

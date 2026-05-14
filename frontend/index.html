@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260514-market-nav" />
   </head>
   <body>
     <div class="app-shell">
@@ -19,6 +19,11 @@
           <button class="nav-item" type="button" data-view="search">搜尋與單檔分析</button>
           <button class="nav-item" type="button" data-view="holdings">我的持股</button>
           <button class="nav-item" type="button" data-view="scan">掃描結果</button>
+          <div class="nav-subitems" aria-label="掃描結果分類">
+            <button class="nav-subitem active" type="button" data-market-column-nav="entry">適合進場</button>
+            <button class="nav-subitem" type="button" data-market-column-nav="watch">接近觀察</button>
+            <button class="nav-subitem" type="button" data-market-column-nav="excluded">排除清單</button>
+          </div>
           <button class="nav-item" type="button" data-view="settings">設定</button>
           <button class="nav-item" type="button" data-view="strategy">策略規則</button>
           <button class="nav-item" type="button" data-view="data">資料與排程</button>
@@ -41,6 +46,23 @@
             <button id="scan-holdings-btn" class="secondary-btn" type="button">掃描我的持股</button>
             <button id="open-onboarding-btn" class="ghost-btn" type="button">初次設定</button>
           </div>
+          <section id="account-panel" class="account-panel" aria-label="帳號與持股同步">
+            <div class="account-head">
+              <span id="account-status" class="status-pill neutral">本機持股</span>
+              <span id="auth-message" class="account-message"></span>
+            </div>
+            <form id="auth-form" class="auth-form">
+              <input id="auth-username" type="text" autocomplete="username" placeholder="帳號" />
+              <input id="auth-password" type="password" autocomplete="current-password" placeholder="密碼" />
+              <button id="auth-login-btn" class="secondary-btn" type="submit">登入</button>
+              <button id="auth-register-btn" class="ghost-btn" type="button">註冊</button>
+            </form>
+            <div id="auth-user-panel" class="auth-user hidden">
+              <span id="auth-user-label"></span>
+              <button id="import-local-holdings-btn" class="ghost-btn" type="button">匯入本機</button>
+              <button id="auth-logout-btn" class="secondary-btn" type="button">登出</button>
+            </div>
+          </section>
         </header>
 
         <main class="workspace">
@@ -66,13 +88,14 @@
               <div class="section-heading">
                 <div>
                   <h2>策略落地狀態</h2>
-                  <p class="section-subtitle">目前已補強申報窗口分流、官方歷史快取、春節保護、毛利率追蹤、A1-A7 加碼規則與待補狀態。</p>
+                  <p class="section-subtitle">目前已補強申報窗口分流、官方歷史快取、春節保護、T 系列追蹤、A1-A7 加碼規則與待補狀態。</p>
                 </div>
               </div>
               <div id="strategy-status-options" class="checklist-grid" aria-label="策略落地狀態分類">
                 <button class="strategy-status-btn" type="button" data-strategy-status="entry" aria-expanded="false">進場 E1-E6</button>
+                <button class="strategy-status-btn" type="button" data-strategy-status="addWatch" aria-expanded="false">加碼 A1-A7</button>
                 <button class="strategy-status-btn" type="button" data-strategy-status="exit" aria-expanded="false">出場 X1-X5</button>
-                <button class="strategy-status-btn" type="button" data-strategy-status="grossMargin" aria-expanded="false">毛利率追蹤</button>
+                <button class="strategy-status-btn" type="button" data-strategy-status="grossMargin" aria-expanded="false">T 系列追蹤</button>
                 <button class="strategy-status-btn" type="button" data-strategy-status="spring" aria-expanded="false">春節輔助營收</button>
                 <button class="strategy-status-btn" type="button" data-strategy-status="financial" aria-expanded="false">金融業不套主策略</button>
                 <button class="strategy-status-btn" type="button" data-strategy-status="insufficient" aria-expanded="false">待補資料不硬判斷</button>
@@ -104,7 +127,7 @@
               <div class="section-heading">
                 <div>
                   <h2 id="holdings-title">我的持股</h2>
-                  <p class="section-subtitle">資料存在瀏覽器 localStorage，不會主動上傳。</p>
+                  <p id="holdings-storage-note" class="section-subtitle">目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。</p>
                 </div>
               </div>
               <form id="manual-add-form" class="holding-form">
@@ -142,7 +165,7 @@
                 <span id="scan-time" class="muted"></span>
               </div>
               <div class="tabs" aria-label="掃描結果分類">
-                <button class="tab active" type="button" data-tab="market">市場掃描</button>
+                <button class="tab active" type="button" data-tab="market">股市清單</button>
                 <button class="tab" type="button" data-tab="holdings">我的持股</button>
               </div>
               <div class="report-actions" aria-label="匯出報告">
@@ -185,7 +208,7 @@
                 </div>
               </div>
               <div class="rule-card-grid">
-                <article class="rule-card"><h3>進場條件</h3><p>近 5 年無虧損、近 3 年淨利正成長、累計營收年增 >= 50%、PER < 15、存貨週轉 > 2.5、排除金融業。</p></article>
+                <article class="rule-card"><h3>進場條件</h3><p>近 5 年無虧損、近 3 年淨利正成長、累計營收年增 >= 50%、PER < 20、存貨週轉 > 2.5、排除金融業。</p></article>
                 <article class="rule-card"><h3>持有追蹤</h3><p>每月看月營收，每季看 EPS、淨利、毛利率，每年看 5 年虧損與 3 年淨利趨勢。</p></article>
                 <article class="rule-card"><h3>出場條件</h3><p>月營收跌破 30%、較上月降溫超過 20 個百分點、EPS 衰退、季度 EPS 減少超過 10%、淨利衰退。</p></article>
                 <article class="rule-card"><h3>特殊情況</h3><p>春節月搭配 1+2 月或近 3 個月平均；金融業需另建專用策略，不套主策略。</p></article>
@@ -249,6 +272,6 @@
       </div>
     </div>
 
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=20260514-market-nav" defer></script>
   </body>
 </html>

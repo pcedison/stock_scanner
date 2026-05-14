@@ -1,0 +1,280 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import secrets
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from backend.models.holding import Holding
+
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
+PASSWORD_ALGORITHM = "pbkdf2_sha256"
+PASSWORD_ITERATIONS = 210_000
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
+
+
+@dataclass(frozen=True)
+class AuthUser:
+    id: int
+    username: str
+    display_name: str | None = None
+
+    def public_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "displayName": self.display_name or self.username,
+        }
+
+
+class AuthService:
+    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    display_name TEXT,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS holdings (
+                    user_id INTEGER NOT NULL,
+                    stock_code TEXT NOT NULL,
+                    name TEXT,
+                    shares INTEGER NOT NULL DEFAULT 0,
+                    average_cost REAL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, stock_code),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+    @staticmethod
+    def normalize_username(username: str) -> str:
+        normalized = username.strip().lower()
+        if not USERNAME_PATTERN.fullmatch(normalized):
+            raise ValueError("帳號需為 3-80 字元，且只能使用英數、_ . @ + -")
+        return normalized
+
+    @staticmethod
+    def validate_password(password: str) -> None:
+        if len(password) < 8:
+            raise ValueError("密碼至少需要 8 個字元")
+        if len(password) > 128:
+            raise ValueError("密碼長度不能超過 128 個字元")
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _hash_password(password: str, salt: bytes | None = None) -> str:
+        salt = salt or secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            PASSWORD_ITERATIONS,
+        )
+        return f"{PASSWORD_ALGORITHM}${PASSWORD_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+    @staticmethod
+    def _verify_password(password: str, stored_hash: str) -> bool:
+        try:
+            algorithm, iterations, salt_hex, digest_hex = stored_hash.split("$", 3)
+            if algorithm != PASSWORD_ALGORITHM:
+                return False
+            digest = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                bytes.fromhex(salt_hex),
+                int(iterations),
+            )
+            return hmac.compare_digest(digest.hex(), digest_hex)
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def _row_to_user(row: sqlite3.Row | None) -> AuthUser | None:
+        if row is None:
+            return None
+        return AuthUser(id=int(row["id"]), username=row["username"], display_name=row["display_name"])
+
+    def create_user(self, username: str, password: str, display_name: str | None = None) -> AuthUser:
+        normalized_username = self.normalize_username(username)
+        self.validate_password(password)
+        clean_display_name = (display_name or "").strip()[:80] or None
+        now = self._now()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO users (username, display_name, password_hash, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (normalized_username, clean_display_name, self._hash_password(password), now),
+                )
+                user_id = int(cursor.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("帳號已存在") from exc
+        return AuthUser(id=user_id, username=normalized_username, display_name=clean_display_name)
+
+    def authenticate(self, username: str, password: str) -> AuthUser | None:
+        try:
+            normalized_username = self.normalize_username(username)
+        except ValueError:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, username, display_name, password_hash FROM users WHERE username = ?",
+                (normalized_username,),
+            ).fetchone()
+        if row is None or not self._verify_password(password, row["password_hash"]):
+            return None
+        return self._row_to_user(row)
+
+    def create_session(self, user_id: int, days: int = 30) -> str:
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=days)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO sessions (user_id, token_hash, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, self._token_hash(token), now.isoformat(), expires_at.isoformat()),
+            )
+        return token
+
+    def get_user_by_session(self, token: str | None) -> AuthUser | None:
+        if not token:
+            return None
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+            row = connection.execute(
+                """
+                SELECT users.id, users.username, users.display_name
+                FROM sessions
+                JOIN users ON users.id = sessions.user_id
+                WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+                """,
+                (self._token_hash(token), now),
+            ).fetchone()
+        return self._row_to_user(row)
+
+    def delete_session(self, token: str | None) -> None:
+        if not token:
+            return
+        with self._connect() as connection:
+            connection.execute("DELETE FROM sessions WHERE token_hash = ?", (self._token_hash(token),))
+
+    def list_holdings(self, user_id: int) -> list[Holding]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT stock_code, name, shares, average_cost
+                FROM holdings
+                WHERE user_id = ?
+                ORDER BY stock_code
+                """,
+                (user_id,),
+            ).fetchall()
+        return [
+            Holding(
+                stockCode=row["stock_code"],
+                name=row["name"],
+                shares=int(row["shares"]),
+                averageCost=row["average_cost"],
+            )
+            for row in rows
+        ]
+
+    def replace_holdings(self, user_id: int, holdings: list[Holding]) -> list[Holding]:
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM holdings WHERE user_id = ?", (user_id,))
+            for holding in holdings:
+                connection.execute(
+                    """
+                    INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        holding.stockCode,
+                        holding.name,
+                        holding.shares,
+                        holding.averageCost,
+                        now,
+                        now,
+                    ),
+                )
+        return self.list_holdings(user_id)
+
+    def upsert_holding(self, user_id: int, holding: Holding) -> list[Holding]:
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, stock_code) DO UPDATE SET
+                    name = excluded.name,
+                    shares = excluded.shares,
+                    average_cost = excluded.average_cost,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    holding.stockCode,
+                    holding.name,
+                    holding.shares,
+                    holding.averageCost,
+                    now,
+                    now,
+                ),
+            )
+        return self.list_holdings(user_id)
+
+    def delete_holding(self, user_id: int, stock_code: str) -> list[Holding]:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM holdings WHERE user_id = ? AND stock_code = ?", (user_id, stock_code))
+        return self.list_holdings(user_id)
