@@ -27,7 +27,7 @@ GitHub Actions 需要兩個 repository secrets：
 - `CLOUDFLARE_ACCOUNT_ID`：`34d97898ae94d67b3ba74d3e09b82cc5`
 - `CLOUDFLARE_API_TOKEN`：Cloudflare API Token，需具備 Workers Scripts、Workers Tail、Pages、D1、R2 的編輯權限。
 
-建議在 Cloudflare 建立一個專用 Token，只給這個帳號與這個專案需要的最小權限。Token 建立後到 GitHub repo 的 Settings -> Secrets and variables -> Actions 新增上述 secrets。
+目前這個 repo 已先設定 `CLOUDFLARE_ACCOUNT_ID`；仍需人工建立並新增 `CLOUDFLARE_API_TOKEN`。建議在 Cloudflare 建立一個專用 Token，只給這個帳號與這個專案需要的最小權限。Token 建立後到 GitHub repo 的 Settings -> Secrets and variables -> Actions 新增上述 secret。
 
 ## 後續更新流程
 
