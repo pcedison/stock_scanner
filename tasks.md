@@ -428,9 +428,9 @@ GET /api/health -> 200 OK
 
 ### T-052 自動掃描開關
 
-- [ ] 若 `auto_scan_full_market = true`，關鍵日期自動掃描市場
-- [ ] 若 `auto_scan_full_market = false`，只提醒可手動掃描
-- [ ] 若 `manual_scan_enabled = false`，前端停用手動掃描按鈕
+- [x] 若 `auto_scan_full_market = true`，關鍵日期自動掃描市場
+- [x] 若 `auto_scan_full_market = false`，只提醒可手動掃描
+- [x] 若 `manual_scan_enabled = false`，前端停用手動掃描按鈕
 
 驗收：
 
@@ -478,10 +478,17 @@ GET /api/health -> 200 OK
 
 ### T-062 財報/季報/年報 Adapter
 
-- [ ] 調查公開資訊觀測站/官方資料下載方式
-- [ ] 建立可取得 EPS、淨利、毛利率、存貨週轉率的資料流程
-- [ ] 若官方 API 不穩定，先建立手動匯入 CSV 流程
-- [ ] 轉成 QuarterlyFinancial / AnnualFinancial
+- [x] 調查公開資訊觀測站/官方資料下載方式
+- [x] 串接 TWSE / TPEx 最新季綜合損益表與資產負債表 OpenAPI
+- [x] 串接 TWSE / TPEx PER、PBR、殖利率資料
+- [x] 若官方 API 不穩定，先建立手動匯入 CSV 流程
+- [x] 轉成 QuarterlyFinancial / AnnualFinancial
+- [x] 建立官方歷史快取，自動累積最新季度並回推 EPS YoY、淨利 YoY、毛利率變化與 Q4 年度淨利
+- [x] 用官方資產負債表/歷史快取自動計算非金融業存貨週轉率
+- [x] 串接原 MOPS 歷史合併損益表 / 資產負債表 HTML 回補 adapter
+- [x] 提供 `/api/data-sources/backfill-history` 批次回補官方歷史快取
+- [x] 跑完整上市櫃 universe 的 5 年歷史回補批次並建立進度/續跑機制（2026-05-14：1973 檔已跑完，1883 檔完成，579 檔 2026Q1 pending，90 檔歷史期別需人工判讀）
+- [ ] 補齊金融業專用財務比率自動化
 
 驗收：
 
@@ -494,7 +501,7 @@ GET /api/health -> 200 OK
 
 - [x] 串接或匯入 TWSE 市場開休市日期
 - [x] 轉成 MarketCalendar
-- [ ] 每年可更新
+- [x] 每年可更新
 
 驗收：
 
@@ -507,11 +514,11 @@ GET /api/health -> 200 OK
 
 ### T-070 進場清單 UI
 
-- [ ] 顯示 ENTRY 清單
-- [ ] 顯示 WATCH 清單
-- [ ] 顯示排除原因
-- [ ] 每檔股票顯示規則通過/失敗
-- [ ] 可加入持股
+- [x] 顯示 ENTRY 清單
+- [x] 顯示 WATCH 清單
+- [x] 顯示排除原因
+- [x] 每檔股票顯示規則通過/失敗
+- [x] 可加入持股
 
 驗收：
 
@@ -521,12 +528,12 @@ GET /api/health -> 200 OK
 
 ### T-071 持股追蹤 UI
 
-- [ ] 顯示每檔持股狀態
-- [ ] HOLD 顯示續抱原因
-- [ ] ADD_WATCH 顯示加碼觀察原因
-- [ ] WARNING 顯示警戒原因
-- [ ] EXIT 顯示出場原因
-- [ ] EXIT 卡片提供「採用出場建議」按鈕
+- [x] 顯示每檔持股狀態
+- [x] HOLD 顯示續抱原因
+- [x] ADD_WATCH 顯示加碼觀察原因
+- [x] WARNING 顯示警戒原因
+- [x] EXIT 顯示出場原因
+- [x] EXIT 卡片提供「採用出場建議」按鈕
 
 驗收：
 
@@ -536,9 +543,9 @@ GET /api/health -> 200 OK
 
 ### T-072 匯出報告
 
-- [ ] 產生 Markdown 報告
-- [ ] 產生 CSV 報告
-- [ ] 報告包含掃描時間、資料來源、規則結果
+- [x] 產生 Markdown 報告
+- [x] 產生 CSV 報告
+- [x] 報告包含掃描時間、資料來源、規則結果
 
 驗收：
 
@@ -552,7 +559,7 @@ GET /api/health -> 200 OK
 
 - [x] parseStockInput
 - [x] company search
-- [ ] localStorage schema helper，若前端有測試框架
+- [x] localStorage schema helper，若前端有測試框架
 - [x] E1–E6
 - [x] X1–X5
 - [x] spring festival guard
@@ -585,15 +592,15 @@ pytest
 
 ### T-082 Manual QA Checklist
 
-- [ ] 第一次開啟會問持股
+- [x] 第一次開啟會問持股
 - [x] 輸入任意股票代碼或公司名稱不會 undefined
-- [ ] 可新增第二檔股票
-- [ ] 可減碼
-- [ ] 可出清
+- [x] 可新增第二檔股票
+- [x] 可減碼
+- [x] 可出清
 - [x] 掃描全市場有結果
 - [x] 掃描持股有結果
 - [x] 手機版可操作
-- [ ] 關掉瀏覽器重開後 localStorage 還在
+- [x] 關掉瀏覽器重開後 localStorage 還在
 
 ---
 
@@ -632,10 +639,11 @@ pytest
 
 ### B-001 回測系統
 
-- [ ] 匯入歷史月營收
-- [ ] 匯入歷史季報
-- [ ] 模擬進出場
-- [ ] 計算勝率、最大回撤、年化報酬
+- [x] 匯入歷史月營收
+- [x] 匯入歷史季報
+- [x] 模擬進出場
+- [x] 計算勝率、最大回撤、總報酬
+- [ ] 年化報酬需補交易期間年化換算
 
 ### B-002 通知系統
 
@@ -646,15 +654,15 @@ pytest
 
 ### B-003 券商同步
 
-- [ ] 調查券商 API
+- [x] 調查券商 API
 - [ ] 同步真實持股
 - [ ] 賣出後自動清除本地持股
 
 ### B-004 金融業專用策略
 
-- [ ] 金融業不看存貨週轉率
-- [ ] 改看 ROE、逾放比、資本適足率、利差、股利政策等
-- [ ] 與主策略分離
+- [x] 金融業不看存貨週轉率
+- [x] 改看 ROE、逾放比、資本適足率、利差、股利政策等
+- [x] 與主策略分離
 
 ### B-005 AI 財報摘要
 

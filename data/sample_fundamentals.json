@@ -157,7 +157,13 @@
     },
     "valuation": {
       "per": 9.2,
-      "inventoryTurnover": 99.0
+      "priceBookRatio": 1.1,
+      "dividendYield": 5.4,
+      "inventoryTurnover": 99.0,
+      "roe": 11.8,
+      "nonPerformingLoanRatio": 0.18,
+      "capitalAdequacyRatio": 132.0,
+      "netInterestMargin": 1.35
     },
     "annualFinancials": [
       { "year": 2021, "netIncome": 1446.5 },

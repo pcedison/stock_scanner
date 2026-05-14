@@ -33,7 +33,86 @@ const state = {
   activeView: "overview",
   dataSourceStatus: null,
   schedulerStatus: null,
+  schedulerAutoScan: null,
+  integrationStatus: null,
+  backtestStatus: null,
+  activeMarketDisclosureTab: "announced",
+  marketListPages: {
+    announced: { entry: 0, watch: 0, excluded: 0 },
+    pending: { entry: 0, watch: 0, excluded: 0 },
+  },
+  expandedMarketResultIds: new Set(),
+  activeStrategyStatusKey: null,
 };
+
+const STRATEGY_STATUS_DETAILS = [
+  {
+    key: "entry",
+    label: "進場 E1-E6",
+    summary: "用來判斷是否符合長期賺錢、高成長、估值不貴的初始進場門檻。",
+    items: [
+      ["E1", "近 5 年沒有虧損", "最近 5 個年度淨利都需要為正；歷史年報不足時會標示待補，不會硬判定。"],
+      ["E2", "近 3 年淨利正成長", "最近 3 個年度淨利需逐年增加，用來確認成長不是單一年度偶發。"],
+      ["E3", "今年累計營收年增率 >= 50%", "依設定採用累計營收、單月營收或近 3 個月平均年增率。"],
+      ["E4", "本益比小於 15", "採用官方估值 PER；缺資料或 PER 不適用時列為待補。"],
+      ["E5", "存貨週轉率大於 2.5", "以官方損益與資產負債表估算，確認庫存沒有明顯堆積。"],
+      ["E6", "排除金融業", "預設金融業不套用一般產業主策略，避免用存貨、毛利率等不適用指標誤判。"],
+    ],
+  },
+  {
+    key: "exit",
+    label: "出場 X1-X5",
+    summary: "用來檢查持股是否出現營收降溫、EPS 或淨利轉弱等需要警戒或出場的訊號。",
+    items: [
+      ["X1", "月營收年增率不可低於 30%", "月營收成長低於門檻時列入警戒；春節月份會套用輔助判斷。"],
+      ["X2", "月營收年增率不可突然降溫超過 20 個百分點", "比較本月與上月年增率，避免成長斜率快速翻弱。"],
+      ["X3", "EPS 不可衰退", "最新季 EPS 年增率低於 0 時列為警戒。"],
+      ["X4", "季度 EPS 不可減少超過 10%", "EPS 年減超過 10% 時視為高優先出場風險。"],
+      ["X5", "淨利不可衰退", "最新季淨利或年度淨利轉弱時視為高優先出場風險。"],
+    ],
+  },
+  {
+    key: "grossMargin",
+    label: "毛利率追蹤",
+    summary: "用官方季報毛利率與 YoY 變化追蹤產品力或成本壓力是否惡化。",
+    items: [
+      ["T3", "毛利率年增率追蹤", "最新季毛利率 YoY 低於 0 時列入警戒，表示獲利結構可能轉弱。"],
+      ["OFFICIAL_Q", "官方最新季損益資料", "若已抓到 EPS、淨利、營收與毛利率，會在展開細節中列出官方季報訊號。"],
+      ["資料待補", "歷史同期毛利率不足時不硬判斷", "缺少去年同季毛利率時只標示待補，避免把缺資料誤當成通過或失敗。"],
+    ],
+  },
+  {
+    key: "spring",
+    label: "春節輔助營收",
+    summary: "春節落點會讓單月營收失真，因此會搭配 1+2 月合併或近 3 個月平均觀察。",
+    items: [
+      ["SPRING_FESTIVAL_WATCH", "春節月保護", "若單月營收觸發 X1 或 X2，但春節輔助營收仍健康，先列觀察而非直接出場。"],
+      ["1+2 月合併", "跨月營收平滑", "春節跨月時，用 1 月加 2 月合併營收降低工作天數差異造成的誤判。"],
+      ["近 3 個月平均", "短期趨勢輔助", "若沒有 1+2 月合併資料，改用近 3 個月平均年增率確認趨勢。"],
+    ],
+  },
+  {
+    key: "financial",
+    label: "金融業不套主策略",
+    summary: "銀行、金控、保險與證券不適合使用存貨週轉率、一般毛利率等製造/通路業指標。",
+    items: [
+      ["E6", "預設排除金融業", "市場掃描會把金融業歸到排除或專用策略區，避免主策略誤判。"],
+      ["FIN1-FIN6", "金融專用指標預留", "金融策略應改看 ROE、逾放比、資本適足率、淨利差、殖利率與淨利年增。"],
+      ["資料來源", "需金融業專用官方欄位", "金融專用欄位尚未完整自動化前，會以待補或排除顯示。"],
+    ],
+  },
+  {
+    key: "insufficient",
+    label: "待補資料不硬判斷",
+    summary: "缺官方歷史年報、季度 YoY 或存貨週轉率時，系統會明確標示待補，不把資料不足當結論。",
+    items: [
+      ["INSUFFICIENT_DATA", "資料不足", "缺少關鍵欄位時不會輸出進場或出場結論。"],
+      ["PARTIAL_DATA", "可初篩", "已公告公司若有部分官方資料，可先顯示可初篩並把缺口列在細節。"],
+      ["OFFICIAL_VALUATION", "官方估值資料", "PER、PBR、殖利率若缺漏，會標示估值待補而不是直接判定便宜或昂貴。"],
+      ["人工補洞", "fundamentals_import.csv", "需要人工授權或第三方授權資料時，可用匯入檔補齊缺口。"],
+    ],
+  },
+];
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -85,6 +164,12 @@ function safeCompanyName(companyOrHolding) {
   if (directName) return directName;
   const company = findCompanyByCodeOrName(companyOrHolding.stockCode, state.companies);
   return company ? company.name : "未知公司";
+}
+
+function optionalNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : null;
 }
 
 function findCompanyByCodeOrName(query, companies = state.companies) {
@@ -145,35 +230,46 @@ function parseStockInput(input, companies = state.companies) {
   };
 }
 
-function loadHoldings() {
+function normalizeHoldingRecord(item, companies = state.companies) {
+  if (!item || typeof item !== "object") return null;
+  const company = findCompanyByCodeOrName(item.stockCode || item.name, companies);
+  if (!company) return null;
+  const shares = Number(item.shares);
+  const averageCost = Number(item.averageCost);
+  return {
+    stockCode: company.stockCode,
+    name: company.name,
+    shares: Number.isFinite(shares) ? Math.max(0, Math.floor(shares)) : 0,
+    averageCost: item.averageCost === null || item.averageCost === undefined || item.averageCost === "" || !Number.isFinite(averageCost) ? null : Math.max(0, averageCost),
+  };
+}
+
+function normalizeHoldingRecords(records, companies = state.companies) {
+  if (!Array.isArray(records)) return [];
+  const deduped = new Map();
+  records.map((item) => normalizeHoldingRecord(item, companies)).filter(Boolean).forEach((holding) => deduped.set(holding.stockCode, holding));
+  return [...deduped.values()].sort((a, b) => a.stockCode.localeCompare(b.stockCode));
+}
+
+function loadHoldingsFromStorage(storage = localStorage, companies = state.companies) {
   try {
-    const parsed = JSON.parse(localStorage.getItem(HOLDINGS_KEY) || "[]");
+    const parsed = JSON.parse(storage.getItem(HOLDINGS_KEY) || "[]");
     if (!Array.isArray(parsed)) throw new Error("Holdings must be an array");
-    const normalized = parsed
-      .map((item) => {
-        const company = findCompanyByCodeOrName(item.stockCode || item.name, state.companies);
-        if (!company) return null;
-        return {
-          stockCode: company.stockCode,
-          name: company.name,
-          shares: Number.isFinite(Number(item.shares)) ? Math.max(0, Math.floor(Number(item.shares))) : 0,
-          averageCost:
-            item.averageCost === null || item.averageCost === undefined || item.averageCost === ""
-              ? null
-              : Math.max(0, Number(item.averageCost)),
-        };
-      })
-      .filter(Boolean);
-    saveHoldings(normalized);
-    return normalized;
+    return normalizeHoldingRecords(parsed, companies);
   } catch {
-    localStorage.setItem(HOLDINGS_KEY, "[]");
+    storage.setItem(HOLDINGS_KEY, "[]");
     return [];
   }
 }
 
-function saveHoldings(holdings = state.holdings) {
-  localStorage.setItem(HOLDINGS_KEY, JSON.stringify(holdings));
+function loadHoldings() {
+  const normalized = loadHoldingsFromStorage(localStorage, state.companies);
+  saveHoldings(normalized);
+  return normalized;
+}
+
+function saveHoldings(holdings = state.holdings, storage = localStorage) {
+  storage.setItem(HOLDINGS_KEY, JSON.stringify(normalizeHoldingRecords(holdings, state.companies)));
 }
 
 function upsertHolding(holding) {
@@ -245,7 +341,9 @@ function statusLabel(status) {
     WARNING: "警戒",
     EXIT: "建議出清",
     EXCLUDED: "排除",
-    INSUFFICIENT_DATA: "資料不足",
+    INSUFFICIENT_DATA: "待補資料",
+    PARTIAL_DATA: "可初篩",
+    PARTIAL_HOLDING: "可追蹤",
   };
   return labels[status] || "未知";
 }
@@ -255,8 +353,9 @@ function statusClass(status) {
 }
 
 function renderRule(rule = {}) {
-  const stateClass = rule.passed ? "passed" : "failed";
-  const stateText = rule.passed ? "通過" : "未通過";
+  const isMissing = rule.severity === "INSUFFICIENT_DATA";
+  const stateClass = isMissing ? "missing" : rule.passed ? "passed" : "failed";
+  const stateText = isMissing ? "待補" : rule.passed ? "通過" : "未通過";
   return `
     <div class="rule">
       <div class="rule-code ${stateClass}">${escapeHtml(rule.code)} ${stateText}</div>
@@ -268,26 +367,50 @@ function renderRule(rule = {}) {
   `;
 }
 
+function displayResultStatus(result = {}, disclosureGroup = "") {
+  const partialPublished = disclosureGroup === "announced" && isPartialPublishedResult(result);
+  const partialHolding = disclosureGroup === "holding" && isPartialPublishedResult(result);
+  return {
+    status: partialHolding ? "PARTIAL_HOLDING" : partialPublished ? "PARTIAL_DATA" : result.status,
+    summary: partialHolding
+      ? "已有公開揭露資料可追蹤；完整續抱或出場結論仍待補歷史財報、季 YoY 或週轉率等欄位。"
+      : partialPublished
+        ? "已有公開揭露資料可初步掃描；完整進場結論仍待補歷史財報、PER 或週轉率等欄位。"
+        : result.summary || "已完成規則分析。",
+  };
+}
+
+function resultActionButtons(result, options = {}) {
+  const companyName = result.companyName || safeCompanyName(result);
+  const stockCode = safeText(result.stockCode, "未知代碼");
+  const exitButton =
+    options.allowExitAction && result.status === "EXIT"
+      ? `<button class="danger-btn" type="button" data-clear-from-result="${escapeHtml(stockCode)}">採用出場建議</button>`
+      : "";
+  const addButton =
+    options.allowAddAction && result.status !== "EXCLUDED"
+      ? `<button class="secondary-btn" type="button" data-add-from-result="${escapeHtml(stockCode)}" data-add-name="${escapeHtml(companyName)}">加入持股</button>`
+      : "";
+  return exitButton || addButton ? `<div class="button-row">${addButton}${exitButton}</div>` : "";
+}
+
 function renderAnalysisCard(result, options = {}) {
   result = result || {};
   const companyName = result.companyName || safeCompanyName(result);
   const stockCode = safeText(result.stockCode, "未知代碼");
   const reasons = Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : [];
-  const exitButton =
-    options.allowExitAction && result.status === "EXIT"
-      ? `<button class="danger-btn" type="button" data-clear-from-result="${escapeHtml(stockCode)}">採用出場建議</button>`
-      : "";
+  const { status: displayStatus, summary: displaySummary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <article class="card">
       <div class="card-head">
         <div>
           <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</h3>
-          <p class="muted">${escapeHtml(result.summary || "已完成規則分析。")}</p>
+          <p class="muted">${escapeHtml(displaySummary)}</p>
         </div>
-        <span class="status-pill ${statusClass(result.status)}">${escapeHtml(statusLabel(result.status))}</span>
+        <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
       </div>
       <div class="rules">${reasons.map(renderRule).join("")}</div>
-      ${exitButton ? `<div class="button-row">${exitButton}</div>` : ""}
+      ${resultActionButtons(result, options)}
     </article>
   `;
 }
@@ -330,7 +453,7 @@ function renderHoldings() {
       const name = safeCompanyName(holding);
       const stockCode = safeText(holding.stockCode, "未知代碼");
       const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
-      const averageCost = Number.isFinite(Number(holding.averageCost)) ? Math.max(0, Number(holding.averageCost)) : null;
+      const averageCost = optionalNumber(holding.averageCost);
       const isEditing = state.editingHoldingCode === stockCode;
       return `
         <article class="card" data-holding-code="${escapeHtml(stockCode)}">
@@ -400,7 +523,7 @@ function renderOnboardingDraft() {
         const stockCode = safeText(holding.stockCode, "未知代碼");
         const name = safeCompanyName(holding);
         const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
-        const averageCost = Number.isFinite(Number(holding.averageCost)) ? Math.max(0, Number(holding.averageCost)) : null;
+        const averageCost = optionalNumber(holding.averageCost);
         return `
         <article class="draft-item" data-draft-code="${escapeHtml(stockCode)}">
           <div>
@@ -426,6 +549,218 @@ function renderSettings() {
   $("#scan-holdings-btn").disabled = !state.settings.manual_scan_enabled;
 }
 
+function findStrategyStatusDetail(key) {
+  return STRATEGY_STATUS_DETAILS.find((item) => item.key === key) || null;
+}
+
+function renderStrategyStatusDetail() {
+  const target = $("#strategy-status-detail");
+  if (!target) return;
+  const detail = findStrategyStatusDetail(state.activeStrategyStatusKey);
+  $$("[data-strategy-status]").forEach((button) => {
+    const active = button.dataset.strategyStatus === state.activeStrategyStatusKey;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-expanded", active ? "true" : "false");
+  });
+  if (!detail) {
+    target.classList.add("hidden");
+    target.innerHTML = "";
+    return;
+  }
+  target.classList.remove("hidden");
+  target.innerHTML = `
+    <div class="strategy-detail-head">
+      <h3>${escapeHtml(detail.label)}</h3>
+      <p>${escapeHtml(detail.summary)}</p>
+    </div>
+    <div class="strategy-detail-list">
+      ${detail.items
+        .map(
+          ([code, title, description]) => `
+            <div class="strategy-detail-row">
+              <span class="strategy-detail-code">${escapeHtml(code)}</span>
+              <div>
+                <strong>${escapeHtml(title)}</strong>
+                <p>${escapeHtml(description)}</p>
+              </div>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+const MARKET_RESULT_COLUMNS = [
+  ["entry", "適合進場"],
+  ["watch", "接近觀察"],
+  ["excluded", "排除清單"],
+];
+const MARKET_LIST_PAGE_SIZE = 6;
+
+const MARKET_DISCLOSURE_TABS = [
+  {
+    key: "announced",
+    title: "當期已公告，可掃描",
+    note: "已抓到目前申報窗口所需的公開資訊，可做初步掃描；若缺歷史年報或週轉率，會在展開細節中標示。",
+  },
+  {
+    key: "pending",
+    title: "當期尚未公告，暫不判讀",
+    note: "目前申報窗口所需的月報、季報或年報尚未抓到，不應視為進場、觀察或排除結論。",
+  },
+];
+
+function hasInsufficientData(result = {}) {
+  const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+  return result.status === "INSUFFICIENT_DATA" || reasons.some((reason) => reason?.severity === "INSUFFICIENT_DATA");
+}
+
+function hasFinancialReportForContext(result = {}, filingContext = {}) {
+  const targetPeriod = filingContext?.activeFinancialReport?.period;
+  if (!targetPeriod) return true;
+  const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+  return reasons.some(
+    (reason) =>
+      reason?.code === "OFFICIAL_Q" &&
+      reason?.severity !== "INSUFFICIENT_DATA" &&
+      String(reason?.message || "").includes(targetPeriod)
+  );
+}
+
+function hasPublishedScanData(result = {}, filingContext = {}) {
+  const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+  const usableRuleCodes = new Set(["E3", "E4", "E6", "OFFICIAL_Q", "OFFICIAL_VALUATION"]);
+  if (!hasFinancialReportForContext(result, filingContext)) return false;
+  if (result.status && result.status !== "INSUFFICIENT_DATA") return true;
+  return reasons.some((reason) => usableRuleCodes.has(reason?.code) && reason?.severity !== "INSUFFICIENT_DATA");
+}
+
+function isPartialPublishedResult(result = {}, filingContext = {}) {
+  return result.status === "INSUFFICIENT_DATA" && hasPublishedScanData(result, filingContext);
+}
+
+function groupMarketScanResults(scan) {
+  const grouped = {
+    announced: { entry: [], watch: [], excluded: [] },
+    pending: { entry: [], watch: [], excluded: [] },
+  };
+  for (const [key] of MARKET_RESULT_COLUMNS) {
+    for (const result of scan?.[key] || []) {
+      const groupKey = hasPublishedScanData(result, scan?.filingContext) ? "announced" : "pending";
+      grouped[groupKey][key].push(result);
+    }
+  }
+  return grouped;
+}
+
+function countMarketGroup(group) {
+  return MARKET_RESULT_COLUMNS.reduce((total, [key]) => total + (group?.[key]?.length || 0), 0);
+}
+
+function marketResultId(result = {}, groupKey = "", columnKey = "") {
+  return [groupKey, columnKey, safeText(result.stockCode, "unknown"), safeText(result.status, "unknown")].join(":");
+}
+
+function getMarketPage(groupKey, columnKey) {
+  return Math.max(0, Number(state.marketListPages?.[groupKey]?.[columnKey]) || 0);
+}
+
+function resetMarketListUi() {
+  state.marketListPages = {
+    announced: { entry: 0, watch: 0, excluded: 0 },
+    pending: { entry: 0, watch: 0, excluded: 0 },
+  };
+  state.expandedMarketResultIds = new Set();
+}
+
+function clampMarketListPages(grouped) {
+  for (const tab of MARKET_DISCLOSURE_TABS) {
+    for (const [columnKey] of MARKET_RESULT_COLUMNS) {
+      const total = grouped?.[tab.key]?.[columnKey]?.length || 0;
+      const maxPage = Math.max(0, Math.ceil(total / MARKET_LIST_PAGE_SIZE) - 1);
+      state.marketListPages[tab.key][columnKey] = Math.min(getMarketPage(tab.key, columnKey), maxPage);
+    }
+  }
+}
+
+function renderMarketPagination(groupKey, columnKey, total) {
+  const page = getMarketPage(groupKey, columnKey);
+  const totalPages = Math.max(1, Math.ceil(total / MARKET_LIST_PAGE_SIZE));
+  const start = total ? page * MARKET_LIST_PAGE_SIZE + 1 : 0;
+  const end = Math.min(total, (page + 1) * MARKET_LIST_PAGE_SIZE);
+  if (totalPages <= 1) {
+    return total ? `<div class="market-pagination"><span>顯示 ${escapeHtml(start)}-${escapeHtml(end)} / ${escapeHtml(total)}</span></div>` : "";
+  }
+  return `
+    <div class="market-pagination">
+      <span>顯示 ${escapeHtml(start)}-${escapeHtml(end)} / ${escapeHtml(total)}，第 ${escapeHtml(page + 1)} / ${escapeHtml(totalPages)} 頁</span>
+      <div class="market-page-buttons">
+        <button class="mini-btn" type="button" data-market-page-tab="${escapeHtml(groupKey)}" data-market-page-column="${escapeHtml(columnKey)}" data-market-page-dir="-1" ${page <= 0 ? "disabled" : ""}>上一頁</button>
+        <button class="mini-btn" type="button" data-market-page-tab="${escapeHtml(groupKey)}" data-market-page-column="${escapeHtml(columnKey)}" data-market-page-dir="1" ${page >= totalPages - 1 ? "disabled" : ""}>下一頁</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderMarketResultDetails(result, options = {}) {
+  const reasons = Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : [];
+  const { status: displayStatus, summary } = displayResultStatus(result, options.disclosureGroup);
+  return `
+    <div class="market-result-details">
+      <div class="detail-summary">
+        <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
+        <p class="muted">${escapeHtml(summary)}</p>
+      </div>
+      <div class="rules">${reasons.map(renderRule).join("")}</div>
+      ${resultActionButtons(result, options)}
+    </div>
+  `;
+}
+
+function renderMarketResultRow(result, options = {}) {
+  const companyName = result.companyName || safeCompanyName(result);
+  const stockCode = safeText(result.stockCode, "未知代碼");
+  const resultId = marketResultId(result, options.disclosureGroup, options.columnKey);
+  const expanded = state.expandedMarketResultIds.has(resultId);
+  return `
+    <article class="market-result-item ${expanded ? "expanded" : ""}">
+      <button class="market-result-summary" type="button" data-market-result-toggle="${escapeHtml(resultId)}" aria-expanded="${expanded ? "true" : "false"}">
+        <span class="market-result-name">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</span>
+        <span class="market-expand-icon" aria-hidden="true">${expanded ? "−" : "+"}</span>
+      </button>
+      ${expanded ? renderMarketResultDetails(result, options) : ""}
+    </article>
+  `;
+}
+
+function renderMarketColumn(groupKey, columnKey, title, results) {
+  const page = getMarketPage(groupKey, columnKey);
+  const pageStart = page * MARKET_LIST_PAGE_SIZE;
+  const visibleResults = results.slice(pageStart, pageStart + MARKET_LIST_PAGE_SIZE);
+  return `
+    <div class="result-column">
+      <div class="result-column-head">
+        <h3>${escapeHtml(title)} (${escapeHtml(results.length)})</h3>
+      </div>
+      ${
+        visibleResults.length
+          ? `<div class="market-result-list">${visibleResults
+              .map((result) =>
+                renderMarketResultRow(result, {
+                  allowAddAction: true,
+                  disclosureGroup: groupKey,
+                  columnKey,
+                })
+              )
+              .join("")}</div>`
+          : `<div class="empty-state">無資料</div>`
+      }
+      ${renderMarketPagination(groupKey, columnKey, results.length)}
+    </div>
+  `;
+}
+
 function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
@@ -433,31 +768,42 @@ function renderMarketResults() {
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
-  const columns = [
-    ["entry", "適合進場"],
-    ["watch", "接近觀察"],
-    ["excluded", "排除清單"],
-  ];
-  const visibleLimit = 30;
+  const grouped = groupMarketScanResults(state.marketScan);
+  clampMarketListPages(grouped);
+  const activeTab = MARKET_DISCLOSURE_TABS.some((tab) => tab.key === state.activeMarketDisclosureTab)
+    ? state.activeMarketDisclosureTab
+    : "announced";
+  const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
+  const activeGroup = grouped[activeTab];
+  const filingSummary = state.marketScan.filingContext?.activeFinancialReport
+    ? `目前依 ${state.marketScan.filingContext.activeFinancialReport.label}（一般公司期限 ${state.marketScan.filingContext.activeFinancialReport.generalDeadline}${
+        state.marketScan.filingContext.activeFinancialReport.financialDeadline
+          ? `，金控期限 ${state.marketScan.filingContext.activeFinancialReport.financialDeadline}`
+          : ""
+      }）判斷當期已公告。`
+    : `目前非季報/年報申報窗口，主要依 ${state.marketScan.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
   target.innerHTML = `
     <div class="data-source-note">
       <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
       <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
     </div>
+    <div class="market-disclosure-tabs" aria-label="公告狀態分組">
+      ${MARKET_DISCLOSURE_TABS.map((tab) => {
+        const total = countMarketGroup(grouped[tab.key]);
+        return `
+          <button class="tab ${tab.key === activeTab ? "active" : ""}" type="button" data-market-disclosure-tab="${escapeHtml(tab.key)}">
+            ${escapeHtml(tab.title)} (${escapeHtml(total)})
+          </button>
+        `;
+      }).join("")}
+    </div>
+    <div class="data-source-note disclosure-note">
+      <strong>${escapeHtml(activeMeta.title)}</strong>
+      <span>${escapeHtml(filingSummary)} ${escapeHtml(activeMeta.note)} 各分類每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家；按 + 展開條件細節，也可匯出完整清單。</span>
+    </div>
     <div class="result-columns">
-      ${columns
-        .map(([key, title]) => {
-          const results = state.marketScan[key] || [];
-          const visibleResults = results.slice(0, visibleLimit);
-          const hiddenCount = Math.max(0, results.length - visibleResults.length);
-          return `
-            <div class="result-column">
-              <h3>${title} (${results.length})</h3>
-              ${visibleResults.length ? visibleResults.map((result) => renderAnalysisCard(result)).join("") : `<div class="empty-state">無資料</div>`}
-              ${hiddenCount ? `<div class="empty-state">尚有 ${escapeHtml(hiddenCount)} 筆結果未展開，避免主畫面過載。</div>` : ""}
-            </div>
-          `;
-        })
+      ${MARKET_RESULT_COLUMNS
+        .map(([key, title]) => renderMarketColumn(activeTab, key, title, activeGroup[key] || []))
         .join("")}
     </div>
   `;
@@ -484,7 +830,19 @@ function renderDataAndScheduler() {
         <article class="card">
           <h3 class="stock-title">官方 TWSE / TPEx</h3>
           <p class="muted">Universe：${escapeHtml(status.officialUniverseSize ?? "尚未啟用")}；月營收快照：${escapeHtml(status.officialMonthlySnapshotSize ?? "尚未啟用")}。</p>
-          <p class="muted">官方月營收已可掃描；季報、年報、PER、存貨週轉與毛利率仍會標示資料不足。</p>
+          <p class="muted">最新季損益：${escapeHtml(status.officialIncomeStatementSize ?? "尚未啟用")}；資產負債：${escapeHtml(status.officialBalanceSheetSize ?? "尚未啟用")}；估值：${escapeHtml(status.officialValuationSize ?? "尚未啟用")}。</p>
+          <p class="muted">官方歷史快取：${escapeHtml(status.officialHistoryRows ?? 0)} 筆；財報匯入：${escapeHtml(status.fundamentalsImportRows ?? 0)} 筆。</p>
+          <p class="muted">${escapeHtml(status.officialHistoricalFundamentals?.note || "已整合官方最新季 EPS、淨利、毛利率與 PER/PBR；缺口會列為待補。")}</p>
+        </article>
+        <article class="card">
+          <h3 class="stock-title">外部整合</h3>
+          <p class="muted">通知：${escapeHtml((state.integrationStatus?.notifications || []).filter((item) => item.configured).length)} 個已設定；券商同步：${state.integrationStatus?.broker?.configured ? "已設定" : "未設定"}；AI 摘要：${state.integrationStatus?.aiSummary?.configured ? "已設定" : "未設定"}。</p>
+          <p class="muted">未設定金鑰或授權前，系統不會對外發送訊息或讀取真實券商持股。</p>
+        </article>
+        <article class="card">
+          <h3 class="stock-title">回測資料</h3>
+          <p class="muted">狀態：${escapeHtml(state.backtestStatus?.status || "未讀取")}；交易數：${escapeHtml(state.backtestStatus?.metrics?.tradeCount ?? 0)}。</p>
+          <p class="muted">${escapeHtml(state.backtestStatus?.note || "匯入 data/backtest_history.csv 後可模擬進出場與績效。")}</p>
         </article>
       `;
     }
@@ -494,9 +852,10 @@ function renderDataAndScheduler() {
     if (!state.schedulerStatus) {
       schedulerTarget.innerHTML = `<strong>排程狀態：</strong><span>尚未讀取</span>`;
     } else {
+      const autoAction = state.schedulerAutoScan?.action || "未執行";
       schedulerTarget.innerHTML = `
         <strong>排程狀態：${escapeHtml(state.schedulerStatus.status)}</strong>
-        <span>事件：${escapeHtml((state.schedulerStatus.events || []).join("、") || "無")}；下一交易日：${escapeHtml(state.schedulerStatus.nextTradingDay)}</span>
+        <span>事件：${escapeHtml((state.schedulerStatus.events || []).join("、") || "無")}；下一交易日：${escapeHtml(state.schedulerStatus.nextTradingDay)}；自動掃描：${escapeHtml(autoAction)}</span>
       `;
     }
   }
@@ -512,7 +871,7 @@ function renderHoldingResults() {
   const missing = state.holdingsScan.missing || [];
   target.innerHTML = `
     <div class="stack">
-      ${(state.holdingsScan.results || []).map((result) => renderAnalysisCard(result, { allowExitAction: true })).join("")}
+      ${(state.holdingsScan.results || []).map((result) => renderAnalysisCard(result, { allowExitAction: true, disclosureGroup: "holding" })).join("")}
       ${missing
         .map(
           (item) => {
@@ -546,7 +905,7 @@ function showView(view) {
     holdings: ["我的持股", "管理本機持股，掃描續抱、加碼、警戒與出場。"],
     scan: ["掃描結果", "查看目前資料源與持股掃描結果。"],
     settings: ["設定", "調整掃描範圍與策略開關。"],
-    strategy: ["策略規則", "對照長輩懶人包的進出場規則。"],
+    strategy: ["策略規則", ""],
     data: ["資料與排程", "查看資料來源、官方 adapter 與事件驅動排程狀態。"],
   };
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -554,6 +913,7 @@ function showView(view) {
   const [title, subtitle] = titles[view] || titles.overview;
   $("#view-title").textContent = title;
   $("#view-subtitle").textContent = subtitle;
+  $("#view-subtitle").classList.toggle("hidden", !subtitle);
   if (view === "data") renderDataAndScheduler();
 }
 
@@ -582,11 +942,29 @@ async function loadSettings() {
 
 async function loadDataStatus() {
   try {
-    state.dataSourceStatus = await apiJson("/api/data-sources/status");
-    state.schedulerStatus = await apiJson("/api/scheduler/wakeup");
+    const [dataSourceStatus, schedulerStatus, schedulerAutoScan, integrationStatus, backtestStatus] = await Promise.all([
+      apiJson("/api/data-sources/status"),
+      apiJson("/api/scheduler/wakeup"),
+      apiJson("/api/scheduler/auto-scan?execute=false"),
+      apiJson("/api/integrations/status"),
+      apiJson("/api/backtest"),
+    ]);
+    state.dataSourceStatus = dataSourceStatus;
+    state.schedulerStatus = schedulerStatus;
+    state.schedulerAutoScan = schedulerAutoScan;
+    state.integrationStatus = integrationStatus;
+    state.backtestStatus = backtestStatus;
+    if (state.schedulerAutoScan?.scan) {
+      state.marketScan = state.schedulerAutoScan.scan;
+      resetMarketListUi();
+      renderMarketResults();
+    }
   } catch {
     state.dataSourceStatus = null;
     state.schedulerStatus = null;
+    state.schedulerAutoScan = null;
+    state.integrationStatus = null;
+    state.backtestStatus = null;
   }
   renderDataAndScheduler();
 }
@@ -618,6 +996,8 @@ function localSearch(query) {
 
 async function searchCompanies(query) {
   if (!normalizeText(query)) return [];
+  const localResults = localSearch(query);
+  if (localResults.length) return localResults;
   try {
     const payload = await apiJson(`/api/companies/search?q=${encodeURIComponent(query)}`);
     return normalizeCompanies(payload.items);
@@ -672,6 +1052,7 @@ async function scanMarket() {
       method: "POST",
       body: JSON.stringify({ settings: state.settings }),
     });
+    resetMarketListUi();
   } catch (error) {
     target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "掃描失敗")}</p>`;
     return;
@@ -694,6 +1075,30 @@ async function scanHoldings() {
     return;
   }
   renderHoldingResults();
+}
+
+async function exportReport(kind, reportFormat) {
+  const endpoint = kind === "holdings" ? "/api/reports/holdings" : "/api/reports/market";
+  const payload =
+    kind === "holdings"
+      ? { holdings: state.holdings, settings: state.settings }
+      : { settings: state.settings };
+  const response = await fetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const blob = await response.blob();
+  const extension = reportFormat === "csv" ? "csv" : "md";
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${kind}_scan_${new Date().toISOString().slice(0, 10)}.${extension}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function openOnboarding() {
@@ -828,6 +1233,10 @@ function bindEvents() {
 
   $("#scan-market-btn").addEventListener("click", scanMarket);
   $("#scan-holdings-btn").addEventListener("click", scanHoldings);
+  $("#export-market-md-btn").addEventListener("click", () => exportReport("market", "markdown"));
+  $("#export-market-csv-btn").addEventListener("click", () => exportReport("market", "csv"));
+  $("#export-holdings-md-btn").addEventListener("click", () => exportReport("holdings", "markdown"));
+  $("#export-holdings-csv-btn").addEventListener("click", () => exportReport("holdings", "csv"));
   $("#open-onboarding-btn").addEventListener("click", openOnboarding);
   $("#skip-onboarding-btn").addEventListener("click", () => {
     state.onboardingDraft = [];
@@ -866,6 +1275,16 @@ function bindEvents() {
     });
   });
 
+  const strategyStatusOptions = $("#strategy-status-options");
+  if (strategyStatusOptions) {
+    strategyStatusOptions.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-strategy-status]");
+      if (!button) return;
+      state.activeStrategyStatusKey = button.dataset.strategyStatus;
+      renderStrategyStatusDetail();
+    });
+  }
+
   $$(".tab").forEach((button) => {
     button.addEventListener("click", () => showTab(button.dataset.tab));
   });
@@ -876,6 +1295,46 @@ function bindEvents() {
     clearHolding(button.dataset.clearFromResult);
     scanHoldings();
     scanMarket();
+  });
+
+  $("#market-results").addEventListener("click", (event) => {
+    const tabButton = event.target.closest("[data-market-disclosure-tab]");
+    if (tabButton) {
+      state.activeMarketDisclosureTab = tabButton.dataset.marketDisclosureTab;
+      renderMarketResults();
+      return;
+    }
+    const pageButton = event.target.closest("[data-market-page-column]");
+    if (pageButton) {
+      const tabKey = pageButton.dataset.marketPageTab;
+      const columnKey = pageButton.dataset.marketPageColumn;
+      const direction = Number(pageButton.dataset.marketPageDir) || 0;
+      if (state.marketListPages?.[tabKey] && columnKey in state.marketListPages[tabKey]) {
+        state.marketListPages[tabKey][columnKey] = Math.max(0, getMarketPage(tabKey, columnKey) + direction);
+        renderMarketResults();
+      }
+      return;
+    }
+    const toggleButton = event.target.closest("[data-market-result-toggle]");
+    if (toggleButton) {
+      const resultId = toggleButton.dataset.marketResultToggle;
+      if (state.expandedMarketResultIds.has(resultId)) {
+        state.expandedMarketResultIds.delete(resultId);
+      } else {
+        state.expandedMarketResultIds.add(resultId);
+      }
+      renderMarketResults();
+      return;
+    }
+    const button = event.target.closest("[data-add-from-result]");
+    if (!button) return;
+    upsertHolding({
+      stockCode: button.dataset.addFromResult,
+      name: button.dataset.addName,
+      shares: 0,
+      averageCost: null,
+    });
+    showView("holdings");
   });
 
   $$(".nav-item").forEach((button) => {
@@ -891,6 +1350,7 @@ async function init() {
   await loadDataStatus();
   renderSelectedCompany();
   renderHoldings();
+  renderStrategyStatusDetail();
   renderMarketResults();
   renderHoldingResults();
   showView("overview");
@@ -906,12 +1366,25 @@ if (typeof document !== "undefined") {
 if (typeof module !== "undefined") {
   module.exports = {
     DEFAULT_COMPANIES,
+    STRATEGY_STATUS_DETAILS,
     findCompanyByCodeOrName,
+    findStrategyStatusDetail,
     normalizeCompany,
     normalizeCompanies,
+    normalizeHoldingRecord,
+    normalizeHoldingRecords,
     parseStockInput,
+    loadHoldingsFromStorage,
     normalizeText,
     renderAnalysisCard,
+    renderStrategyStatusDetail,
+    renderMarketResultRow,
+    renderMarketPagination,
+    groupMarketScanResults,
+    hasInsufficientData,
+    hasFinancialReportForContext,
+    hasPublishedScanData,
+    isPartialPublishedResult,
     safeText,
   };
 }

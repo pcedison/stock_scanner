@@ -49,8 +49,9 @@ def test_financial_company_included_still_requires_dedicated_strategy():
         ScannerSettings(exclude_financial_industry=False),
     )
 
-    assert result.status == "INSUFFICIENT_DATA"
-    assert any(reason.code == "FINANCIAL_STRATEGY_REQUIRED" for reason in result.reasons)
+    assert result.status == "ENTRY"
+    assert {reason.code for reason in result.reasons} >= {"FIN0", "FIN1", "FIN2", "FIN3", "FIN4", "FIN5", "FIN6"}
+    assert not any(reason.code == "E5" for reason in result.reasons)
 
 
 def test_spring_festival_guard_marks_watch_not_exit_for_revenue_drop_only():

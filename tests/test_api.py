@@ -51,6 +51,8 @@ def test_scan_market_returns_entry_watch_and_excluded_lists():
     assert response.status_code == 200
     assert any(item["stockCode"] == "2357" for item in payload["entry"])
     assert any(item["stockCode"] == "2881" for item in payload["excluded"])
+    assert "filingContext" in payload
+    assert "monthlyRevenuePeriod" in payload["filingContext"]
     assert all(item["reasons"] for group in ["entry", "watch", "excluded"] for item in payload[group])
 
 
@@ -82,6 +84,15 @@ def test_settings_api_round_trip():
         client.put("/api/settings", json=original)
 
 
+def test_manual_scan_disabled_blocks_manual_scan_api():
+    response = client.post(
+        "/api/scan/market",
+        json={"settings": ScannerSettings(use_mock_data=True, manual_scan_enabled=False).model_dump()},
+    )
+
+    assert response.status_code == 403
+
+
 def test_data_source_status_is_explicitly_mock():
     response = client.get("/api/data-sources/status")
     payload = response.json()
@@ -90,6 +101,7 @@ def test_data_source_status_is_explicitly_mock():
     assert payload["activeProvider"] == "MockDataProvider"
     assert payload["activeProviderIsRealtime"] is False
     assert payload["activeProviderIsFullMarket"] is False
+    assert payload["thirdPartyDataPlatforms"]["MacroMicro"]["enabled"] is False
 
 
 def test_scheduler_wakeup_endpoint():
@@ -99,3 +111,50 @@ def test_scheduler_wakeup_endpoint():
     assert response.status_code == 200
     assert payload["status"] == "WAKE"
     assert "SPRING_FESTIVAL_GUARD" in payload["events"]
+
+
+def test_scheduler_auto_scan_runs_when_enabled():
+    response = client.get("/api/scheduler/auto-scan?today=2026-02-13")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["action"] == "scanned"
+    assert payload["scan"]["entry"]
+
+
+def test_scheduler_auto_scan_can_report_without_executing_scan():
+    response = client.get("/api/scheduler/auto-scan?today=2026-02-13&execute=false")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["action"] == "ready"
+    assert payload["scan"] is None
+
+
+def test_report_endpoints_return_markdown_and_csv():
+    md_response = client.post("/api/reports/market?report_format=markdown", json={"settings": MOCK_SETTINGS.model_dump()})
+    csv_response = client.post(
+        "/api/reports/holdings?report_format=csv",
+        json={
+            "holdings": [{"stockCode": "3008", "name": "大立光", "shares": 1000, "averageCost": 2000}],
+            "settings": MOCK_SETTINGS.model_dump(),
+        },
+    )
+
+    assert md_response.status_code == 200
+    assert "# 台股市場掃描報告" in md_response.text
+    assert csv_response.status_code == 200
+    assert "stockCode,companyName,status" in csv_response.text
+
+
+def test_calendar_and_integrations_status_endpoints():
+    calendar_response = client.get("/api/calendar/2026")
+    integrations_response = client.get("/api/integrations/status")
+    backtest_response = client.get("/api/backtest")
+
+    assert calendar_response.status_code == 200
+    assert "2026-02-20" in calendar_response.json()["closedDates"]
+    assert integrations_response.status_code == 200
+    assert "notifications" in integrations_response.json()
+    assert backtest_response.status_code == 200
+    assert "metrics" in backtest_response.json()

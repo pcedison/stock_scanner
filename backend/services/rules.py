@@ -45,6 +45,87 @@ def _rule_missing(code: str, title: str, message: str) -> RuleResult:
     return RuleResult(code=code, title=title, passed=False, severity="INSUFFICIENT_DATA", message=message)
 
 
+def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
+    valuation = snapshot.valuation
+    quarterly = snapshot.quarterlyFinancial
+    rules = [
+        RuleResult(
+            code="FIN0",
+            title="金融業專用策略",
+            passed=True,
+            severity="INFO",
+            message="金融業不使用存貨週轉率，改以 ROE、逾放比、資本適足率、利差、股利與淨利趨勢檢查。",
+        ),
+        (
+            _rule_missing("FIN1", "ROE >= 8%", "缺少 ROE，不能確認金融業獲利品質。")
+            if valuation.roe is None
+            else RuleResult(
+                code="FIN1",
+                title="ROE >= 8%",
+                passed=valuation.roe >= 8,
+                severity="WATCH" if valuation.roe < 8 else "INFO",
+                message=f"ROE 為 {valuation.roe:.1f}%。",
+            )
+        ),
+        (
+            _rule_missing("FIN2", "逾放比 <= 2%", "缺少逾放比，不能確認授信資產品質。")
+            if valuation.nonPerformingLoanRatio is None
+            else RuleResult(
+                code="FIN2",
+                title="逾放比 <= 2%",
+                passed=valuation.nonPerformingLoanRatio <= 2,
+                severity="WARNING" if valuation.nonPerformingLoanRatio > 2 else "INFO",
+                message=f"逾放比為 {valuation.nonPerformingLoanRatio:.2f}%。",
+            )
+        ),
+        (
+            _rule_missing("FIN3", "資本適足率 >= 10.5%", "缺少資本適足率，不能確認資本緩衝。")
+            if valuation.capitalAdequacyRatio is None
+            else RuleResult(
+                code="FIN3",
+                title="資本適足率 >= 10.5%",
+                passed=valuation.capitalAdequacyRatio >= 10.5,
+                severity="WARNING" if valuation.capitalAdequacyRatio < 10.5 else "INFO",
+                message=f"資本適足率為 {valuation.capitalAdequacyRatio:.1f}%。",
+            )
+        ),
+        (
+            _rule_missing("FIN4", "淨利差為正", "缺少淨利差或利差資料，不能確認本業利差。")
+            if valuation.netInterestMargin is None
+            else RuleResult(
+                code="FIN4",
+                title="淨利差為正",
+                passed=valuation.netInterestMargin > 0,
+                severity="WATCH" if valuation.netInterestMargin <= 0 else "INFO",
+                message=f"淨利差為 {valuation.netInterestMargin:.2f}%。",
+            )
+        ),
+        (
+            _rule_missing("FIN5", "殖利率 >= 3%", "缺少殖利率，不能確認金融股股利政策。")
+            if valuation.dividendYield is None
+            else RuleResult(
+                code="FIN5",
+                title="殖利率 >= 3%",
+                passed=valuation.dividendYield >= 3,
+                severity="WATCH" if valuation.dividendYield < 3 else "INFO",
+                message=f"殖利率為 {valuation.dividendYield:.2f}%。",
+            )
+        ),
+        (
+            _rule_missing("FIN6", "最新季淨利年增率 >= 0%", "缺少淨利年增率，不能確認金融業獲利是否衰退。")
+            if quarterly.netIncomeYoY is None
+            else RuleResult(
+                code="FIN6",
+                title="最新季淨利年增率 >= 0%",
+                passed=quarterly.netIncomeYoY >= 0,
+                severity="WARNING" if quarterly.netIncomeYoY < 0 else "INFO",
+                message=f"最新季淨利年增率為 {quarterly.netIncomeYoY:.1f}%。",
+            )
+        ),
+    ]
+    return rules
+
+
 def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> list[RuleResult]:
     company = snapshot.company
     annual_5y = _latest_annual_net_incomes(snapshot, 5)
@@ -52,15 +133,7 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
     revenue_growth = _revenue_growth_for_entry(snapshot, settings)
 
     if company.isFinancial and not settings.exclude_financial_industry:
-        return [
-            RuleResult(
-                code="FINANCIAL_STRATEGY_REQUIRED",
-                title="金融業需使用專用策略",
-                passed=False,
-                severity="INSUFFICIENT_DATA",
-                message=f"{company.name} 屬於 {company.industryName}；目前不套用 PER/存貨週轉率的主策略，需另建金融業規則。",
-            )
-        ]
+        return _financial_entry_rules(snapshot)
 
     e3 = (
         _rule_missing("E3", "今年累計營收年增率 >= 50%", f"目前採用 {settings.revenue_growth_mode}，但缺少對應營收年增率資料。")
@@ -74,7 +147,7 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
     e4 = (
-        _rule_missing("E4", "本益比小於 15", "缺少 PER 資料，不能判定估值是否不貴。")
+        _rule_missing("E4", "本益比小於 15", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。")
         if snapshot.valuation.per is None
         else RuleResult(
             code="E4",
@@ -85,7 +158,7 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
     e5 = (
-        _rule_missing("E5", "存貨週轉率大於 2.5", "缺少存貨週轉率資料，不能判定庫存是否健康。")
+        _rule_missing("E5", "存貨週轉率大於 2.5", "存貨週轉率尚未自動補齊，不能判定庫存是否健康。")
         if snapshot.valuation.inventoryTurnover is None
         else RuleResult(
             code="E5",
@@ -97,7 +170,7 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
     )
 
     e1 = (
-        _rule_missing("E1", "近 5 年沒有虧損", "缺少近 5 年年度淨利資料，不能確認是否長期賺錢。")
+        _rule_missing("E1", "近 5 年沒有虧損", "近 5 年年度淨利尚未自動補齊，不能確認是否長期賺錢。")
         if len(annual_5y) < 5 or any(value is None for value in annual_5y)
         else RuleResult(
             code="E1",
@@ -108,7 +181,7 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
     e2 = (
-        _rule_missing("E2", "近 3 年淨利正成長", "缺少近 3 年年度淨利資料，不能確認是否連續成長。")
+        _rule_missing("E2", "近 3 年淨利正成長", "近 3 年年度淨利尚未自動補齊，不能確認是否連續成長。")
         if len(annual_3y) < 3 or any(value is None for value in annual_3y)
         else RuleResult(
             code="E2",
@@ -141,6 +214,36 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
             ),
         ),
     ]
+    if snapshot.quarterlyFinancial.eps is not None or snapshot.quarterlyFinancial.netIncome is not None:
+        rules.append(
+            RuleResult(
+                code="OFFICIAL_Q",
+                title="最新季官方財報資料",
+                passed=True,
+                severity="INFO",
+                message=(
+                    f"{snapshot.quarterlyFinancial.quarter} EPS "
+                    f"{snapshot.quarterlyFinancial.eps if snapshot.quarterlyFinancial.eps is not None else '缺資料'}，"
+                    f"淨利 {snapshot.quarterlyFinancial.netIncome if snapshot.quarterlyFinancial.netIncome is not None else '缺資料'}，"
+                    f"毛利率 {snapshot.quarterlyFinancial.grossMargin if snapshot.quarterlyFinancial.grossMargin is not None else '缺資料'}%。"
+                ),
+            )
+        )
+    if snapshot.valuation.per is not None or snapshot.valuation.priceBookRatio is not None:
+        rules.append(
+            RuleResult(
+                code="OFFICIAL_VALUATION",
+                title="官方估值資料",
+                passed=True,
+                severity="INFO",
+                message=(
+                    f"估值日期 {snapshot.valuation.valuationDate or '未標示'}，"
+                    f"PER {snapshot.valuation.per if snapshot.valuation.per is not None else '缺資料'}，"
+                    f"PBR {snapshot.valuation.priceBookRatio if snapshot.valuation.priceBookRatio is not None else '缺資料'}，"
+                    f"殖利率 {snapshot.valuation.dividendYield if snapshot.valuation.dividendYield is not None else '缺資料'}%。"
+                ),
+            )
+        )
     return rules
 
 
@@ -283,7 +386,7 @@ class RuleEngine:
             summary = "金融業或策略排除產業，未納入主策略。"
         elif any(reason.severity == "INSUFFICIENT_DATA" for reason in reasons):
             status = "INSUFFICIENT_DATA"
-            summary = "資料不足，不能硬給進場或排除結論。"
+            summary = "已有部分公開揭露資料，但完整策略因子待補，暫不硬給進場或排除結論。"
         elif all(reason.passed for reason in reasons):
             status = "ENTRY"
             summary = "所有進場條件通過，列入適合進場清單。"
@@ -323,7 +426,7 @@ class RuleEngine:
                 stockCode=company.stockCode,
                 companyName=company.name,
                 status="INSUFFICIENT_DATA",
-                summary="持股資料不足或金融業專用策略尚未建立，不能硬給續抱或出場結論。",
+                summary="已有部分公開揭露資料，但完整持股追蹤因子待補，暫不硬給續抱或出場結論。",
                 reasons=entry_reasons,
                 company=company,
             )
@@ -336,7 +439,7 @@ class RuleEngine:
 
         if any(reason.severity == "INSUFFICIENT_DATA" for reason in exit_reasons):
             status = "INSUFFICIENT_DATA"
-            summary = "持有追蹤資料不足，不能硬給續抱或出場結論。"
+            summary = "持有追蹤因子待補，暫不硬給續抱或出場結論。"
         elif high_priority_exit:
             status = "EXIT"
             summary = "已觸發高優先出場條件，建議出清或至少大幅降低部位。"

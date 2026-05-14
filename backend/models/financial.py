@@ -19,14 +19,27 @@ class MonthlyRevenue(BaseModel):
 
 class QuarterlyFinancial(BaseModel):
     quarter: str = Field(..., min_length=6)
+    eps: Optional[float] = None
     epsYoY: Optional[float]
+    netIncome: Optional[float] = None
     netIncomeYoY: Optional[float]
+    revenue: Optional[float] = None
+    grossMargin: Optional[float] = None
     grossMarginYoY: Optional[float] = None
+    operatingMargin: Optional[float] = None
 
 
 class Valuation(BaseModel):
     per: Optional[float]
+    priceBookRatio: Optional[float] = None
+    dividendYield: Optional[float] = None
+    valuationDate: Optional[str] = None
+    valuationFiscalQuarter: Optional[str] = None
     inventoryTurnover: Optional[float]
+    roe: Optional[float] = None
+    nonPerformingLoanRatio: Optional[float] = None
+    capitalAdequacyRatio: Optional[float] = None
+    netInterestMargin: Optional[float] = None
 
 
 class AnnualFinancial(BaseModel):

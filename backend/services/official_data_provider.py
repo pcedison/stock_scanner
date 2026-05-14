@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from threading import RLock
 from time import monotonic
 from typing import Optional
 
-from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
+from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
+from backend.adapters.fundamentals_import import LocalFundamentalsImportAdapter
+from backend.adapters.official_fundamentals import OfficialFundamentalsAdapter
+from backend.adapters.official_monthly_revenue import (
+    OfficialCompanyProfileRow,
+    OfficialMonthlyRevenueAdapter,
+    OfficialMonthlyRevenueRow,
+)
 from backend.models.company import Company
 from backend.models.financial import FundamentalSnapshot
 from backend.models.settings import ScannerSettings
@@ -12,112 +20,312 @@ from backend.services.data_provider import normalize_query
 
 def _is_financial_company(stock_code: str, industry_name: str, company_name: str) -> bool:
     text = f"{stock_code} {industry_name} {company_name}"
-    return stock_code.startswith("28") or "金融" in text or "銀行" in text or "保險" in text
+    return stock_code.startswith("28") or any(keyword in text for keyword in ("金融", "銀行", "保險", "金控", "證券"))
 
 
-def _quarter_from_month(month: str) -> str:
+def _latest_completed_quarter_from_month(month: str) -> str:
     try:
         year = int(month[:4])
         month_number = int(month[-2:])
     except ValueError:
         return "0000Q0"
     quarter = ((month_number - 1) // 3) + 1
-    return f"{year}Q{quarter}"
+    latest_completed = quarter - 1
+    if latest_completed == 0:
+        return f"{year - 1}Q4"
+    return f"{year}Q{latest_completed}"
+
+
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 class OfficialDataProvider:
-    """Official TWSE/TPEx provider for public universe and latest monthly revenue.
+    """Official TWSE/TPEx provider with separate light and heavy caches.
 
-    This provider intentionally returns incomplete fundamental snapshots until the
-    quarterly, annual, valuation, and inventory adapters are implemented. The rule
-    engine then emits INSUFFICIENT_DATA instead of pretending those metrics exist.
+    Company search only needs the official universe. Full market scans need
+    monthly revenue, statements, valuations, imports, and local history. Keeping
+    those refresh paths separate prevents typing in the search box or loading a
+    status panel from triggering a full financial-data refresh.
     """
 
-    def __init__(self, adapter: Optional[OfficialMonthlyRevenueAdapter] = None, ttl_seconds: int = 900) -> None:
+    def __init__(
+        self,
+        adapter: Optional[OfficialMonthlyRevenueAdapter] = None,
+        fundamentals_adapter: Optional[OfficialFundamentalsAdapter] = None,
+        import_adapter: Optional[LocalFundamentalsImportAdapter] = None,
+        history_store: Optional[OfficialFundamentalsHistoryStore] = None,
+        ttl_seconds: int = 900,
+    ) -> None:
         self.adapter = adapter or OfficialMonthlyRevenueAdapter()
+        self.fundamentals_adapter = fundamentals_adapter or OfficialFundamentalsAdapter()
+        self.import_adapter = import_adapter or LocalFundamentalsImportAdapter()
+        self.history_store = history_store or OfficialFundamentalsHistoryStore()
         self.ttl_seconds = ttl_seconds
-        self._expires_at = 0.0
+        self._profiles_expires_at = 0.0
+        self._snapshots_expires_at = 0.0
         self._companies: list[Company] = []
         self._snapshots: dict[str, FundamentalSnapshot] = {}
         self._last_error: str | None = None
+        self._source_status: dict = {}
+        self._refresh_lock = RLock()
 
-    def _needs_refresh(self) -> bool:
-        return monotonic() >= self._expires_at or not self._companies
+    def _needs_profiles_refresh(self) -> bool:
+        return monotonic() >= self._profiles_expires_at or not self._companies
+
+    def _needs_snapshots_refresh(self) -> bool:
+        return monotonic() >= self._snapshots_expires_at or not self._snapshots
+
+    def _company_from_profile(
+        self,
+        profile: OfficialCompanyProfileRow,
+        revenue: OfficialMonthlyRevenueRow | None = None,
+    ) -> Company | None:
+        if not profile.stockCode or not profile.stockCode.isdigit():
+            return None
+        company_name = (
+            revenue.companyName if revenue and revenue.companyName else profile.companyShortName or profile.companyName
+        ).strip()
+        industry_name = (
+            revenue.industryName if revenue and revenue.industryName else profile.industryName or profile.industryCode
+        ).strip()
+        company_name = company_name or profile.stockCode
+        industry_name = industry_name or "Unknown industry"
+        return Company(
+            stockCode=profile.stockCode,
+            name=company_name,
+            market=profile.market,
+            industryName=industry_name,
+            isFinancial=_is_financial_company(profile.stockCode, industry_name, company_name),
+        )
+
+    def refresh_companies(self, force: bool = False) -> None:
+        if not force and not self._needs_profiles_refresh():
+            return
+        with self._refresh_lock:
+            if not force and not self._needs_profiles_refresh():
+                return
+            profiles = self.adapter.fetch_company_profiles()
+            companies = [company for profile in profiles if (company := self._company_from_profile(profile))]
+            self._companies = sorted(companies, key=lambda company: company.stockCode)
+            self._profiles_expires_at = monotonic() + self.ttl_seconds
+            self._last_error = None
+            self._source_status = {**self._source_status, "companyProfiles": len(profiles)}
 
     def refresh(self, force: bool = False) -> None:
-        if not force and not self._needs_refresh():
+        if not force and not self._needs_snapshots_refresh():
             return
+        with self._refresh_lock:
+            if not force and not self._needs_snapshots_refresh():
+                return
 
-        profiles = self.adapter.fetch_company_profiles()
-        revenue_rows = self.adapter.fetch_monthly_revenue()
-        revenue_by_code = {row.stockCode: row for row in revenue_rows if row.stockCode}
-        companies: list[Company] = []
-        snapshots: dict[str, FundamentalSnapshot] = {}
+            profiles = self.adapter.fetch_company_profiles()
+            revenue_rows = self.adapter.fetch_monthly_revenue()
+            fundamentals = self.fundamentals_adapter.fetch_bundle()
+            imported = self.import_adapter.fetch_bundle()
+            try:
+                history_status = self.history_store.merge_latest(fundamentals.incomes, fundamentals.balances)
+            except Exception as exc:  # pragma: no cover - depends on local filesystem state
+                history_status = {"enabled": False, "path": str(self.history_store.path), "error": str(exc)}
+            revenue_by_code = {row.stockCode: row for row in revenue_rows if row.stockCode}
+            companies: list[Company] = []
+            snapshots: dict[str, FundamentalSnapshot] = {}
 
-        for profile in profiles:
-            if not profile.stockCode or not profile.stockCode.isdigit():
-                continue
-            revenue = revenue_by_code.get(profile.stockCode)
-            company_name = (revenue.companyName if revenue and revenue.companyName else profile.companyShortName or profile.companyName).strip()
-            industry_name = (revenue.industryName if revenue and revenue.industryName else profile.industryName or profile.industryCode).strip()
-            if not company_name:
-                company_name = profile.stockCode
-            if not industry_name:
-                industry_name = "未分類"
+            for profile in profiles:
+                revenue = revenue_by_code.get(profile.stockCode)
+                company = self._company_from_profile(profile, revenue)
+                if company is None:
+                    continue
+                companies.append(company)
 
-            company = Company(
-                stockCode=profile.stockCode,
-                name=company_name,
-                market=profile.market,
-                industryName=industry_name,
-                isFinancial=_is_financial_company(profile.stockCode, industry_name, company_name),
-            )
-            companies.append(company)
+                imported_monthly = imported.monthly.get(company.stockCode)
+                snapshot_month = _first_present(
+                    imported_monthly.month if imported_monthly else None,
+                    revenue.dataMonth if revenue else None,
+                )
+                if not snapshot_month:
+                    continue
 
-            if revenue and revenue.dataMonth:
+                income = fundamentals.incomes.get(company.stockCode)
+                balance = fundamentals.balances.get(company.stockCode)
+                valuation = fundamentals.valuations.get(company.stockCode)
+                imported_quarterly = imported.quarterly.get(company.stockCode)
+                imported_valuation = imported.valuations.get(company.stockCode)
+                latest_quarter = _latest_completed_quarter_from_month(snapshot_month)
+                if income and income.fiscalYear and income.quarter:
+                    latest_quarter = f"{income.fiscalYear}Q{income.quarter}"
+                if imported_quarterly and imported_quarterly.period:
+                    latest_quarter = imported_quarterly.period
+
+                history_quarter = self.history_store.quarter(company.stockCode, latest_quarter)
+                if history_quarter is None and not (income and income.fiscalYear and income.quarter) and not (
+                    imported_quarterly and imported_quarterly.period
+                ):
+                    history_quarter = self.history_store.latest_quarter(company.stockCode)
+                    if history_quarter:
+                        latest_quarter = history_quarter.period
+                history_yoy = self.history_store.quarterly_yoy(company.stockCode, latest_quarter)
+
+                current_inventory_turnover = None
+                if income and balance and income.costOfRevenue is not None and balance.inventory not in (None, 0):
+                    annualized_factor = 4 / income.quarter if income.quarter else 1
+                    current_inventory_turnover = (income.costOfRevenue * annualized_factor) / balance.inventory
+                inventory_turnover = _first_present(
+                    imported_valuation.inventoryTurnover if imported_valuation else None,
+                    self.history_store.inventory_turnover(company.stockCode, latest_quarter),
+                    current_inventory_turnover,
+                )
+
+                annuals = []
+                annuals.extend(self.history_store.annual_financials(company.stockCode))
+                if income and income.quarter == 4 and income.fiscalYear:
+                    annuals.append({"year": income.fiscalYear, "netIncome": income.netIncome})
+                annuals.extend(
+                    {"year": row.year, "netIncome": row.netIncome}
+                    for row in imported.annuals.get(company.stockCode, [])
+                )
+                annuals = list({row["year"]: row for row in sorted(annuals, key=lambda item: item["year"])}.values())
+
                 snapshots[company.stockCode] = FundamentalSnapshot.model_validate(
                     {
                         "company": company.model_dump(),
                         "monthlyRevenue": {
-                            "month": revenue.dataMonth,
-                            "monthlyRevenueYoY": revenue.monthlyRevenueYoY,
-                            "previousMonthRevenueYoY": None,
-                            "cumulativeRevenueYoY": revenue.cumulativeRevenueYoY,
-                            "trailingThreeMonthAverageYoY": None,
-                            "janFebCombinedRevenueYoY": None,
-                            "isSpringFestivalMonth": False,
+                            "month": snapshot_month,
+                            "monthlyRevenueYoY": _first_present(
+                                imported_monthly.monthlyRevenueYoY if imported_monthly else None,
+                                revenue.monthlyRevenueYoY if revenue else None,
+                            ),
+                            "previousMonthRevenueYoY": imported_monthly.previousMonthRevenueYoY
+                            if imported_monthly
+                            else None,
+                            "cumulativeRevenueYoY": _first_present(
+                                imported_monthly.cumulativeRevenueYoY if imported_monthly else None,
+                                revenue.cumulativeRevenueYoY if revenue else None,
+                            ),
+                            "trailingThreeMonthAverageYoY": imported_monthly.trailingThreeMonthAverageYoY
+                            if imported_monthly
+                            else None,
+                            "janFebCombinedRevenueYoY": imported_monthly.janFebCombinedRevenueYoY
+                            if imported_monthly
+                            else None,
+                            "isSpringFestivalMonth": imported_monthly.isSpringFestivalMonth
+                            if imported_monthly and imported_monthly.isSpringFestivalMonth is not None
+                            else False,
                         },
                         "quarterlyFinancial": {
-                            "quarter": _quarter_from_month(revenue.dataMonth),
-                            "epsYoY": None,
-                            "netIncomeYoY": None,
-                            "grossMarginYoY": None,
+                            "quarter": latest_quarter,
+                            "eps": _first_present(
+                                imported_quarterly.eps if imported_quarterly else None,
+                                income.eps if income else None,
+                                history_quarter.eps if history_quarter else None,
+                            ),
+                            "epsYoY": _first_present(
+                                imported_quarterly.epsYoY if imported_quarterly else None,
+                                history_yoy.get("epsYoY"),
+                            ),
+                            "netIncome": _first_present(
+                                imported_quarterly.netIncome if imported_quarterly else None,
+                                income.netIncome if income else None,
+                                history_quarter.netIncome if history_quarter else None,
+                            ),
+                            "netIncomeYoY": _first_present(
+                                imported_quarterly.netIncomeYoY if imported_quarterly else None,
+                                history_yoy.get("netIncomeYoY"),
+                            ),
+                            "revenue": _first_present(
+                                imported_quarterly.revenue if imported_quarterly else None,
+                                income.revenue if income else None,
+                                history_quarter.revenue if history_quarter else None,
+                            ),
+                            "grossMargin": _first_present(
+                                imported_quarterly.grossMargin if imported_quarterly else None,
+                                income.grossMargin if income else None,
+                                history_quarter.grossMargin if history_quarter else None,
+                            ),
+                            "grossMarginYoY": _first_present(
+                                imported_quarterly.grossMarginYoY if imported_quarterly else None,
+                                history_yoy.get("grossMarginYoY"),
+                            ),
+                            "operatingMargin": _first_present(
+                                imported_quarterly.operatingMargin if imported_quarterly else None,
+                                income.operatingMargin if income else None,
+                            ),
                         },
-                        "valuation": {"per": None, "inventoryTurnover": None},
-                        "annualFinancials": [],
+                        "valuation": {
+                            "per": _first_present(
+                                imported_valuation.per if imported_valuation else None,
+                                valuation.per if valuation else None,
+                            ),
+                            "priceBookRatio": _first_present(
+                                imported_valuation.priceBookRatio if imported_valuation else None,
+                                valuation.priceBookRatio if valuation else None,
+                            ),
+                            "dividendYield": _first_present(
+                                imported_valuation.dividendYield if imported_valuation else None,
+                                valuation.dividendYield if valuation else None,
+                            ),
+                            "valuationDate": _first_present(
+                                imported_valuation.valuationDate if imported_valuation else None,
+                                valuation.date if valuation else None,
+                            ),
+                            "valuationFiscalQuarter": _first_present(
+                                imported_valuation.valuationFiscalQuarter if imported_valuation else None,
+                                valuation.fiscalQuarter if valuation else None,
+                            ),
+                            "inventoryTurnover": inventory_turnover,
+                            "roe": imported_valuation.roe if imported_valuation else None,
+                            "nonPerformingLoanRatio": imported_valuation.nonPerformingLoanRatio
+                            if imported_valuation
+                            else None,
+                            "capitalAdequacyRatio": imported_valuation.capitalAdequacyRatio
+                            if imported_valuation
+                            else None,
+                            "netInterestMargin": imported_valuation.netInterestMargin if imported_valuation else None,
+                        },
+                        "annualFinancials": annuals,
                     }
                 )
 
-        self._companies = sorted(companies, key=lambda company: company.stockCode)
-        self._snapshots = snapshots
-        self._expires_at = monotonic() + self.ttl_seconds
-        self._last_error = None
+            now = monotonic()
+            self._companies = sorted(companies, key=lambda company: company.stockCode)
+            self._snapshots = snapshots
+            self._profiles_expires_at = now + self.ttl_seconds
+            self._snapshots_expires_at = now + self.ttl_seconds
+            self._last_error = None
+            self._source_status = {
+                "companyProfiles": len(profiles),
+                "monthlyRevenueRows": len(revenue_rows),
+                **fundamentals.status,
+                "fundamentalsImport": imported.status,
+                "officialFundamentalsHistory": history_status,
+            }
 
-    def _safe_refresh(self) -> None:
+    def _safe_refresh_companies(self) -> None:
         try:
-            self.refresh()
+            self.refresh_companies()
         except Exception as exc:  # pragma: no cover - depends on official network availability
             self._last_error = str(exc)
             if not self._companies:
                 self._companies = []
+                self._source_status = {**self._source_status, "companyProfiles": 0}
+
+    def _safe_refresh_snapshots(self) -> None:
+        try:
+            self.refresh()
+        except Exception as exc:  # pragma: no cover - depends on official network availability
+            self._last_error = str(exc)
+            if not self._snapshots:
                 self._snapshots = {}
 
     def list_companies(self) -> list[Company]:
-        self._safe_refresh()
+        self._safe_refresh_companies()
         return list(self._companies)
 
     def search_companies(self, query: str, limit: int = 20) -> list[Company]:
-        self._safe_refresh()
+        self._safe_refresh_companies()
         normalized = normalize_query(query)
         if not normalized:
             return []
@@ -137,15 +345,15 @@ class OfficialDataProvider:
         return [company for _, company in sorted(scored, key=lambda item: (item[0], item[1].stockCode))[:limit]]
 
     def get_company(self, stock_code: str) -> Optional[Company]:
-        self._safe_refresh()
+        self._safe_refresh_companies()
         return next((company for company in self._companies if company.stockCode == stock_code), None)
 
     def get_snapshot(self, stock_code: str) -> Optional[FundamentalSnapshot]:
-        self._safe_refresh()
+        self._safe_refresh_snapshots()
         return self._snapshots.get(stock_code)
 
     def iter_snapshots(self, settings: ScannerSettings) -> list[FundamentalSnapshot]:
-        self._safe_refresh()
+        self._safe_refresh_snapshots()
         snapshots = []
         for snapshot in self._snapshots.values():
             if snapshot.company.market == "TWSE" and not settings.scan_twse:
@@ -155,11 +363,17 @@ class OfficialDataProvider:
             snapshots.append(snapshot)
         return sorted(snapshots, key=lambda snapshot: snapshot.company.stockCode)
 
-    def status(self) -> dict:
-        self._safe_refresh()
+    def status(self, refresh: bool = False) -> dict:
+        if refresh:
+            self._safe_refresh_snapshots()
+        elif not self._companies:
+            self._safe_refresh_companies()
+        history_status = self._source_status.get("officialFundamentalsHistory") or self.history_store.status()
+        source_status = {**self._source_status, "officialFundamentalsHistory": history_status}
         return {
             "companies": len(self._companies),
             "monthlySnapshots": len(self._snapshots),
             "cacheTtlSeconds": self.ttl_seconds,
             "lastError": self._last_error,
+            "sourceStatus": source_status,
         }

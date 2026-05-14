@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,7 +77,10 @@ class OfficialMonthlyRevenueAdapter:
         self.timeout = timeout
 
     def _fetch_json(self, url: str) -> list[dict[str, Any]]:
-        response = httpx.get(url, timeout=self.timeout)
+        try:
+            response = httpx.get(url, timeout=self.timeout)
+        except httpx.TransportError:
+            response = httpx.get(url, timeout=self.timeout, verify=False)
         response.raise_for_status()
         rows = response.json()
         return rows if isinstance(rows, list) else []
@@ -106,7 +110,10 @@ class OfficialMonthlyRevenueAdapter:
         return self._fetch_monthly_revenue(TPEX_MONTHLY_REVENUE_URL, "TPEX")
 
     def fetch_monthly_revenue(self) -> list[OfficialMonthlyRevenueRow]:
-        return [*self.fetch_twse_monthly_revenue(), *self.fetch_tpex_monthly_revenue()]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            twse = executor.submit(self.fetch_twse_monthly_revenue)
+            tpex = executor.submit(self.fetch_tpex_monthly_revenue)
+            return [*twse.result(), *tpex.result()]
 
     def fetch_twse_company_profiles(self) -> list[OfficialCompanyProfileRow]:
         rows = self._fetch_json(TWSE_COMPANY_PROFILE_URL)
@@ -139,7 +146,10 @@ class OfficialMonthlyRevenueAdapter:
         ]
 
     def fetch_company_profiles(self) -> list[OfficialCompanyProfileRow]:
-        return [*self.fetch_twse_company_profiles(), *self.fetch_tpex_company_profiles()]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            twse = executor.submit(self.fetch_twse_company_profiles)
+            tpex = executor.submit(self.fetch_tpex_company_profiles)
+            return [*twse.result(), *tpex.result()]
 
     def health(self) -> dict:
         status = {}
