@@ -32,4 +32,18 @@ CREATE TABLE IF NOT EXISTS app_kv (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS refresh_jobs (
+    id TEXT PRIMARY KEY,
+    job_type TEXT NOT NULL,
+    cache_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    queued_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL,
+    error TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status ON refresh_jobs(job_type, status, queued_at);

@@ -1132,6 +1132,41 @@ function renderMarketColumn(groupKey, columnKey, title, results) {
   `;
 }
 
+function formatCacheTime(value) {
+  if (!value) return "尚無紀錄";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "尚無紀錄";
+  return date.toLocaleString();
+}
+
+function cacheRefreshLabel(status = "") {
+  const labels = {
+    completed_sync: "已同步建立快取",
+    fresh: "快取仍有效",
+    queued: "已排入背景更新",
+    running: "背景更新中",
+    success: "背景更新完成",
+    failed: "背景更新失敗",
+    cache_only: "僅讀取快取",
+  };
+  return labels[status] || status || "未請求更新";
+}
+
+function renderScanCacheStatus(scan = {}) {
+  const cache = scan.cacheStatus;
+  if (!cache) return "";
+  const staleText = cache.isStale ? "快取已過期，會低負載補資料" : "快取仍在有效期限內";
+  return `
+    <div class="cache-status-note">
+      <span><strong>快取狀態</strong>：${cache.cacheHit ? "先讀已存快取" : "同步建立新快取"}</span>
+      <span>刷新狀態：${escapeHtml(cacheRefreshLabel(cache.refreshStatus))}</span>
+      <span>資料時間：${escapeHtml(formatCacheTime(cache.storedAt))}</span>
+      <span>下次檢查：${escapeHtml(formatCacheTime(cache.nextRefreshAfter))}</span>
+      <span>${escapeHtml(staleText)}</span>
+    </div>
+  `;
+}
+
 function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
@@ -1162,6 +1197,7 @@ function renderMarketResults() {
       <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
       <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
     </div>
+    ${renderScanCacheStatus(state.marketScan)}
     <div class="market-disclosure-tabs" aria-label="公告狀態分組">
       ${MARKET_DISCLOSURE_TABS.map((tab) => {
         const total = countMarketGroup(grouped[tab.key]);

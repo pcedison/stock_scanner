@@ -19,6 +19,9 @@ Pages 透過 `frontend/functions/api/[[path]].js` 將 `/api/*` 代理到 Worker�
 - R2 也保存 `official/official_fundamentals_history.json`、`official/official_history_backfill_progress.json` 與壓縮種子檔。
 - Git repo 只提交壓縮後的 `data/official_cache_seed_2026-05-14.zip` 與 sha256，不提交大型展開 JSON。
 - GitHub Actions 會從壓縮快取重建 Cloudflare seed，不會每次 push 都重新全量爬官方網站。
+- 掃描採用 stale-while-revalidate：使用者按搜尋時先讀 R2 或本地 JSON 快取立即回傳；若 manifest 已超過更新窗口，系統只建立一筆 refresh job，避免多人同時觸發重複抓取。
+- 本機 FastAPI 會用單一背景 worker 做增量刷新並寫入 `data/market_scan_cache.json`；Cloudflare 版會在 D1 `refresh_jobs` 記錄待刷新工作，由排程 GitHub Actions 低頻重建 seed 並標記完成。
+- 公告窗口會縮短更新間隔：財報期限前後約 2 小時檢查一次，月營收窗口約 3 小時一次，平時約 12 小時一次。
 
 ## 一次性人工介入
 

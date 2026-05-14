@@ -19,6 +19,7 @@ SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
+TAIPEI_TZ = timezone(timedelta(hours=8))
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,
@@ -34,6 +35,29 @@ DEFAULT_SETTINGS = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_time(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def cache_key_from_manifest(manifest):
+    seed = json.dumps(
+        {
+            "generatedAt": manifest.get("generatedAt"),
+            "counts": manifest.get("counts", {}),
+            "latestRevenuePeriod": manifest.get("latestRevenuePeriod"),
+            "latestFinancialPeriod": manifest.get("latestFinancialPeriod"),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
 def json_response(payload, status=200, headers=None):
@@ -195,6 +219,13 @@ class Api:
             manifest = await self.r2_json("public/manifest.json", {})
             return json_response({"status": "ok", "runtime": "cloudflare-python-worker", "time": utc_now(), "cache": manifest})
 
+        if path == "/api/cache/status" and request.method == "GET":
+            return json_response(await self.cache_status())
+
+        if path == "/api/cache/refresh" and request.method == "POST":
+            manifest = await self.r2_json("public/manifest.json", {})
+            return json_response(await self.ensure_refresh_job(manifest, force=True))
+
         if path == "/api/data-sources/status" and request.method == "GET":
             return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}))
 
@@ -205,7 +236,11 @@ class Api:
             return await self.search_companies(query)
 
         if path == "/api/scan/market" and request.method == "POST":
-            return json_response(await self.r2_json("public/market_scan_latest.json", self.empty_market_scan()))
+            manifest = await self.r2_json("public/manifest.json", {})
+            scan = await self.r2_json("public/market_scan_latest.json", self.empty_market_scan())
+            refresh_status = await self.ensure_refresh_job(manifest)
+            scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
+            return json_response(scan)
 
         if path.startswith("/api/analyze/") and request.method == "POST":
             stock_code = path.rsplit("/", 1)[-1]
@@ -305,6 +340,97 @@ class Api:
             return fallback
         text = await obj.text()
         return json.loads(text)
+
+    def cache_policy(self):
+        now = datetime.now(TAIPEI_TZ)
+        financial_deadlines = {(3, 31), (5, 15), (5, 30), (8, 31), (11, 14)}
+        in_financial_window = any(
+            month == now.month and abs((now.date() - now.replace(month=month, day=day).date()).days) <= 3
+            for month, day in financial_deadlines
+        )
+        if in_financial_window:
+            return {"strategy": "stale_while_revalidate", "reason": "financial_report_window", "minIntervalSeconds": 7200}
+        if 8 <= now.day <= 12:
+            return {"strategy": "stale_while_revalidate", "reason": "monthly_revenue_window", "minIntervalSeconds": 10800}
+        return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
+
+    def cache_status_from_manifest(self, manifest, refresh_status):
+        policy = self.cache_policy()
+        generated_at = manifest.get("generatedAt")
+        generated_time = parse_time(generated_at)
+        next_refresh = None
+        is_stale = True
+        if generated_time:
+            next_refresh_time = generated_time.astimezone(timezone.utc) + timedelta(seconds=policy["minIntervalSeconds"])
+            next_refresh = next_refresh_time.isoformat()
+            is_stale = datetime.now(timezone.utc) >= next_refresh_time
+        return {
+            "strategy": "stale_while_revalidate",
+            "source": "cloudflare_r2",
+            "cacheKey": cache_key_from_manifest(manifest),
+            "cacheHit": True,
+            "storedAt": generated_at,
+            "servedAt": utc_now(),
+            "isStale": is_stale,
+            "refreshStatus": refresh_status.get("status", "unknown"),
+            "refreshReason": refresh_status.get("reason", policy["reason"]),
+            "nextRefreshAfter": next_refresh,
+            "latestRevenuePeriod": manifest.get("latestRevenuePeriod"),
+            "latestFinancialPeriod": manifest.get("latestFinancialPeriod"),
+        }
+
+    async def ensure_refresh_job(self, manifest, force=False):
+        policy = self.cache_policy()
+        status = self.cache_status_from_manifest(manifest, {"status": "checking", "reason": policy["reason"]})
+        if not force and not status["isStale"]:
+            return {"status": "fresh", "reason": policy["reason"]}
+        cache_key = status["cacheKey"]
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        existing = await self.db_first(
+            """
+            SELECT id, status, reason, queued_at
+            FROM refresh_jobs
+            WHERE job_type = ? AND status IN ('queued', 'running') AND queued_at > ?
+            ORDER BY queued_at DESC
+            LIMIT 1
+            """,
+            "market_scan",
+            cutoff,
+        )
+        if existing:
+            return {"status": existing["status"], "reason": existing["reason"], "jobId": existing["id"], "queuedAt": existing["queued_at"]}
+        job_id = secrets.token_hex(16)
+        now = utc_now()
+        await self.db_run(
+            """
+            INSERT INTO refresh_jobs (id, job_type, cache_key, status, reason, queued_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            job_id,
+            "market_scan",
+            cache_key,
+            "queued",
+            policy["reason"],
+            now,
+            now,
+        )
+        return {"status": "queued", "reason": policy["reason"], "jobId": job_id, "queuedAt": now}
+
+    async def cache_status(self):
+        manifest = await self.r2_json("public/manifest.json", {})
+        jobs = await self.db_all(
+            """
+            SELECT id, job_type, cache_key, status, reason, queued_at, started_at, finished_at, updated_at, error
+            FROM refresh_jobs
+            ORDER BY queued_at DESC
+            LIMIT 10
+            """
+        )
+        return {
+            "marketScan": self.cache_status_from_manifest(manifest, {"status": "not_requested"}),
+            "manifest": manifest,
+            "recentJobs": jobs,
+        }
 
     async def db_run(self, sql: str, *params):
         statement = self.env.DB.prepare(sql)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ from backend.services.official_data_provider import OfficialDataProvider
 from backend.services.reporting import render_csv_report, render_markdown_report
 from backend.services.rules import RuleEngine
 from backend.services.scheduler import should_wake_up
+from backend.services.scan_cache import ScanCacheService
 from backend.services.settings_service import load_settings, save_settings
 
 
@@ -42,6 +44,7 @@ app.add_middleware(
 mock_provider = MockDataProvider()
 official_provider = OfficialDataProvider()
 history_backfill_service = OfficialHistoryBackfillService(official_provider.history_store)
+scan_cache_service = ScanCacheService()
 engine = RuleEngine()
 auth_db_path = os.getenv("AUTH_DB_PATH")
 auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()
@@ -55,6 +58,7 @@ class AnalyzeRequest(BaseModel):
 
 class ScanMarketRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
+    refreshMode: str = Field(default="auto", pattern="^(auto|force|cache_only)$")
 
 
 class ScanHoldingsRequest(BaseModel):
@@ -159,6 +163,12 @@ def _scan_market_payload(settings: ScannerSettings) -> dict:
         "watch": watch,
         "excluded": excluded,
     }
+
+
+def _scan_market_payload_after_official_refresh(settings: ScannerSettings) -> dict:
+    if not settings.use_mock_data:
+        official_provider.refresh(force=True)
+    return _scan_market_payload(settings)
 
 
 def _scan_holdings_payload(holdings: list[Holding], settings: ScannerSettings) -> dict:
@@ -286,6 +296,7 @@ def data_sources_status(check_network: bool = False) -> dict:
             "cache": official_status["sourceStatus"].get("officialFundamentalsHistory") if official_status else None,
             "note": "TWSE/TPEx OpenAPI latest statement rows are persisted locally. Historical gaps can be backfilled from the official MOPS JSON APIs via POST /api/data-sources/backfill-history, or by data/fundamentals_import.csv when a licensed/manual source is preferred.",
         },
+        "marketScanCache": scan_cache_service.status(settings if not settings.use_mock_data else None),
         "officialMonthlyRevenueAdapters": {
             "TWSE_COMPANY_PROFILE": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
             "TPEX_COMPANY_PROFILE": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
@@ -416,7 +427,24 @@ def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(defa
 def scan_market(payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
     settings = _effective_settings(payload.settings if payload else None)
     _ensure_manual_scan_enabled(settings)
-    return _scan_market_payload(settings)
+    if settings.use_mock_data:
+        return _scan_market_payload(settings)
+    refresh_mode = payload.refreshMode if payload else "auto"
+    return scan_cache_service.get_or_refresh(
+        settings,
+        build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
+        build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
+        refresh_mode=refresh_mode,
+    )
+
+
+@app.get("/api/cache/status")
+def cache_status() -> dict:
+    settings = load_settings()
+    return {
+        "marketScan": scan_cache_service.status(settings if not settings.use_mock_data else None),
+        "officialHistory": official_provider.history_store.status(),
+    }
 
 
 @app.post("/api/scan/holdings")

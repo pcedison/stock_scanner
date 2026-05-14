@@ -1116,6 +1116,24 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.cache-status-note {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.cache-status-note span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .modal-backdrop {
   position: fixed;
   z-index: 20;
@@ -1224,7 +1242,8 @@ textarea {
 
   .summary-grid,
   .result-columns,
-  .data-status-grid {
+  .data-status-grid,
+  .cache-status-note {
     grid-template-columns: 1fr;
   }
 
