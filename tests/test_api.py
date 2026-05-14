@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import pytest
+from uuid import uuid4
 
 from backend.main import app
 from backend.models.settings import ScannerSettings
@@ -82,6 +83,35 @@ def test_settings_api_round_trip():
         assert get_response.json()["manual_scan_enabled"] is False
     finally:
         client.put("/api/settings", json=original)
+
+
+def test_lightweight_auth_persists_server_side_holdings():
+    test_client = TestClient(app)
+    username = f"user_{uuid4().hex[:10]}"
+    password = "test-password-123"
+
+    register_response = test_client.post("/api/auth/register", json={"username": username, "password": password})
+    assert register_response.status_code == 200
+    assert register_response.json()["authenticated"] is True
+
+    replace_response = test_client.put(
+        "/api/me/holdings",
+        json={"holdings": [{"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600}]},
+    )
+    assert replace_response.status_code == 200
+    assert replace_response.json()["holdings"][0]["stockCode"] == "2330"
+
+    logout_response = test_client.post("/api/auth/logout", json={})
+    assert logout_response.status_code == 200
+    assert test_client.get("/api/me/holdings").status_code == 401
+
+    login_response = test_client.post("/api/auth/login", json={"username": username, "password": password})
+    assert login_response.status_code == 200
+    holdings_response = test_client.get("/api/me/holdings")
+    assert holdings_response.status_code == 200
+    assert holdings_response.json()["holdings"] == [
+        {"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600.0}
+    ]
 
 
 def test_manual_scan_disabled_blocks_manual_scan_api():

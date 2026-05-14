@@ -43,6 +43,14 @@ const state = {
   },
   expandedMarketResultIds: new Set(),
   activeStrategyStatusKey: null,
+  auth: {
+    checked: false,
+    available: true,
+    authenticated: false,
+    user: null,
+    message: "",
+  },
+  isSyncingHoldings: false,
 };
 
 const STRATEGY_STATUS_DETAILS = [
@@ -264,12 +272,43 @@ function loadHoldingsFromStorage(storage = localStorage, companies = state.compa
 
 function loadHoldings() {
   const normalized = loadHoldingsFromStorage(localStorage, state.companies);
-  saveHoldings(normalized);
+  saveHoldingsLocalOnly(normalized);
   return normalized;
 }
 
-function saveHoldings(holdings = state.holdings, storage = localStorage) {
+function saveHoldingsLocalOnly(holdings = state.holdings, storage = localStorage) {
   storage.setItem(HOLDINGS_KEY, JSON.stringify(normalizeHoldingRecords(holdings, state.companies)));
+}
+
+function saveHoldings(holdings = state.holdings, storage = localStorage) {
+  const normalized = normalizeHoldingRecords(holdings, state.companies);
+  saveHoldingsLocalOnly(normalized, storage);
+  if (storage === localStorage && state.auth?.authenticated) {
+    syncHoldingsToServer(normalized);
+  }
+}
+
+async function syncHoldingsToServer(holdings = state.holdings) {
+  if (!state.auth?.authenticated || state.isSyncingHoldings) return false;
+  state.isSyncingHoldings = true;
+  renderAccountPanel();
+  try {
+    const payload = await apiJson("/api/me/holdings", {
+      method: "PUT",
+      body: JSON.stringify({ holdings: normalizeHoldingRecords(holdings, state.companies) }),
+    });
+    state.holdings = normalizeHoldingRecords(payload.holdings, state.companies);
+    saveHoldingsLocalOnly(state.holdings);
+    state.auth.message = "持股已同步到帳號。";
+    return true;
+  } catch (error) {
+    state.auth.available = false;
+    state.auth.message = "伺服器同步失敗，已保留本機持股。";
+    return false;
+  } finally {
+    state.isSyncingHoldings = false;
+    renderAccountPanel();
+  }
 }
 
 function upsertHolding(holding) {
@@ -321,15 +360,157 @@ function clearHolding(stockCode) {
 }
 
 async function apiJson(url, options = {}) {
+  const { headers = {}, ...rest } = options;
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    ...rest,
+    headers: { "Content-Type": "application/json", ...headers },
+    credentials: "same-origin",
   });
+  const text = await response.text();
   if (!response.ok) {
-    const detail = await response.text();
+    let detail = text;
+    try {
+      detail = JSON.parse(text).detail || detail;
+    } catch {
+      // Keep the plain response text.
+    }
     throw new Error(detail || `HTTP ${response.status}`);
   }
-  return response.json();
+  return text ? JSON.parse(text) : {};
+}
+
+function renderAccountPanel() {
+  if (typeof document === "undefined") return;
+  const panel = $("#account-panel");
+  if (!panel) return;
+  const status = $("#account-status");
+  const form = $("#auth-form");
+  const userPanel = $("#auth-user-panel");
+  const userLabel = $("#auth-user-label");
+  const message = $("#auth-message");
+  const storageNote = $("#holdings-storage-note");
+  const isLoggedIn = Boolean(state.auth?.authenticated);
+  const displayName = state.auth?.user?.displayName || state.auth?.user?.username || "";
+
+  status.className = `status-pill ${isLoggedIn ? "status-entry" : state.auth?.available ? "neutral" : "status-watch"}`;
+  status.textContent = state.isSyncingHoldings ? "同步中" : isLoggedIn ? "帳號同步" : "本機持股";
+  form.classList.toggle("hidden", isLoggedIn);
+  userPanel.classList.toggle("hidden", !isLoggedIn);
+  userLabel.textContent = isLoggedIn ? `已登入：${displayName}` : "";
+  message.textContent = state.auth?.message || "";
+  if (storageNote) {
+    storageNote.textContent = isLoggedIn
+      ? "持股會同步儲存在伺服器端帳號；瀏覽器也會保留一份本機備援。"
+      : "目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。";
+  }
+}
+
+async function loadAccountState() {
+  const localHoldings = loadHoldings();
+  try {
+    const me = await apiJson("/api/auth/me");
+    state.auth = {
+      checked: true,
+      available: true,
+      authenticated: Boolean(me.authenticated),
+      user: me.user || null,
+      message: "",
+    };
+    if (!state.auth.authenticated) {
+      state.holdings = localHoldings;
+      renderAccountPanel();
+      return;
+    }
+    const serverPayload = await apiJson("/api/me/holdings");
+    const serverHoldings = normalizeHoldingRecords(serverPayload.holdings, state.companies);
+    if (!serverHoldings.length && localHoldings.length) {
+      state.holdings = localHoldings;
+      await syncHoldingsToServer(localHoldings);
+      state.auth.message = "已將本機持股匯入帳號。";
+    } else {
+      state.holdings = serverHoldings;
+      saveHoldingsLocalOnly(state.holdings);
+    }
+  } catch {
+    state.auth = {
+      checked: true,
+      available: false,
+      authenticated: false,
+      user: null,
+      message: "帳號服務暫時不可用，已切回本機持股。",
+    };
+    state.holdings = localHoldings;
+  }
+  renderAccountPanel();
+}
+
+async function authenticateFromForm(mode) {
+  const usernameInput = $("#auth-username");
+  const passwordInput = $("#auth-password");
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  state.auth.message = "";
+  renderAccountPanel();
+  try {
+    const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+    const result = await apiJson(mode === "register" ? "/api/auth/register" : "/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    state.auth = {
+      checked: true,
+      available: true,
+      authenticated: Boolean(result.authenticated),
+      user: result.user || null,
+      message: mode === "register" ? "帳號已建立。" : "已登入。",
+    };
+    const serverPayload = await apiJson("/api/me/holdings");
+    const serverHoldings = normalizeHoldingRecords(serverPayload.holdings, state.companies);
+    if (!serverHoldings.length && localHoldings.length) {
+      state.holdings = localHoldings;
+      await syncHoldingsToServer(localHoldings);
+      state.auth.message = "已登入，並將本機持股匯入帳號。";
+    } else {
+      state.holdings = serverHoldings;
+      saveHoldingsLocalOnly(state.holdings);
+    }
+    passwordInput.value = "";
+    renderHoldings();
+  } catch (error) {
+    state.auth.available = true;
+    state.auth.authenticated = false;
+    state.auth.user = null;
+    state.auth.message = error.message || "帳號操作失敗。";
+  }
+  renderAccountPanel();
+}
+
+async function logoutAccount() {
+  try {
+    await apiJson("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
+  } catch {
+    // Logging out should still return the UI to local mode if the server is unreachable.
+  }
+  state.auth = {
+    checked: true,
+    available: true,
+    authenticated: false,
+    user: null,
+    message: "已登出，畫面保留目前本機持股。",
+  };
+  saveHoldingsLocalOnly(state.holdings);
+  renderAccountPanel();
+}
+
+async function importLocalHoldingsToAccount() {
+  if (!state.auth?.authenticated) return;
+  const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+  const merged = normalizeHoldingRecords([...state.holdings, ...localHoldings], state.companies);
+  state.holdings = merged;
+  const ok = await syncHoldingsToServer(merged);
+  state.auth.message = ok ? "已將本機持股合併同步到帳號。" : state.auth.message;
+  renderHoldings();
+  renderAccountPanel();
 }
 
 function statusLabel(status) {
@@ -352,6 +533,70 @@ function statusClass(status) {
   return `status-${String(status || "neutral").toLowerCase()}`;
 }
 
+function formatEvidenceValue(item = {}) {
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) return "待補";
+  if (item.unit === "thousand_twd") {
+    const absValue = Math.abs(value);
+    const divisor = absValue >= 100000 ? 100000 : 10;
+    const unit = absValue >= 100000 ? "億" : "萬";
+    const amount = value / divisor;
+    return `${amount.toLocaleString("zh-TW", {
+      minimumFractionDigits: absValue >= 100000 ? 2 : 0,
+      maximumFractionDigits: 2,
+    })} ${unit}`;
+  }
+  return value.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
+}
+
+function evidenceTone(item = {}) {
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) return { className: "missing", label: "待補" };
+  if (value > 0) return { className: "passed", label: "獲利" };
+  if (value < 0) return { className: "failed", label: "虧損" };
+  return { className: "missing", label: "損益兩平" };
+}
+
+function renderRuleEvidence(rule = {}) {
+  const evidence = Array.isArray(rule.evidence) ? rule.evidence.filter(Boolean) : [];
+  if (!evidence.length) return "";
+  const numericValues = evidence.map((item) => Math.abs(Number(item.value))).filter((value) => Number.isFinite(value));
+  const maxAbs = numericValues.length ? Math.max(...numericValues) : 0;
+  const bars = evidence.map((item) => {
+    const value = Number(item.value);
+    const tone = evidenceTone(item);
+    const width = Number.isFinite(value) && maxAbs > 0 ? Math.max(8, Math.round((Math.abs(value) / maxAbs) * 100)) : 0;
+    return `
+      <div class="evidence-bar-row">
+        <span class="evidence-label">${escapeHtml(item.label || "")}</span>
+        <span class="evidence-track"><span class="evidence-bar ${tone.className}" style="--bar-width: ${width}%"></span></span>
+        <span class="evidence-value ${tone.className}">${escapeHtml(formatEvidenceValue(item))}</span>
+      </div>
+    `;
+  }).join("");
+  const rows = evidence.map((item) => {
+    const tone = evidenceTone(item);
+    return `
+      <tr>
+        <th scope="row">${escapeHtml(item.label || "")}</th>
+        <td class="${tone.className}">${escapeHtml(formatEvidenceValue(item))}</td>
+        <td class="${tone.className}">${escapeHtml(tone.label)}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="rule-evidence" aria-label="${escapeHtml(rule.code || "")} 年度數據">
+      <div class="evidence-bars">${bars}</div>
+      <table class="evidence-table">
+        <thead>
+          <tr><th scope="col">年度</th><th scope="col">淨利</th><th scope="col">判讀</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderRule(rule = {}) {
   const isMissing = rule.severity === "INSUFFICIENT_DATA";
   const stateClass = isMissing ? "missing" : rule.passed ? "passed" : "failed";
@@ -362,6 +607,7 @@ function renderRule(rule = {}) {
       <div>
         <strong>${escapeHtml(rule.title)}</strong>
         <div class="muted">${escapeHtml(rule.message)}</div>
+        ${renderRuleEvidence(rule)}
       </div>
     </div>
   `;
@@ -1159,6 +1405,20 @@ function addOnboardingDraftFromFields() {
 }
 
 function bindEvents() {
+  const authForm = $("#auth-form");
+  if (authForm) {
+    authForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      authenticateFromForm("login");
+    });
+  }
+  const registerButton = $("#auth-register-btn");
+  if (registerButton) registerButton.addEventListener("click", () => authenticateFromForm("register"));
+  const logoutButton = $("#auth-logout-btn");
+  if (logoutButton) logoutButton.addEventListener("click", logoutAccount);
+  const importLocalButton = $("#import-local-holdings-btn");
+  if (importLocalButton) importLocalButton.addEventListener("click", importLocalHoldingsToAccount);
+
   let searchTimer = null;
   $("#stock-search").addEventListener("input", (event) => {
     clearTimeout(searchTimer);
@@ -1346,7 +1606,7 @@ async function init() {
   bindEvents();
   await loadSettings();
   await loadCompanies();
-  state.holdings = loadHoldings();
+  await loadAccountState();
   await loadDataStatus();
   renderSelectedCompany();
   renderHoldings();
@@ -1376,6 +1636,9 @@ if (typeof module !== "undefined") {
     parseStockInput,
     loadHoldingsFromStorage,
     normalizeText,
+    formatEvidenceValue,
+    renderRuleEvidence,
+    renderRule,
     renderAnalysisCard,
     renderStrategyStatusDetail,
     renderMarketResultRow,

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -89,7 +89,22 @@ const filingAwareGroups = groupMarketScanResults({
   ],
   excluded: [],
 });
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, filingAwareGroups, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+const evidenceRule = {
+  code: "E1",
+  title: "近 5 年沒有虧損",
+  passed: false,
+  severity: "WATCH",
+  message: "近 5 年年度淨利有 2 年虧損；詳見年度表格。",
+  evidence: [
+    { label: "2025", value: 11962952, unit: "thousand_twd", metric: "annual_net_income" },
+    { label: "2024", value: 8969775, unit: "thousand_twd", metric: "annual_net_income" },
+    { label: "2023", value: -1699593, unit: "thousand_twd", metric: "annual_net_income" }
+  ],
+};
+const evidenceValue = formatEvidenceValue(evidenceRule.evidence[0]);
+const evidenceHtml = renderRuleEvidence(evidenceRule);
+const evidenceRuleHtml = renderRule(evidenceRule);
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -143,6 +158,10 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["marketGroups"]["pending"]["watch"][0]["stockCode"] == "9999"
     assert payload["filingAwareGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert [item["stockCode"] for item in payload["filingAwareGroups"]["pending"]["watch"]] == ["1102", "1103"]
+    assert payload["evidenceValue"] == "119.63 億"
+    assert "evidence-table" in payload["evidenceHtml"]
+    assert "2025" in payload["evidenceHtml"]
+    assert "虧損" in payload["evidenceRuleHtml"]
     assert payload["strategyDetailLabels"] == ["進場 E1-E6", "出場 X1-X5", "毛利率追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
     assert [item[0] for item in payload["entryDetail"]["items"]] == ["E1", "E2", "E3", "E4", "E5", "E6"]
     assert payload["hasInsufficient"] is True

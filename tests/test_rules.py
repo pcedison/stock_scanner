@@ -12,6 +12,9 @@ def test_2357_passes_entry_rules_with_reasons():
     assert result.status == "ENTRY"
     assert {reason.code for reason in result.reasons} >= {"E1", "E2", "E3", "E4", "E5", "E6"}
     assert all(reason.message for reason in result.reasons)
+    e1 = next(reason for reason in result.reasons if reason.code == "E1")
+    assert e1.evidence
+    assert e1.evidence[0]["metric"] == "annual_net_income"
 
 
 def test_financial_company_is_excluded_by_default():

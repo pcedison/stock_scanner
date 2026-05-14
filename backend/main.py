@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException, Response
+from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
+from backend.services.auth import AuthService
 from backend.services.backtest import run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
@@ -41,6 +43,10 @@ mock_provider = MockDataProvider()
 official_provider = OfficialDataProvider()
 history_backfill_service = OfficialHistoryBackfillService(official_provider.history_store)
 engine = RuleEngine()
+auth_db_path = os.getenv("AUTH_DB_PATH")
+auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()
+SESSION_COOKIE_NAME = "stock_scanner_session"
+SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 
 
 class AnalyzeRequest(BaseModel):
@@ -56,8 +62,57 @@ class ScanHoldingsRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
 
 
+class AuthRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=80)
+    password: str = Field(..., min_length=8, max_length=128)
+    displayName: Optional[str] = Field(default=None, max_length=80)
+
+
+class HoldingsReplaceRequest(BaseModel):
+    holdings: list[Holding] = Field(default_factory=list)
+
+
+class HoldingUpsertRequest(BaseModel):
+    holding: Holding
+
+
 class ReportFormatRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
+
+
+def _cookie_secure() -> bool:
+    return os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+
+
+def _current_user(request: Request):
+    return auth_service.get_user_by_session(request.cookies.get(SESSION_COOKIE_NAME))
+
+
+def _require_user(request: Request):
+    user = _current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def _holdings_payload(holdings: list[Holding]) -> dict:
+    return {"holdings": [holding.model_dump() for holding in holdings]}
 
 
 def _effective_settings(settings: Optional[ScannerSettings]) -> ScannerSettings:
@@ -145,6 +200,66 @@ def _report_response(payload: dict, report_format: str, title: str, filename_pre
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "dataSource": "mock", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/auth/register")
+def register(payload: AuthRequest, response: Response) -> dict:
+    try:
+        user = auth_service.create_user(payload.username, payload.password, payload.displayName)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token = auth_service.create_session(user.id)
+    _set_session_cookie(response, token)
+    return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.post("/api/auth/login")
+def login(payload: AuthRequest, response: Response) -> dict:
+    user = auth_service.authenticate(payload.username, payload.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    token = auth_service.create_session(user.id)
+    _set_session_cookie(response, token)
+    return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict:
+    auth_service.delete_session(request.cookies.get(SESSION_COOKIE_NAME))
+    _clear_session_cookie(response)
+    return {"authenticated": False}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict:
+    user = _current_user(request)
+    if user is None:
+        return {"authenticated": False, "user": None}
+    return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.get("/api/me/holdings")
+def get_my_holdings(request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.list_holdings(user.id))
+
+
+@app.put("/api/me/holdings")
+def replace_my_holdings(payload: HoldingsReplaceRequest, request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.replace_holdings(user.id, payload.holdings))
+
+
+@app.post("/api/me/holdings")
+def upsert_my_holding(payload: HoldingUpsertRequest, request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.upsert_holding(user.id, payload.holding))
+
+
+@app.delete("/api/me/holdings/{stock_code}")
+def delete_my_holding(stock_code: str, request: Request) -> dict:
+    user = _require_user(request)
+    return _holdings_payload(auth_service.delete_holding(user.id, stock_code))
 
 
 @app.get("/api/data-sources/status")
