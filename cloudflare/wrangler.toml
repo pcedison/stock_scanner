@@ -1,0 +1,14 @@
+name = "stock-scanner-beta-api"
+main = "worker.py"
+compatibility_date = "2026-05-14"
+compatibility_flags = ["python_workers", "disable_python_no_global_handlers", "disable_python_external_sdk"]
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stock-scanner-beta-db"
+database_id = "c29c7b4a-4a2d-4711-badd-1aaad43ce3b6"
+
+[[r2_buckets]]
+binding = "CACHE"
+bucket_name = "stock-scanner-beta-cache"
