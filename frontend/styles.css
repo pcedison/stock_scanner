@@ -1159,6 +1159,16 @@ textarea {
   font-size: 26px;
 }
 
+.auth-gate-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.auth-gate-form .modal-actions {
+  margin-top: 0;
+}
+
 .draft-panel {
   margin-top: 16px;
   border: 1px solid var(--line);

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260514-market-nav" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-auth-gate" />
   </head>
   <body>
     <div class="app-shell">
@@ -52,7 +52,7 @@
               <span id="auth-message" class="account-message"></span>
             </div>
             <form id="auth-form" class="auth-form">
-              <input id="auth-username" type="text" autocomplete="username" placeholder="帳號" />
+              <input id="auth-username" type="text" inputmode="email" autocomplete="username" placeholder="電子信箱" />
               <input id="auth-password" type="password" autocomplete="current-password" placeholder="密碼" />
               <button id="auth-login-btn" class="secondary-btn" type="submit">登入</button>
               <button id="auth-register-btn" class="ghost-btn" type="button">註冊</button>
@@ -232,6 +232,29 @@
       </div>
     </div>
 
+    <div id="auth-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div class="modal auth-gate-modal">
+        <p class="eyebrow">帳號同步</p>
+        <h2 id="auth-modal-title">先建立帳號，再儲存個人持股</h2>
+        <p class="modal-copy">請使用電子信箱與密碼註冊或登入。登入後，第一次使用設定才會開始，持股會儲存在你的帳號中。</p>
+        <form id="auth-modal-form" class="auth-gate-form">
+          <div class="field">
+            <label for="auth-modal-username">電子信箱</label>
+            <input id="auth-modal-username" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com" required />
+          </div>
+          <div class="field">
+            <label for="auth-modal-password">密碼</label>
+            <input id="auth-modal-password" type="password" autocomplete="new-password" placeholder="至少 8 個字元" required />
+          </div>
+          <p id="auth-modal-message" class="form-error" role="alert"></p>
+          <div class="modal-actions">
+            <button id="auth-modal-register-btn" class="primary-btn" type="submit">建立帳號</button>
+            <button id="auth-modal-login-btn" class="secondary-btn" type="button">已有帳號，登入</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div id="onboarding-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
       <div class="modal">
         <p class="eyebrow">第一次使用設定</p>
@@ -272,6 +295,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=20260514-market-nav" defer></script>
+    <script src="/app.js?v=20260515-auth-gate" defer></script>
   </body>
 </html>

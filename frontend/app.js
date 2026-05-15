@@ -421,6 +421,57 @@ async function apiJson(url, options = {}) {
   return text ? JSON.parse(text) : {};
 }
 
+function onboardingStorageKey() {
+  const user = state.auth?.user;
+  const identity = user?.id || user?.username || "guest";
+  return `${ONBOARDING_KEY}.${identity}`;
+}
+
+function hasCompletedOnboarding() {
+  return localStorage.getItem(onboardingStorageKey()) === "true";
+}
+
+function markOnboardingDone() {
+  localStorage.setItem(onboardingStorageKey(), "true");
+}
+
+function shouldPromptOnboarding() {
+  return Boolean(state.auth?.authenticated && !hasCompletedOnboarding() && !state.holdings.length);
+}
+
+function renderAuthGate() {
+  if (typeof document === "undefined") return;
+  const modal = $("#auth-modal");
+  if (!modal) return;
+  const message = $("#auth-modal-message");
+  if (message) message.textContent = state.auth?.message || "";
+}
+
+function openAuthGate(message = "") {
+  const modal = $("#auth-modal");
+  if (!modal) return;
+  if (message) state.auth.message = message;
+  renderAuthGate();
+  modal.classList.remove("hidden");
+  setTimeout(() => $("#auth-modal-username")?.focus(), 0);
+}
+
+function closeAuthGate() {
+  $("#auth-modal")?.classList.add("hidden");
+  const message = $("#auth-modal-message");
+  if (message) message.textContent = "";
+}
+
+function maybeStartFirstRunFlow() {
+  if (!state.auth?.checked) return;
+  if (!state.auth.authenticated) {
+    openAuthGate(state.auth.available ? "" : state.auth.message);
+    return;
+  }
+  closeAuthGate();
+  if (shouldPromptOnboarding()) openOnboarding();
+}
+
 function renderAccountPanel() {
   if (typeof document === "undefined") return;
   const panel = $("#account-panel");
@@ -445,6 +496,7 @@ function renderAccountPanel() {
       ? "持股會同步儲存在伺服器端帳號；瀏覽器也會保留一份本機備援。"
       : "目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。";
   }
+  renderAuthGate();
 }
 
 async function loadAccountState() {
@@ -486,9 +538,10 @@ async function loadAccountState() {
   renderAccountPanel();
 }
 
-async function authenticateFromForm(mode) {
-  const usernameInput = $("#auth-username");
-  const passwordInput = $("#auth-password");
+async function authenticateFromForm(mode, source = "header") {
+  const isModal = source === "modal";
+  const usernameInput = isModal ? $("#auth-modal-username") : $("#auth-username");
+  const passwordInput = isModal ? $("#auth-modal-password") : $("#auth-password");
   const username = usernameInput.value.trim();
   const password = passwordInput.value;
   state.auth.message = "";
@@ -518,6 +571,11 @@ async function authenticateFromForm(mode) {
     }
     passwordInput.value = "";
     renderHoldings();
+    if (isModal) {
+      $("#auth-username").value = username;
+      closeAuthGate();
+    }
+    maybeStartFirstRunFlow();
   } catch (error) {
     state.auth.available = true;
     state.auth.authenticated = false;
@@ -541,7 +599,9 @@ async function logoutAccount() {
     message: "已登出，畫面保留目前本機持股。",
   };
   saveHoldingsLocalOnly(state.holdings);
+  closeOnboarding(false);
   renderAccountPanel();
+  maybeStartFirstRunFlow();
 }
 
 async function importLocalHoldingsToAccount() {
@@ -1551,15 +1611,19 @@ async function exportReport(kind, reportFormat) {
 }
 
 function openOnboarding() {
+  if (!state.auth?.authenticated) {
+    openAuthGate();
+    return;
+  }
   renderOnboardingDraft();
   $("#onboarding-modal").classList.remove("hidden");
   $("#onboarding-error").textContent = "";
   $("#onboarding-stock-input").focus();
 }
 
-function closeOnboarding() {
+function closeOnboarding(markDone = true) {
   $("#onboarding-modal").classList.add("hidden");
-  localStorage.setItem(ONBOARDING_KEY, "true");
+  if (markDone) markOnboardingDone();
   $("#onboarding-error").textContent = "";
 }
 
@@ -1617,6 +1681,15 @@ function bindEvents() {
   }
   const registerButton = $("#auth-register-btn");
   if (registerButton) registerButton.addEventListener("click", () => authenticateFromForm("register"));
+  const authModalForm = $("#auth-modal-form");
+  if (authModalForm) {
+    authModalForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      authenticateFromForm("register", "modal");
+    });
+  }
+  const authModalLoginButton = $("#auth-modal-login-btn");
+  if (authModalLoginButton) authModalLoginButton.addEventListener("click", () => authenticateFromForm("login", "modal"));
   const logoutButton = $("#auth-logout-btn");
   if (logoutButton) logoutButton.addEventListener("click", logoutAccount);
   const importLocalButton = $("#import-local-holdings-btn");
@@ -1700,7 +1773,13 @@ function bindEvents() {
   $("#export-market-csv-btn").addEventListener("click", () => exportReport("market", "csv"));
   $("#export-holdings-md-btn").addEventListener("click", () => exportReport("holdings", "markdown"));
   $("#export-holdings-csv-btn").addEventListener("click", () => exportReport("holdings", "csv"));
-  $("#open-onboarding-btn").addEventListener("click", openOnboarding);
+  $("#open-onboarding-btn").addEventListener("click", () => {
+    if (!state.auth?.authenticated) {
+      openAuthGate();
+      return;
+    }
+    openOnboarding();
+  });
   $("#skip-onboarding-btn").addEventListener("click", () => {
     state.onboardingDraft = [];
     renderOnboardingDraft();
@@ -1827,9 +1906,7 @@ async function init() {
   renderMarketResults();
   renderHoldingResults();
   showView("overview");
-  if (localStorage.getItem(ONBOARDING_KEY) !== "true") {
-    openOnboarding();
-  }
+  maybeStartFirstRunFlow();
 }
 
 if (typeof document !== "undefined") {
