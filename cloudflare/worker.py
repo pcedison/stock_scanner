@@ -610,8 +610,7 @@ class Api:
         return json_response({"items": items})
 
     async def analyze_stock(self, stock_code: str):
-        analysis = await self.r2_json("public/analysis_by_code.json", {})
-        result = analysis.get(stock_code)
+        result = await self.analysis_for_stock(stock_code)
         if not result:
             return error_response("查無此股票快取", status=404)
         return json_response(result)
@@ -622,11 +621,10 @@ class Api:
 
     async def holdings_scan_payload(self, payload):
         holdings = [normalize_holding(item) for item in payload.get("holdings", [])]
-        analysis = await self.r2_json("public/analysis_by_code.json", {})
         results = []
         missing = []
         for holding in holdings:
-            result = analysis.get(holding["stockCode"])
+            result = await self.analysis_for_stock(holding["stockCode"])
             if not result:
                 missing.append({"stockCode": holding["stockCode"], "name": holding.get("name"), "reason": "Cloudflare 快取中查無此股票"})
                 continue
@@ -643,6 +641,16 @@ class Api:
             )
             results.append(copied)
         return {"generatedAt": utc_now(), "dataSource": "cloudflare_r2_seed", "results": results, "missing": missing}
+
+    async def analysis_for_stock(self, stock_code: str):
+        normalized = str(stock_code or "").strip()
+        if not re.fullmatch(r"\d{4,6}", normalized):
+            return None
+        shard = await self.r2_json(f"public/analysis_shards/{normalized[:2]}.json", {})
+        if isinstance(shard, dict) and normalized in shard:
+            return shard[normalized]
+        analysis = await self.r2_json("public/analysis_by_code.json", {})
+        return analysis.get(normalized)
 
     def empty_market_scan(self):
         return {

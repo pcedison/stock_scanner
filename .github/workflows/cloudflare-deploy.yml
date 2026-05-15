@@ -56,6 +56,10 @@ jobs:
           npx wrangler r2 object put "$CF_R2_BUCKET/public/data_sources_status.json" --remote --file cloudflare/seed/data_sources_status.json
           npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_latest.json" --remote --file cloudflare/seed/market_scan_latest.json
           npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_by_code.json" --remote --file cloudflare/seed/analysis_by_code.json
+          for file in cloudflare/seed/analysis_shards/*.json; do
+            shard="$(basename "$file" .json)"
+            npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_shards/$shard.json" --remote --file "$file"
+          done
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_fundamentals_history.json" --remote --file data/official_fundamentals_history.json
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_history_backfill_progress.json" --remote --file data/official_history_backfill_progress.json
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_cache_seed_2026-05-14.zip" --remote --file data/official_cache_seed_2026-05-14.zip

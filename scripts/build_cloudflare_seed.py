@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "cloudflare" / "seed"
+ANALYSIS_SHARD_DIR = OUT_DIR / "analysis_shards"
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 sys.path.insert(0, str(ROOT_DIR))
 
@@ -20,6 +21,17 @@ from backend.services.settings_service import load_settings  # noqa: E402
 def write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(jsonable_encoder(payload), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+
+def clear_generated_analysis_shards() -> None:
+    if not ANALYSIS_SHARD_DIR.exists():
+        return
+    for path in ANALYSIS_SHARD_DIR.glob("*.json"):
+        path.unlink()
+
+
+def analysis_shard_key(stock_code: str) -> str:
+    return str(stock_code)[:2]
 
 
 def refresh_policy(now: datetime | None = None) -> dict:
@@ -54,17 +66,20 @@ def main() -> None:
     settings.use_mock_data = False
     settings.manual_scan_enabled = True
 
+    clear_generated_analysis_shards()
     scan_payload = _scan_market_payload(settings)
     policy = refresh_policy()
     generated_at = datetime.fromisoformat(scan_payload["generatedAt"])
     next_refresh = generated_at + timedelta(seconds=policy["minIntervalSeconds"])
     companies = official_provider.list_companies()
     analysis_by_code = {}
+    analysis_shards: dict[str, dict[str, dict]] = {}
     analysis_results = []
     for snapshot in official_provider.iter_snapshots(settings):
         result = engine.evaluate_entry(snapshot, settings)
         encoded = jsonable_encoder(result)
         analysis_by_code[result.stockCode] = encoded
+        analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = encoded
         analysis_results.append(encoded)
 
     if not scan_payload.get("universeSize") and analysis_results:
@@ -76,6 +91,8 @@ def main() -> None:
     write_json(OUT_DIR / "market_scan_latest.json", scan_payload)
     write_json(OUT_DIR / "companies.json", {"items": companies})
     write_json(OUT_DIR / "analysis_by_code.json", analysis_by_code)
+    for shard_key, shard_payload in analysis_shards.items():
+        write_json(ANALYSIS_SHARD_DIR / f"{shard_key}.json", shard_payload)
     write_json(OUT_DIR / "data_sources_status.json", data_sources_status(check_network=False))
 
     manifest = {
@@ -89,6 +106,7 @@ def main() -> None:
             "market_scan_latest.json",
             "companies.json",
             "analysis_by_code.json",
+            "analysis_shards/*.json",
             "data_sources_status.json",
             "official_fundamentals_history.json",
             "official_history_backfill_progress.json",
@@ -100,6 +118,7 @@ def main() -> None:
             "watch": len(scan_payload.get("watch", [])),
             "excluded": len(scan_payload.get("excluded", [])),
             "analysis": len(analysis_by_code),
+            "analysisShards": len(analysis_shards),
         },
     }
     write_json(OUT_DIR / "manifest.json", manifest)
