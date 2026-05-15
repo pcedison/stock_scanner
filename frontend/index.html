@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260515-mobile-account-drawer" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-scan-tab-actions" />
   </head>
   <body>
     <header class="mobile-topbar" aria-label="手機版功能列">
@@ -30,8 +30,11 @@
           <button class="nav-item active" type="button" data-view="overview">總覽</button>
           <button class="nav-item" type="button" data-view="search">搜尋與單檔分析</button>
           <button class="nav-item" type="button" data-view="holdings">我的持股</button>
-          <button class="nav-item" type="button" data-view="scan">掃描結果</button>
-          <div class="nav-subitems" aria-label="掃描結果分類">
+          <button id="scan-nav-toggle" class="nav-item nav-group-toggle" type="button" data-view="scan" data-nav-group-toggle="scan" aria-expanded="false" aria-controls="scan-nav-subitems">
+            <span>掃描結果</span>
+            <span class="nav-group-icon" aria-hidden="true">+</span>
+          </button>
+          <div id="scan-nav-subitems" class="nav-subitems nav-subitems-collapsible" aria-label="掃描結果分類">
             <button class="nav-subitem active" type="button" data-market-column-nav="entry">適合進場</button>
             <button class="nav-subitem" type="button" data-market-column-nav="watch">接近觀察</button>
             <button class="nav-subitem" type="button" data-market-column-nav="excluded">排除清單</button>
@@ -64,8 +67,6 @@
             <p id="view-subtitle">快速查看資料來源、持股狀態與策略完成度。</p>
           </div>
           <div class="topbar-actions">
-            <button id="scan-market-btn" class="primary-btn" type="button">掃描目前市場</button>
-            <button id="scan-holdings-btn" class="secondary-btn" type="button">掃描我的持股</button>
             <button id="open-onboarding-btn" class="ghost-btn" type="button">初次設定</button>
           </div>
           <div id="desktop-account-panel-slot" class="desktop-account-panel-slot">
@@ -105,7 +106,7 @@
               <article class="panel summary-card">
                 <span class="status-pill neutral">下一步</span>
                 <h3>從左側功能列選服務</h3>
-                <p>你可以先搜尋單檔、建立持股，再掃描目前市場或持股。</p>
+                <p>你可以先搜尋單檔、建立持股，再到掃描結果查看股市清單或我的持股。</p>
               </article>
             </div>
             <section class="panel">
@@ -228,7 +229,7 @@
               </div>
               <div class="settings-grid">
                 <label><input type="checkbox" data-setting="auto_scan_full_market" /><span><strong>自動掃描市場</strong><small>官方模式會掃描 TWSE / TPEx 月營收 universe</small></span></label>
-                <label><input type="checkbox" data-setting="manual_scan_enabled" /><span><strong>允許手動掃描</strong><small>開啟上方掃描按鈕</small></span></label>
+                <label><input type="checkbox" data-setting="manual_scan_enabled" /><span><strong>允許手動掃描</strong><small>開啟掃描結果分頁的手動掃描</small></span></label>
                 <label><input type="checkbox" data-setting="exclude_financial_industry" /><span><strong>排除金融業</strong><small>金融業不套用主策略</small></span></label>
                 <label><input type="checkbox" data-setting="use_mock_data" /><span><strong>使用 Mock Data</strong><small>僅作離線示範與測試；關閉後使用官方資料</small></span></label>
                 <label><input type="checkbox" data-setting="scan_twse" /><span><strong>掃描上市公司</strong><small>官方模式納入 TWSE universe</small></span></label>
@@ -333,6 +334,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=20260515-mobile-account-drawer" defer></script>
+    <script src="/app.js?v=20260515-scan-tab-actions" defer></script>
   </body>
 </html>

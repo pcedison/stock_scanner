@@ -157,6 +157,26 @@ function syncAccountPanelPlacement() {
   if (panel.parentElement !== targetSlot) targetSlot.appendChild(panel);
 }
 
+function isMobileNavigation() {
+  return typeof window !== "undefined" && window.matchMedia(`(max-width: ${MOBILE_NAV_BREAKPOINT}px)`).matches;
+}
+
+function setScanNavExpanded(expanded) {
+  if (typeof document === "undefined") return;
+  const toggle = $("#scan-nav-toggle");
+  const subitems = $("#scan-nav-subitems");
+  const icon = toggle?.querySelector(".nav-group-icon");
+  if (!toggle || !subitems) return;
+  toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  subitems.classList.toggle("open", expanded);
+  if (icon) icon.textContent = expanded ? "−" : "+";
+}
+
+function normalizeResponsiveNavigation() {
+  setScanNavExpanded(!isMobileNavigation());
+  syncAccountPanelPlacement();
+}
+
 function setMobileMenuOpen(open) {
   const toggle = $("#mobile-menu-toggle");
   const backdrop = $("#mobile-nav-backdrop");
@@ -1062,8 +1082,6 @@ function renderSettings() {
   $$("[data-setting]").forEach((input) => {
     input.checked = Boolean(state.settings[input.dataset.setting]);
   });
-  $("#scan-market-btn").disabled = !state.settings.manual_scan_enabled;
-  $("#scan-holdings-btn").disabled = !state.settings.manual_scan_enabled;
 }
 
 function findStrategyStatusDetail(key) {
@@ -1547,6 +1565,7 @@ function showTab(tab) {
 
 function showView(view) {
   state.activeView = view;
+  document.body.classList.toggle("scan-view-active", view === "scan");
   const titles = {
     overview: ["總覽", "快速查看資料來源、持股狀態與策略完成度。"],
     search: ["搜尋與單檔分析", "查詢股票並查看單檔規則原因。"],
@@ -1815,7 +1834,7 @@ function addOnboardingDraftFromFields() {
 }
 
 function bindEvents() {
-  syncAccountPanelPlacement();
+  normalizeResponsiveNavigation();
   const mobileMenuToggle = $("#mobile-menu-toggle");
   if (mobileMenuToggle) mobileMenuToggle.addEventListener("click", toggleMobileMenu);
   const mobileNavBackdrop = $("#mobile-nav-backdrop");
@@ -1824,7 +1843,7 @@ function bindEvents() {
     if (event.key === "Escape") closeMobileMenu();
   });
   window.addEventListener("resize", () => {
-    syncAccountPanelPlacement();
+    normalizeResponsiveNavigation();
     if (window.innerWidth > MOBILE_NAV_BREAKPOINT) closeMobileMenu();
   });
 
@@ -1933,8 +1952,6 @@ function bindEvents() {
     }
   });
 
-  $("#scan-market-btn").addEventListener("click", scanMarket);
-  $("#scan-holdings-btn").addEventListener("click", scanHoldings);
   $("#export-market-md-btn").addEventListener("click", () => exportReport("market", "markdown"));
   $("#export-market-csv-btn").addEventListener("click", () => exportReport("market", "csv"));
   $("#export-holdings-md-btn").addEventListener("click", () => exportReport("holdings", "markdown"));
@@ -1994,7 +2011,20 @@ function bindEvents() {
   }
 
   $$(".tab").forEach((button) => {
-    button.addEventListener("click", () => showTab(button.dataset.tab));
+    button.addEventListener("click", () => {
+      const tab = button.dataset.tab;
+      if (tab === "market") {
+        if (state.settings.manual_scan_enabled) scanMarket();
+        else showTab("market");
+        return;
+      }
+      if (tab === "holdings") {
+        if (state.settings.manual_scan_enabled) scanHoldings();
+        else showTab("holdings");
+        return;
+      }
+      showTab(tab);
+    });
   });
 
   $("#holding-results").addEventListener("click", (event) => {
@@ -2048,6 +2078,12 @@ function bindEvents() {
 
   $$(".nav-item").forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.navGroupToggle === "scan" && isMobileNavigation()) {
+        const nextExpanded = button.getAttribute("aria-expanded") !== "true";
+        setScanNavExpanded(nextExpanded);
+        showView("scan");
+        return;
+      }
       showView(button.dataset.view);
       closeMobileMenu();
     });

@@ -186,6 +186,17 @@ textarea {
   transform: none;
 }
 
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.nav-group-icon {
+  display: none;
+}
+
 .nav-subitems {
   display: grid;
   gap: 6px;
@@ -262,6 +273,10 @@ textarea {
 
 .topbar-actions {
   justify-content: flex-end;
+}
+
+.scan-view-active .top-header {
+  display: none;
 }
 
 .account-panel {
@@ -1489,11 +1504,29 @@ textarea {
     font-size: 15px;
   }
 
+  .nav-group-icon {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--primary);
+    font-size: 17px;
+    font-weight: 1000;
+  }
+
   .nav-subitems {
     display: grid;
     grid-column: auto;
     margin: 0 0 4px 6px;
     padding-left: 10px;
+  }
+
+  .nav-subitems-collapsible:not(.open) {
+    display: none;
   }
 
   .nav-subitem {
@@ -1607,13 +1640,13 @@ textarea {
   }
 
   .topbar-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+    display: flex;
+    justify-content: stretch;
     gap: 8px;
   }
 
-  #open-onboarding-btn {
-    grid-column: 1 / -1;
+  .topbar-actions button {
+    width: 100%;
   }
 
   .account-panel {
