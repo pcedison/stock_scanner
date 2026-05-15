@@ -1030,6 +1030,43 @@ function marketResultId(result = {}, groupKey = "", columnKey = "") {
   return [groupKey, columnKey, safeText(result.stockCode, "unknown"), safeText(result.status, "unknown")].join(":");
 }
 
+function findMarketResultById(resultId) {
+  if (!state.marketScan) return null;
+  const grouped = groupMarketScanResults(state.marketScan);
+  for (const tab of MARKET_DISCLOSURE_TABS) {
+    for (const [columnKey] of MARKET_RESULT_COLUMNS) {
+      for (const result of grouped?.[tab.key]?.[columnKey] || []) {
+        if (marketResultId(result, tab.key, columnKey) === resultId) return result;
+      }
+    }
+  }
+  return null;
+}
+
+async function loadMarketResultDetails(resultId) {
+  const result = findMarketResultById(resultId);
+  if (!result || result.hasFullDetails || result.detailLoading || !result.detailsAvailable) return;
+  result.detailLoading = true;
+  result.detailError = "";
+  renderMarketResults();
+  try {
+    const detail = await apiJson(`/api/analyze/${result.stockCode}`, {
+      method: "POST",
+      body: JSON.stringify({ settings: state.settings }),
+    });
+    Object.assign(result, detail, {
+      detailsAvailable: false,
+      hasFullDetails: true,
+      detailLoading: false,
+      detailError: "",
+    });
+  } catch (error) {
+    result.detailLoading = false;
+    result.detailError = error.message || "細項載入失敗";
+  }
+  renderMarketResults();
+}
+
 function getMarketPage(groupKey, columnKey) {
   return Math.max(0, Number(state.marketListPages?.[groupKey]?.[columnKey]) || 0);
 }
@@ -1076,6 +1113,8 @@ function renderMarketResultDetails(result, options = {}) {
   const { status: displayStatus, summary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <div class="market-result-details">
+      ${result.detailLoading ? `<p class="muted">正在載入完整細項...</p>` : ""}
+      ${result.detailError ? `<p class="form-error">${escapeHtml(result.detailError)}</p>` : ""}
       <div class="detail-summary">
         <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
         <p class="muted">${escapeHtml(summary)}</p>
@@ -1721,7 +1760,7 @@ function bindEvents() {
     scanMarket();
   });
 
-  $("#market-results").addEventListener("click", (event) => {
+  $("#market-results").addEventListener("click", async (event) => {
     const tabButton = event.target.closest("[data-market-disclosure-tab]");
     if (tabButton) {
       state.activeMarketDisclosureTab = tabButton.dataset.marketDisclosureTab;
@@ -1746,6 +1785,7 @@ function bindEvents() {
         state.expandedMarketResultIds.delete(resultId);
       } else {
         state.expandedMarketResultIds.add(resultId);
+        loadMarketResultDetails(resultId);
       }
       renderMarketResults();
       return;

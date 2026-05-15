@@ -239,6 +239,7 @@ class Api:
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_latest.json", self.empty_market_scan())
             refresh_status = await self.ensure_refresh_job(manifest)
+            scan = self.compact_market_scan(scan)
             scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
             return json_response(scan)
 
@@ -653,6 +654,41 @@ class Api:
             "watch": [],
             "excluded": [],
         }
+
+    def compact_market_scan(self, scan):
+        if not isinstance(scan, dict):
+            return self.empty_market_scan()
+        compact = dict(scan)
+        for category in ("entry", "watch", "excluded", "results"):
+            items = compact.get(category)
+            if isinstance(items, list):
+                compact[category] = [self.compact_scan_result(item) for item in items]
+        compact["detailMode"] = "summary"
+        return compact
+
+    def compact_scan_result(self, result):
+        if not isinstance(result, dict):
+            return {}
+        compact = {}
+        for key in ("stockCode", "companyName", "status", "summary", "company"):
+            if key in result:
+                compact[key] = result.get(key)
+        reasons = result.get("reasons")
+        if isinstance(reasons, list):
+            compact["reasons"] = []
+            for reason in reasons:
+                if not isinstance(reason, dict):
+                    continue
+                compact["reasons"].append(
+                    {
+                        key: reason.get(key)
+                        for key in ("code", "title", "passed", "severity", "message")
+                        if key in reason
+                    }
+                )
+        compact["detailsAvailable"] = True
+        compact["hasFullDetails"] = False
+        return compact
 
     async def market_report(self, query):
         report_format = (query.get("report_format") or ["markdown"])[0]
