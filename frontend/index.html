@@ -4,11 +4,23 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260515-auth-gate" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-mobile-nav" />
   </head>
   <body>
+    <header class="mobile-topbar" aria-label="手機版功能列">
+      <div class="mobile-topbar-title">
+        <span>台股財報掃描器</span>
+        <small>官方資料 MVP</small>
+      </div>
+      <button id="mobile-menu-toggle" class="mobile-menu-toggle" type="button" aria-controls="mobile-navigation" aria-expanded="false" aria-label="開啟功能選單">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </header>
+    <div id="mobile-nav-backdrop" class="mobile-nav-backdrop hidden"></div>
     <div class="app-shell">
-      <aside class="app-sidebar" aria-label="功能列">
+      <aside id="mobile-navigation" class="app-sidebar" aria-label="功能列">
         <div class="brand-block">
           <p class="eyebrow">官方資料 MVP</p>
           <h1><span>台股財報事件</span><span>驅動掃描器</span></h1>
@@ -295,6 +307,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=20260515-auth-gate" defer></script>
+    <script src="/app.js?v=20260515-mobile-nav" defer></script>
   </body>
 </html>

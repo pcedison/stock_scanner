@@ -142,6 +142,25 @@ const STRATEGY_STATUS_DETAILS = [
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+function setMobileMenuOpen(open) {
+  const toggle = $("#mobile-menu-toggle");
+  const backdrop = $("#mobile-nav-backdrop");
+  document.body.classList.toggle("mobile-menu-open", open);
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.setAttribute("aria-label", open ? "關閉功能選單" : "開啟功能選單");
+  }
+  if (backdrop) backdrop.classList.toggle("hidden", !open);
+}
+
+function closeMobileMenu() {
+  setMobileMenuOpen(false);
+}
+
+function toggleMobileMenu() {
+  setMobileMenuOpen(!document.body.classList.contains("mobile-menu-open"));
+}
+
 function normalizeText(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
 }
@@ -1672,6 +1691,17 @@ function addOnboardingDraftFromFields() {
 }
 
 function bindEvents() {
+  const mobileMenuToggle = $("#mobile-menu-toggle");
+  if (mobileMenuToggle) mobileMenuToggle.addEventListener("click", toggleMobileMenu);
+  const mobileNavBackdrop = $("#mobile-nav-backdrop");
+  if (mobileNavBackdrop) mobileNavBackdrop.addEventListener("click", closeMobileMenu);
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMobileMenu();
+  });
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 680) closeMobileMenu();
+  });
+
   const authForm = $("#auth-form");
   if (authForm) {
     authForm.addEventListener("submit", (event) => {
@@ -1881,7 +1911,10 @@ function bindEvents() {
   });
 
   $$(".nav-item").forEach((button) => {
-    button.addEventListener("click", () => showView(button.dataset.view));
+    button.addEventListener("click", () => {
+      showView(button.dataset.view);
+      closeMobileMenu();
+    });
   });
 
   $$("[data-market-column-nav]").forEach((button) => {
@@ -1890,6 +1923,7 @@ function bindEvents() {
       showView("scan");
       showTab("market");
       renderMarketResults();
+      closeMobileMenu();
     });
   });
 }
