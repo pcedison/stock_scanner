@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260515-admin-users" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-mobile-account-drawer" />
   </head>
   <body>
     <header class="mobile-topbar" aria-label="手機版功能列">
@@ -41,6 +41,15 @@
           <button class="nav-item" type="button" data-view="strategy">策略規則</button>
           <button class="nav-item" type="button" data-view="data">資料與排程</button>
         </nav>
+        <div id="mobile-account-host" class="mobile-account-host">
+          <details id="mobile-account-details" class="mobile-account-details">
+            <summary>
+              <span>帳號同步</span>
+              <small id="mobile-account-summary">登入、同步與登出</small>
+            </summary>
+            <div id="mobile-account-panel-slot" class="mobile-account-panel-slot"></div>
+          </details>
+        </div>
         <div class="sidebar-note">
           <strong>目前狀態</strong>
           <span>官方 TWSE / TPEx universe；依申報窗口分流已公告與尚未公告。</span>
@@ -59,23 +68,25 @@
             <button id="scan-holdings-btn" class="secondary-btn" type="button">掃描我的持股</button>
             <button id="open-onboarding-btn" class="ghost-btn" type="button">初次設定</button>
           </div>
-          <section id="account-panel" class="account-panel" aria-label="帳號與持股同步">
-            <div class="account-head">
-              <span id="account-status" class="status-pill neutral">本機持股</span>
-              <span id="auth-message" class="account-message"></span>
-            </div>
-            <form id="auth-form" class="auth-form">
-              <input id="auth-username" type="text" inputmode="email" autocomplete="username" placeholder="電子信箱" />
-              <input id="auth-password" type="password" autocomplete="current-password" placeholder="密碼" />
-              <button id="auth-login-btn" class="secondary-btn" type="submit">登入</button>
-              <button id="auth-register-btn" class="ghost-btn" type="button">註冊</button>
-            </form>
-            <div id="auth-user-panel" class="auth-user hidden">
-              <span id="auth-user-label"></span>
-              <button id="import-local-holdings-btn" class="ghost-btn" type="button">匯入本機</button>
-              <button id="auth-logout-btn" class="secondary-btn" type="button">登出</button>
-            </div>
-          </section>
+          <div id="desktop-account-panel-slot" class="desktop-account-panel-slot">
+            <section id="account-panel" class="account-panel" aria-label="帳號與持股同步">
+              <div class="account-head">
+                <span id="account-status" class="status-pill neutral">本機持股</span>
+                <span id="auth-message" class="account-message"></span>
+              </div>
+              <form id="auth-form" class="auth-form">
+                <input id="auth-username" type="text" inputmode="email" autocomplete="username" placeholder="電子信箱" />
+                <input id="auth-password" type="password" autocomplete="current-password" placeholder="密碼" />
+                <button id="auth-login-btn" class="secondary-btn" type="submit">登入</button>
+                <button id="auth-register-btn" class="ghost-btn" type="button">註冊</button>
+              </form>
+              <div id="auth-user-panel" class="auth-user hidden">
+                <span id="auth-user-label"></span>
+                <button id="import-local-holdings-btn" class="ghost-btn" type="button">匯入本機</button>
+                <button id="auth-logout-btn" class="secondary-btn" type="button">登出</button>
+              </div>
+            </section>
+          </div>
         </header>
 
         <main class="workspace">
@@ -322,6 +333,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=20260515-admin-users" defer></script>
+    <script src="/app.js?v=20260515-mobile-account-drawer" defer></script>
   </body>
 </html>

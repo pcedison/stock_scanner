@@ -144,6 +144,18 @@ const STRATEGY_STATUS_DETAILS = [
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const MOBILE_NAV_BREAKPOINT = 680;
+
+function syncAccountPanelPlacement() {
+  if (typeof document === "undefined") return;
+  const panel = $("#account-panel");
+  const desktopSlot = $("#desktop-account-panel-slot");
+  const mobileSlot = $("#mobile-account-panel-slot");
+  if (!panel || !desktopSlot || !mobileSlot) return;
+  const useMobileSlot = window.matchMedia(`(max-width: ${MOBILE_NAV_BREAKPOINT}px)`).matches;
+  const targetSlot = useMobileSlot ? mobileSlot : desktopSlot;
+  if (panel.parentElement !== targetSlot) targetSlot.appendChild(panel);
+}
 
 function setMobileMenuOpen(open) {
   const toggle = $("#mobile-menu-toggle");
@@ -496,6 +508,7 @@ function maybeStartFirstRunFlow() {
 
 function renderAccountPanel() {
   if (typeof document === "undefined") return;
+  syncAccountPanelPlacement();
   const panel = $("#account-panel");
   if (!panel) return;
   const status = $("#account-status");
@@ -513,6 +526,10 @@ function renderAccountPanel() {
   userPanel.classList.toggle("hidden", !isLoggedIn);
   userLabel.textContent = isLoggedIn ? `已登入：${displayName}` : "";
   message.textContent = state.auth?.message || "";
+  const mobileSummary = $("#mobile-account-summary");
+  if (mobileSummary) {
+    mobileSummary.textContent = isLoggedIn ? `${displayName}，可匯入或登出` : "登入、註冊與同步持股";
+  }
   if (storageNote) {
     storageNote.textContent = isLoggedIn
       ? "持股會同步儲存在伺服器端帳號；瀏覽器也會保留一份本機備援。"
@@ -1798,6 +1815,7 @@ function addOnboardingDraftFromFields() {
 }
 
 function bindEvents() {
+  syncAccountPanelPlacement();
   const mobileMenuToggle = $("#mobile-menu-toggle");
   if (mobileMenuToggle) mobileMenuToggle.addEventListener("click", toggleMobileMenu);
   const mobileNavBackdrop = $("#mobile-nav-backdrop");
@@ -1806,7 +1824,8 @@ function bindEvents() {
     if (event.key === "Escape") closeMobileMenu();
   });
   window.addEventListener("resize", () => {
-    if (window.innerWidth > 680) closeMobileMenu();
+    syncAccountPanelPlacement();
+    if (window.innerWidth > MOBILE_NAV_BREAKPOINT) closeMobileMenu();
   });
 
   const authForm = $("#auth-form");
