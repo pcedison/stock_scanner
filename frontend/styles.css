@@ -361,6 +361,63 @@ textarea {
   padding: 0 10px;
 }
 
+.admin-user-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.admin-user-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.admin-user-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-user-title strong {
+  font-size: 17px;
+}
+
+.admin-user-card p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.admin-user-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 10px 0 0;
+}
+
+.admin-user-meta div {
+  display: grid;
+  gap: 2px;
+}
+
+.admin-user-meta dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.admin-user-meta dd {
+  margin: 0;
+  font-weight: 800;
+}
+
 .full-btn {
   width: 100%;
 }
@@ -1641,6 +1698,19 @@ textarea {
   .modal-actions button,
   .onboarding-add-form button {
     width: 100%;
+  }
+
+  .admin-user-card {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-user-card button {
+    width: 100%;
+  }
+
+  .admin-user-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .rule {

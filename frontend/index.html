@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260515-mobile-nav" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-admin-users" />
   </head>
   <body>
     <header class="mobile-topbar" aria-label="手機版功能列">
@@ -36,6 +36,7 @@
             <button class="nav-subitem" type="button" data-market-column-nav="watch">接近觀察</button>
             <button class="nav-subitem" type="button" data-market-column-nav="excluded">排除清單</button>
           </div>
+          <button id="admin-nav-item" class="nav-item hidden" type="button" data-view="admin">使用者管理</button>
           <button class="nav-item" type="button" data-view="settings">設定</button>
           <button class="nav-item" type="button" data-view="strategy">策略規則</button>
           <button class="nav-item" type="button" data-view="data">資料與排程</button>
@@ -191,6 +192,20 @@
             </section>
           </section>
 
+          <section class="view-panel hidden" data-view-panel="admin">
+            <section class="panel admin-panel" aria-labelledby="admin-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="admin-title">使用者管理</h2>
+                  <p class="section-subtitle">僅 pcedison@gmail.com 可查閱與刪除一般使用者；super user 不能被刪除。</p>
+                </div>
+                <button id="refresh-admin-users-btn" class="secondary-btn" type="button">重新整理</button>
+              </div>
+              <p id="admin-users-message" class="section-subtitle"></p>
+              <div id="admin-users-list" class="admin-user-list"></div>
+            </section>
+          </section>
+
           <section class="view-panel hidden" data-view-panel="settings">
             <section class="panel settings-panel" aria-labelledby="settings-title">
               <div class="section-heading">
@@ -307,6 +322,6 @@
       </div>
     </div>
 
-    <script src="/app.js?v=20260515-mobile-nav" defer></script>
+    <script src="/app.js?v=20260515-admin-users" defer></script>
   </body>
 </html>

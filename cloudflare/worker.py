@@ -20,6 +20,7 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
+SUPER_USER_USERNAME = "pcedison@gmail.com"
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,
@@ -31,6 +32,10 @@ DEFAULT_SETTINGS = {
     "spring_festival_guard": True,
     "revenue_growth_mode": "cumulative_ytd",
 }
+
+
+class ForbiddenError(Exception):
+    pass
 
 
 def utc_now() -> str:
@@ -161,6 +166,7 @@ def public_user(row):
         "id": row["id"],
         "username": row["username"],
         "displayName": row.get("display_name") or row["username"],
+        "isSuperUser": str(row["username"]).lower() == SUPER_USER_USERNAME,
     }
 
 
@@ -200,6 +206,8 @@ class Api:
             response = await self.route(request, path, query)
         except PermissionError as exc:
             response = error_response(str(exc), status=401)
+        except ForbiddenError as exc:
+            response = error_response(str(exc), status=403)
         except Exception as exc:
             response = error_response(f"Cloudflare Worker API error: {exc}", status=500)
 
@@ -278,6 +286,15 @@ class Api:
         if path == "/api/auth/me" and request.method == "GET":
             user = await self.current_user(request)
             return json_response({"authenticated": bool(user), "user": public_user(user)})
+
+        if path == "/api/admin/users" and request.method == "GET":
+            await self.require_super_user(request)
+            return json_response(await self.admin_users_payload())
+
+        if path.startswith("/api/admin/users/") and request.method == "DELETE":
+            await self.require_super_user(request)
+            user_id = int(path.rsplit("/", 1)[-1])
+            return json_response(await self.delete_admin_user(user_id))
 
         if path == "/api/me/holdings" and request.method == "GET":
             user = await self.require_user(request)
@@ -477,6 +494,64 @@ class Api:
         if not user:
             raise PermissionError("請先登入")
         return user
+
+    async def require_super_user(self, request):
+        user = await self.require_user(request)
+        if str(user.get("username", "")).lower() != SUPER_USER_USERNAME:
+            raise ForbiddenError("Only the super user can manage users")
+        return user
+
+    async def admin_users_payload(self):
+        rows = await self.db_all(
+            """
+            SELECT
+                users.id,
+                users.username,
+                users.display_name,
+                users.created_at,
+                COUNT(DISTINCT holdings.stock_code) AS holdings_count,
+                COUNT(DISTINCT sessions.token_hash) AS active_session_count
+            FROM users
+            LEFT JOIN holdings ON holdings.user_id = users.id
+            LEFT JOIN sessions ON sessions.user_id = users.id AND sessions.expires_at > ?
+            GROUP BY users.id, users.username, users.display_name, users.created_at
+            ORDER BY
+                CASE WHEN users.username = ? THEN 0 ELSE 1 END,
+                users.created_at DESC,
+                users.username ASC
+            """,
+            utc_now(),
+            SUPER_USER_USERNAME,
+        )
+        return {
+            "superUser": SUPER_USER_USERNAME,
+            "users": [
+                {
+                    "id": row["id"],
+                    "username": row["username"],
+                    "displayName": row.get("display_name") or row["username"],
+                    "createdAt": row.get("created_at"),
+                    "holdingsCount": row.get("holdings_count") or 0,
+                    "activeSessionCount": row.get("active_session_count") or 0,
+                    "isSuperUser": str(row["username"]).lower() == SUPER_USER_USERNAME,
+                    "canDelete": str(row["username"]).lower() != SUPER_USER_USERNAME,
+                }
+                for row in rows
+            ],
+        }
+
+    async def delete_admin_user(self, user_id: int):
+        target = await self.db_first("SELECT id, username FROM users WHERE id = ?", user_id)
+        if not target:
+            return {"superUser": SUPER_USER_USERNAME, "users": [], "deleted": False, "message": "User not found"}
+        if str(target["username"]).lower() == SUPER_USER_USERNAME:
+            raise ForbiddenError("super user cannot be deleted")
+        await self.db_run("DELETE FROM sessions WHERE user_id = ?", user_id)
+        await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
+        await self.db_run("DELETE FROM users WHERE id = ?", user_id)
+        payload = await self.admin_users_payload()
+        payload["deleted"] = True
+        return payload
 
     async def create_session(self, user_id: int):
         token = secrets.token_urlsafe(32)

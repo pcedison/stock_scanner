@@ -17,6 +17,7 @@ DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
+SUPER_USER_USERNAME = "pcedison@gmail.com"
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class AuthUser:
             "id": self.id,
             "username": self.username,
             "displayName": self.display_name or self.username,
+            "isSuperUser": self.username.lower() == SUPER_USER_USERNAME,
         }
 
 
@@ -278,3 +280,56 @@ class AuthService:
         with self._connect() as connection:
             connection.execute("DELETE FROM holdings WHERE user_id = ? AND stock_code = ?", (user_id, stock_code))
         return self.list_holdings(user_id)
+
+    @staticmethod
+    def is_super_user(user: AuthUser | None) -> bool:
+        return bool(user and user.username.lower() == SUPER_USER_USERNAME)
+
+    def list_users(self) -> list[dict]:
+        now = self._now()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    users.id,
+                    users.username,
+                    users.display_name,
+                    users.created_at,
+                    COUNT(DISTINCT holdings.stock_code) AS holdings_count,
+                    COUNT(DISTINCT sessions.token_hash) AS active_session_count
+                FROM users
+                LEFT JOIN holdings ON holdings.user_id = users.id
+                LEFT JOIN sessions ON sessions.user_id = users.id AND sessions.expires_at > ?
+                GROUP BY users.id, users.username, users.display_name, users.created_at
+                ORDER BY
+                    CASE WHEN users.username = ? THEN 0 ELSE 1 END,
+                    users.created_at DESC,
+                    users.username ASC
+                """,
+                (now, SUPER_USER_USERNAME),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "username": row["username"],
+                "displayName": row["display_name"] or row["username"],
+                "createdAt": row["created_at"],
+                "holdingsCount": int(row["holdings_count"] or 0),
+                "activeSessionCount": int(row["active_session_count"] or 0),
+                "isSuperUser": row["username"].lower() == SUPER_USER_USERNAME,
+                "canDelete": row["username"].lower() != SUPER_USER_USERNAME,
+            }
+            for row in rows
+        ]
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row is None:
+                return False
+            if row["username"].lower() == SUPER_USER_USERNAME:
+                raise ValueError("super user cannot be deleted")
+            connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM holdings WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return True

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AuthService
+from backend.services.auth import AuthService, SUPER_USER_USERNAME
 from backend.services.backtest import run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
@@ -112,6 +112,13 @@ def _require_user(request: Request):
     user = _current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def _require_super_user(request: Request):
+    user = _require_user(request)
+    if not auth_service.is_super_user(user):
+        raise HTTPException(status_code=403, detail="Only the super user can manage users")
     return user
 
 
@@ -246,6 +253,24 @@ def auth_me(request: Request) -> dict:
     if user is None:
         return {"authenticated": False, "user": None}
     return {"authenticated": True, "user": user.public_dict()}
+
+
+@app.get("/api/admin/users")
+def list_admin_users(request: Request) -> dict:
+    _require_super_user(request)
+    return {"superUser": SUPER_USER_USERNAME, "users": auth_service.list_users()}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def delete_admin_user(user_id: int, request: Request) -> dict:
+    _require_super_user(request)
+    try:
+        deleted = auth_service.delete_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"superUser": SUPER_USER_USERNAME, "users": auth_service.list_users()}
 
 
 @app.get("/api/me/holdings")

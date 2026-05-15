@@ -2,8 +2,10 @@ from fastapi.testclient import TestClient
 import pytest
 from uuid import uuid4
 
+import backend.main as main_module
 from backend.main import app
 from backend.models.settings import ScannerSettings
+from backend.services.auth import AuthService
 
 
 client = TestClient(app)
@@ -140,6 +142,49 @@ def test_market_scan_is_independent_from_holding_add_and_delete():
     after = test_client.post("/api/scan/market", json={"settings": settings}).json()
     after_entry_codes = [item["stockCode"] for item in after["entry"]]
     assert after_entry_codes == before_entry_codes
+
+
+def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "auth_service", AuthService(tmp_path / "auth.sqlite3"))
+    admin_client = TestClient(app)
+    user_client = TestClient(app)
+    normal_username = f"user_{uuid4().hex[:10]}@example.com"
+    password = "test-password-123"
+
+    user_response = user_client.post("/api/auth/register", json={"username": normal_username, "password": password})
+    assert user_response.status_code == 200
+    assert user_response.json()["user"]["isSuperUser"] is False
+    user_client.put(
+        "/api/me/holdings",
+        json={"holdings": [{"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600}]},
+    )
+    assert user_client.get("/api/admin/users").status_code == 403
+
+    admin_response = admin_client.post(
+        "/api/auth/register",
+        json={"username": "pcedison@gmail.com", "password": password},
+    )
+    assert admin_response.status_code == 200
+    assert admin_response.json()["user"]["isSuperUser"] is True
+
+    users_response = admin_client.get("/api/admin/users")
+    assert users_response.status_code == 200
+    users = users_response.json()["users"]
+    normal_user = next(user for user in users if user["username"] == normal_username)
+    super_user = next(user for user in users if user["username"] == "pcedison@gmail.com")
+    assert normal_user["holdingsCount"] == 1
+    assert normal_user["canDelete"] is True
+    assert super_user["isSuperUser"] is True
+    assert super_user["canDelete"] is False
+
+    delete_super_response = admin_client.delete(f"/api/admin/users/{super_user['id']}")
+    assert delete_super_response.status_code == 400
+
+    delete_response = admin_client.delete(f"/api/admin/users/{normal_user['id']}")
+    assert delete_response.status_code == 200
+    remaining_usernames = {user["username"] for user in delete_response.json()["users"]}
+    assert normal_username not in remaining_usernames
+    assert user_client.get("/api/me/holdings").status_code == 401
 
 
 def test_manual_scan_disabled_blocks_manual_scan_api():

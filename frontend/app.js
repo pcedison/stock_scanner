@@ -51,6 +51,9 @@ const state = {
     user: null,
     message: "",
   },
+  adminUsers: [],
+  adminMessage: "",
+  adminIsLoading: false,
   isSyncingHoldings: false,
   pendingHoldingsSync: false,
 };
@@ -516,6 +519,21 @@ function renderAccountPanel() {
       : "目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。";
   }
   renderAuthGate();
+  renderAdminVisibility();
+}
+
+function isSuperUser() {
+  return Boolean(state.auth?.authenticated && state.auth?.user?.isSuperUser);
+}
+
+function renderAdminVisibility() {
+  if (typeof document === "undefined") return;
+  const adminNavItem = $("#admin-nav-item");
+  const canManageUsers = isSuperUser();
+  if (adminNavItem) adminNavItem.classList.toggle("hidden", !canManageUsers);
+  if (!canManageUsers && state.activeView === "admin") {
+    showView("overview");
+  }
 }
 
 async function loadAccountState() {
@@ -617,6 +635,8 @@ async function logoutAccount() {
     user: null,
     message: "已登出，畫面保留目前本機持股。",
   };
+  state.adminUsers = [];
+  state.adminMessage = "";
   saveHoldingsLocalOnly(state.holdings);
   closeOnboarding(false);
   renderAccountPanel();
@@ -632,6 +652,90 @@ async function importLocalHoldingsToAccount() {
   state.auth.message = ok ? "已將本機持股合併同步到帳號。" : state.auth.message;
   renderHoldings();
   renderAccountPanel();
+}
+
+function renderAdminUsers() {
+  if (typeof document === "undefined") return;
+  const target = $("#admin-users-list");
+  const message = $("#admin-users-message");
+  if (!target || !message) return;
+  if (!isSuperUser()) {
+    message.textContent = "此頁面僅限 super user 使用。";
+    target.innerHTML = "";
+    return;
+  }
+  message.textContent = state.adminIsLoading ? "讀取使用者清單中..." : state.adminMessage || "";
+  if (state.adminIsLoading) {
+    target.innerHTML = `<div class="empty-state">讀取中</div>`;
+    return;
+  }
+  if (!state.adminUsers.length) {
+    target.innerHTML = `<div class="empty-state">目前沒有其他使用者</div>`;
+    return;
+  }
+  target.innerHTML = state.adminUsers
+    .map((user) => {
+      const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
+      const badge = user.isSuperUser ? `<span class="status-pill status-entry">super user</span>` : `<span class="status-pill neutral">一般使用者</span>`;
+      const deleteButton = user.canDelete
+        ? `<button class="small-danger-btn" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-username="${escapeHtml(user.username)}">刪除</button>`
+        : `<button class="ghost-btn" type="button" disabled>不可刪除</button>`;
+      return `
+        <article class="admin-user-card">
+          <div>
+            <div class="admin-user-title">
+              <strong>${escapeHtml(user.displayName || user.username)}</strong>
+              ${badge}
+            </div>
+            <p>${escapeHtml(user.username)}</p>
+            <dl class="admin-user-meta">
+              <div><dt>建立時間</dt><dd>${escapeHtml(createdAt)}</dd></div>
+              <div><dt>持股數</dt><dd>${escapeHtml(user.holdingsCount ?? 0)}</dd></div>
+              <div><dt>有效登入</dt><dd>${escapeHtml(user.activeSessionCount ?? 0)}</dd></div>
+            </dl>
+          </div>
+          ${deleteButton}
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function loadAdminUsers() {
+  if (!isSuperUser()) return;
+  state.adminIsLoading = true;
+  state.adminMessage = "";
+  renderAdminUsers();
+  try {
+    const payload = await apiJson("/api/admin/users");
+    state.adminUsers = Array.isArray(payload.users) ? payload.users : [];
+    state.adminMessage = `已載入 ${state.adminUsers.length} 個帳號。`;
+  } catch (error) {
+    state.adminUsers = [];
+    state.adminMessage = error.message || "使用者清單讀取失敗。";
+  } finally {
+    state.adminIsLoading = false;
+    renderAdminUsers();
+  }
+}
+
+async function deleteAdminUser(userId, username) {
+  if (!isSuperUser() || !userId) return;
+  const confirmed = window.confirm(`確定要刪除 ${username}？此動作會移除該帳號的持股與登入 session。`);
+  if (!confirmed) return;
+  state.adminIsLoading = true;
+  state.adminMessage = "";
+  renderAdminUsers();
+  try {
+    const payload = await apiJson(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    state.adminUsers = Array.isArray(payload.users) ? payload.users : [];
+    state.adminMessage = `已刪除 ${username}。`;
+  } catch (error) {
+    state.adminMessage = error.message || "刪除使用者失敗。";
+  } finally {
+    state.adminIsLoading = false;
+    renderAdminUsers();
+  }
 }
 
 function statusLabel(status) {
@@ -1435,12 +1539,15 @@ function showView(view) {
     strategy: ["策略規則", ""],
     data: ["資料與排程", "查看資料來源、官方 adapter 與事件驅動排程狀態。"],
   };
+  titles.admin = ["使用者管理", "只允許 pcedison@gmail.com 管理註冊帳號與刪除一般使用者。"];
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.viewPanel !== view));
   const [title, subtitle] = titles[view] || titles.overview;
   $("#view-title").textContent = title;
   $("#view-subtitle").textContent = subtitle;
   $("#view-subtitle").classList.toggle("hidden", !subtitle);
+  if (view === "admin" && isSuperUser() && !state.adminUsers.length && !state.adminIsLoading) loadAdminUsers();
+  if (view === "admin") renderAdminUsers();
   if (view === "data") renderDataAndScheduler();
   updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
 }
@@ -1724,6 +1831,16 @@ function bindEvents() {
   if (logoutButton) logoutButton.addEventListener("click", logoutAccount);
   const importLocalButton = $("#import-local-holdings-btn");
   if (importLocalButton) importLocalButton.addEventListener("click", importLocalHoldingsToAccount);
+  const refreshAdminUsersButton = $("#refresh-admin-users-btn");
+  if (refreshAdminUsersButton) refreshAdminUsersButton.addEventListener("click", loadAdminUsers);
+  const adminUsersList = $("#admin-users-list");
+  if (adminUsersList) {
+    adminUsersList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-delete-user]");
+      if (!button) return;
+      deleteAdminUser(button.dataset.deleteUser, button.dataset.deleteUsername || "此使用者");
+    });
+  }
 
   let searchTimer = null;
   $("#stock-search").addEventListener("input", (event) => {
