@@ -36,6 +36,19 @@ def refresh_policy(now: datetime | None = None) -> dict:
     return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
 
 
+def rebuild_scan_from_analysis(scan_payload: dict, results: list[dict]) -> dict:
+    rebuilt = dict(scan_payload)
+    rebuilt["entry"] = [item for item in results if item.get("status") == "ENTRY"]
+    rebuilt["excluded"] = [item for item in results if item.get("status") == "EXCLUDED"]
+    rebuilt["watch"] = [
+        item
+        for item in results
+        if item.get("status") not in {"ENTRY", "EXCLUDED"}
+    ]
+    rebuilt["universeSize"] = len(rebuilt["entry"]) + len(rebuilt["watch"]) + len(rebuilt["excluded"])
+    return rebuilt
+
+
 def main() -> None:
     settings = load_settings()
     settings.use_mock_data = False
@@ -47,9 +60,18 @@ def main() -> None:
     next_refresh = generated_at + timedelta(seconds=policy["minIntervalSeconds"])
     companies = official_provider.list_companies()
     analysis_by_code = {}
+    analysis_results = []
     for snapshot in official_provider.iter_snapshots(settings):
         result = engine.evaluate_entry(snapshot, settings)
-        analysis_by_code[result.stockCode] = jsonable_encoder(result)
+        encoded = jsonable_encoder(result)
+        analysis_by_code[result.stockCode] = encoded
+        analysis_results.append(encoded)
+
+    if not scan_payload.get("universeSize") and analysis_results:
+        scan_payload = rebuild_scan_from_analysis(scan_payload, analysis_results)
+
+    if not scan_payload.get("universeSize"):
+        raise RuntimeError("Refusing to publish an empty market scan seed.")
 
     write_json(OUT_DIR / "market_scan_latest.json", scan_payload)
     write_json(OUT_DIR / "companies.json", {"items": companies})
