@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import hmac
@@ -18,9 +19,11 @@ SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
-USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
+USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
 SUPER_USER_USERNAME = "pcedison@gmail.com"
+_LOCALHOST_ORIGIN_RE = re.compile(r"^http://localhost:\d{1,5}$")
+ALLOWED_ORIGINS = frozenset({"https://stock-scanner-beta.pages.dev"})
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,
@@ -33,8 +36,33 @@ DEFAULT_SETTINGS = {
     "revenue_growth_mode": "cumulative_ytd",
 }
 
+SECURITY_HEADERS = {
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "content-security-policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "upgrade-insecure-requests"
+    ),
+    "x-frame-options": "DENY",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
+
 
 class ForbiddenError(Exception):
+    pass
+
+
+class BadRequestError(Exception):
     pass
 
 
@@ -66,7 +94,11 @@ def cache_key_from_manifest(manifest):
 
 
 def json_response(payload, status=200, headers=None):
-    response_headers = {"content-type": "application/json; charset=utf-8", "cache-control": "no-store"}
+    response_headers = {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        **SECURITY_HEADERS,
+    }
     if headers:
         response_headers.update(headers)
     return Response.new(
@@ -76,7 +108,7 @@ def json_response(payload, status=200, headers=None):
 
 
 def text_response(content, status=200, media_type="text/plain; charset=utf-8", headers=None):
-    response_headers = {"content-type": media_type, "cache-control": "no-store"}
+    response_headers = {"content-type": media_type, "cache-control": "no-store", **SECURITY_HEADERS}
     if headers:
         response_headers.update(headers)
     return Response.new(content, to_js({"status": status, "headers": response_headers}, dict_converter=Object.fromEntries))
@@ -89,7 +121,7 @@ def error_response(detail, status=400):
 def normalize_username(username: str) -> str:
     normalized = str(username or "").strip().lower()
     if not USERNAME_PATTERN.fullmatch(normalized):
-        raise ValueError("帳號需為 3-80 字元，且只能使用英數字與 . @ + - _")
+        raise ValueError("帳號需為 3-80 字元，且不可包含空白或 < > \" ' ` ;")
     return normalized
 
 
@@ -190,13 +222,25 @@ async def on_fetch(request, env):
     return await Api(env).fetch(request)
 
 
+def set_response_header(response, key: str, value: str) -> None:
+    headers = getattr(response, "headers", None)
+    if hasattr(headers, "set"):
+        headers.set(key, value)
+    elif isinstance(headers, dict):
+        headers[key] = value
+
+
 class Api:
     def __init__(self, env):
         self.env = env
+        self._r2_cache: dict = {}
 
     async def fetch(self, request):
         if request.method == "OPTIONS":
-            return Response.new("", to_js({"status": 204, "headers": self.cors_headers()}, dict_converter=Object.fromEntries))
+            return Response.new(
+                "",
+                to_js({"status": 204, "headers": {**SECURITY_HEADERS, **self.cors_headers(request)}}, dict_converter=Object.fromEntries),
+            )
 
         parsed = urlparse(request.url)
         path = parsed.path.rstrip("/") or "/"
@@ -204,22 +248,31 @@ class Api:
 
         try:
             response = await self.route(request, path, query)
+        except BadRequestError as exc:
+            response = error_response(str(exc), status=400)
         except PermissionError as exc:
             response = error_response(str(exc), status=401)
         except ForbiddenError as exc:
             response = error_response(str(exc), status=403)
         except Exception as exc:
-            response = error_response(f"Cloudflare Worker API error: {exc}", status=500)
+            print(f"Cloudflare Worker API error: {exc}")
+            response = error_response("伺服器暫時無法處理請求，請稍後再試。", status=500)
 
-        for key, value in self.cors_headers().items():
-            response.headers.set(key, value)
+        for key, value in {**SECURITY_HEADERS, **self.cors_headers(request)}.items():
+            set_response_header(response, key, value)
         return response
 
-    def cors_headers(self):
+    def cors_headers(self, request=None):
+        origin = next(iter(ALLOWED_ORIGINS))
+        if request is not None:
+            req_origin = str(request.headers.get("origin") or "")
+            if req_origin in ALLOWED_ORIGINS or _LOCALHOST_ORIGIN_RE.match(req_origin):
+                origin = req_origin
         return {
-            "access-control-allow-origin": "*",
+            "access-control-allow-origin": origin,
             "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
             "access-control-allow-headers": "content-type,cookie",
+            "vary": "Origin",
         }
 
     async def route(self, request, path: str, query: dict[str, list[str]]):
@@ -237,8 +290,18 @@ class Api:
         if path == "/api/data-sources/status" and request.method == "GET":
             return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}))
 
+        if path == "/api/app-status" and request.method == "GET":
+            data_source = await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"})
+            return json_response({
+                "dataSourceStatus": data_source,
+                "schedulerStatus": {"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."},
+                "schedulerAutoScan": {"action": "ready", "autoScanEnabled": True, "manualScanEnabled": True, "scan": None},
+                "integrationStatus": {"line": False, "telegram": False, "email": False, "broker": False},
+                "backtestStatus": {"status": "not_configured", "annualizedReturn": None},
+            })
+
         if path == "/api/companies" and request.method == "GET":
-            return json_response(await self.r2_json("public/companies.json", {"items": []}))
+            return await self.list_companies(query)
 
         if path == "/api/companies/search" and request.method == "GET":
             return await self.search_companies(query)
@@ -268,6 +331,7 @@ class Api:
             return json_response(await self.get_settings())
 
         if path == "/api/settings" and request.method == "PUT":
+            await self.require_super_user(request)
             payload = await self.request_json(request)
             return json_response(await self.put_settings(payload))
 
@@ -285,7 +349,8 @@ class Api:
 
         if path == "/api/auth/me" and request.method == "GET":
             user = await self.current_user(request)
-            return json_response({"authenticated": bool(user), "user": public_user(user)})
+            holdings = await self.list_holdings(user["id"]) if user else []
+            return json_response({"authenticated": bool(user), "user": public_user(user), "holdings": holdings})
 
         if path == "/api/admin/users" and request.method == "GET":
             await self.require_super_user(request)
@@ -346,18 +411,24 @@ class Api:
         return error_response("Not found", status=404)
 
     async def request_json(self, request):
+        text = await request.text()
+        if not str(text or "").strip():
+            return {}
         try:
-            return js_to_py(await request.json()) or {}
-        except Exception:
-            text = await request.text()
-            return json.loads(str(text) or "{}")
+            payload = json.loads(str(text))
+        except Exception as exc:
+            raise BadRequestError("JSON 格式錯誤") from exc
+        if not isinstance(payload, dict):
+            raise BadRequestError("JSON 內容需為物件")
+        return payload
 
     async def r2_json(self, key: str, fallback):
+        if key in self._r2_cache:
+            return self._r2_cache[key]
         obj = await self.env.CACHE.get(key)
-        if obj is None:
-            return fallback
-        text = await obj.text()
-        return json.loads(text)
+        result = fallback if obj is None else json.loads(await obj.text())
+        self._r2_cache[key] = result
+        return result
 
     def cache_policy(self):
         now = datetime.now(TAIPEI_TZ)
@@ -587,7 +658,8 @@ class Api:
         )
         user = await self.db_first("SELECT id, username, display_name FROM users WHERE username = ?", username)
         token = await self.create_session(user["id"])
-        return json_response({"authenticated": True, "user": public_user(user)}, headers={"set-cookie": session_cookie(token)})
+        holdings = await self.list_holdings(user["id"])
+        return json_response({"authenticated": True, "user": public_user(user), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def login(self, request):
         payload = await self.request_json(request)
@@ -597,7 +669,8 @@ class Api:
         if not row or not verify_password(password, row["password_hash"]):
             return error_response("帳號或密碼錯誤", status=401)
         token = await self.create_session(row["id"])
-        return json_response({"authenticated": True, "user": public_user(row)}, headers={"set-cookie": session_cookie(token)})
+        holdings = await self.list_holdings(row["id"])
+        return json_response({"authenticated": True, "user": public_user(row), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def list_holdings(self, user_id: int):
         rows = await self.db_all(
@@ -684,6 +757,26 @@ class Api:
         ][:limit]
         return json_response({"items": items})
 
+    async def list_companies(self, query):
+        companies = (await self.r2_json("public/companies.json", {"items": []})).get("items", [])
+        try:
+            page = max(int((query.get("page") or ["1"])[0]), 1)
+            limit = min(max(int((query.get("limit") or ["100"])[0]), 1), 500)
+        except Exception as exc:
+            raise BadRequestError("page 與 limit 需為正整數") from exc
+        total = len(companies)
+        start = (page - 1) * limit
+        end = start + limit
+        return json_response(
+            {
+                "items": companies[start:end],
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "hasMore": end < total,
+            }
+        )
+
     async def analyze_stock(self, stock_code: str):
         result = await self.analysis_for_stock(stock_code)
         if not result:
@@ -696,16 +789,15 @@ class Api:
 
     async def holdings_scan_payload(self, payload):
         holdings = [normalize_holding(item) for item in payload.get("holdings", [])]
+        analyses = await asyncio.gather(*[self.analysis_for_stock(h["stockCode"]) for h in holdings])
         results = []
         missing = []
-        for holding in holdings:
-            result = await self.analysis_for_stock(holding["stockCode"])
+        for holding, result in zip(holdings, analyses):
             if not result:
                 missing.append({"stockCode": holding["stockCode"], "name": holding.get("name"), "reason": "Cloudflare 快取中查無此股票"})
                 continue
-            copied = json.loads(json.dumps(result, ensure_ascii=False))
-            copied.setdefault("reasons", []).insert(
-                0,
+            copied = dict(result)
+            copied["reasons"] = [
                 {
                     "code": "HOLDING",
                     "title": "目前持股",
@@ -713,7 +805,8 @@ class Api:
                     "severity": "INFO",
                     "message": f"Cloudflare D1 / 本機同步持股 {holding['shares']} 股。",
                 },
-            )
+                *(result.get("reasons") or []),
+            ]
             results.append(copied)
         return {"generatedAt": utc_now(), "dataSource": "cloudflare_r2_seed", "results": results, "missing": missing}
 
@@ -722,10 +815,7 @@ class Api:
         if not re.fullmatch(r"\d{4,6}", normalized):
             return None
         shard = await self.r2_json(f"public/analysis_shards/{normalized[:2]}.json", {})
-        if isinstance(shard, dict) and normalized in shard:
-            return shard[normalized]
-        analysis = await self.r2_json("public/analysis_by_code.json", {})
-        return analysis.get(normalized)
+        return shard.get(normalized) if isinstance(shard, dict) else None
 
     def empty_market_scan(self):
         return {

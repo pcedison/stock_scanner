@@ -16,7 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
-USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
+USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 SUPER_USER_USERNAME = "pcedison@gmail.com"
 
 
@@ -69,6 +69,9 @@ class AuthService:
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+
                 CREATE TABLE IF NOT EXISTS holdings (
                     user_id INTEGER NOT NULL,
                     stock_code TEXT NOT NULL,
@@ -87,7 +90,7 @@ class AuthService:
     def normalize_username(username: str) -> str:
         normalized = username.strip().lower()
         if not USERNAME_PATTERN.fullmatch(normalized):
-            raise ValueError("帳號需為 3-80 字元，且只能使用英數、_ . @ + -")
+            raise ValueError("帳號需為 3-80 字元，且不可包含空白或 < > \" ' ` ;")
         return normalized
 
     @staticmethod

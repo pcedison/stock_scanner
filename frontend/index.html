@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260515-scan-tab-actions" />
+    <link rel="preload" href="/styles.css?v=20260515-audit-hotfix" as="style" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-audit-hotfix" />
   </head>
   <body>
     <header class="mobile-topbar" aria-label="手機版功能列">
@@ -105,7 +106,7 @@
               </article>
               <article class="panel summary-card">
                 <span class="status-pill neutral">下一步</span>
-                <h3>從左側功能列選服務</h3>
+                <h3>選擇下一步</h3>
                 <p>你可以先搜尋單檔、建立持股，再到掃描結果查看股市清單或我的持股。</p>
               </article>
             </div>
@@ -246,12 +247,7 @@
                   <h2>策略規則</h2>
                 </div>
               </div>
-              <div class="rule-card-grid">
-                <article class="rule-card"><h3>進場條件</h3><p>近 5 年無虧損、近 3 年淨利正成長、累計營收年增 >= 50%、PER < 20、存貨週轉 > 2.5、排除金融業。</p></article>
-                <article class="rule-card"><h3>持有追蹤</h3><p>每月看月營收，每季看 EPS、淨利、毛利率，每年看 5 年虧損與 3 年淨利趨勢。</p></article>
-                <article class="rule-card"><h3>出場條件</h3><p>月營收跌破 30%、較上月降溫超過 20 個百分點、EPS 衰退、季度 EPS 減少超過 10%、淨利衰退。</p></article>
-                <article class="rule-card"><h3>特殊情況</h3><p>春節月搭配 1+2 月或近 3 個月平均；金融業需另建專用策略，不套主策略。</p></article>
-              </div>
+              <div id="strategy-rules-grid" class="strategy-rule-grid"></div>
             </section>
           </section>
 
@@ -273,6 +269,7 @@
 
     <div id="auth-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
       <div class="modal auth-gate-modal">
+        <button id="close-auth-modal-btn" class="modal-close-btn" type="button" aria-label="關閉登入視窗">×</button>
         <p class="eyebrow">帳號同步</p>
         <h2 id="auth-modal-title">先建立帳號，再儲存個人持股</h2>
         <p class="modal-copy">請使用電子信箱與密碼註冊或登入。登入後，第一次使用設定才會開始，持股會儲存在你的帳號中。</p>
@@ -289,6 +286,7 @@
           <div class="modal-actions">
             <button id="auth-modal-register-btn" class="primary-btn" type="submit">建立帳號</button>
             <button id="auth-modal-login-btn" class="secondary-btn" type="button">已有帳號，登入</button>
+            <button id="defer-auth-modal-btn" class="ghost-btn" type="button">暫不登入</button>
           </div>
         </form>
       </div>
@@ -296,6 +294,7 @@
 
     <div id="onboarding-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
       <div class="modal">
+        <button id="close-onboarding-btn" class="modal-close-btn" type="button" aria-label="關閉第一次使用設定">×</button>
         <p class="eyebrow">第一次使用設定</p>
         <h2 id="onboarding-title">目前手上有持股嗎？</h2>
         <p class="modal-copy">先用清楚欄位新增一檔股票到清單。股數與平均成本都可留空；股票找不到時不會加入。</p>
@@ -330,10 +329,11 @@
         <div class="modal-actions">
           <button id="save-onboarding-btn" class="primary-btn" type="button">儲存清單並開始使用</button>
           <button id="skip-onboarding-btn" class="ghost-btn" type="button">目前沒有持股</button>
+          <button id="defer-onboarding-btn" class="ghost-btn" type="button">稍後再說</button>
         </div>
       </div>
     </div>
 
-    <script src="/app.js?v=20260515-scan-tab-actions" defer></script>
+    <script src="/app.js?v=20260515-audit-hotfix" defer></script>
   </body>
 </html>
