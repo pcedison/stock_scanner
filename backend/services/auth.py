@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import random
 import re
 import secrets
 import sqlite3
@@ -281,7 +282,8 @@ class AuthService:
             return None
         now = self._now()
         with self._connect() as connection:
-            connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+            if random.random() < 0.01:
+                connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
             row = connection.execute(
                 """
                 SELECT users.id, users.username, users.display_name

@@ -828,9 +828,29 @@ class Api:
         )
 
     async def replace_holdings(self, user_id: int, holdings: list[dict]):
-        await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
-        for holding in holdings:
-            await self.upsert_holding(user_id, holding)
+        now = utc_now()
+        stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
+        for h in holdings:
+            stmts.append(
+                self.env.DB.prepare(
+                    """INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, stock_code) DO UPDATE SET
+                        name = excluded.name,
+                        shares = excluded.shares,
+                        average_cost = excluded.average_cost,
+                        updated_at = excluded.updated_at"""
+                ).bind(
+                    user_id,
+                    h["stockCode"],
+                    h.get("name") or "",
+                    h.get("shares", 0),
+                    h.get("averageCost") if h.get("averageCost") is not None else 0,
+                    now,
+                    now,
+                )
+            )
+        await self.env.DB.batch(to_js(stmts))
         return await self.list_holdings(user_id)
 
     async def get_settings(self):
