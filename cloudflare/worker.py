@@ -329,11 +329,14 @@ class Api:
             return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}))
 
         if path == "/api/app-status" and request.method == "GET":
-            data_source = await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"})
+            data_source, settings = await asyncio.gather(
+                self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}),
+                self.get_settings(),
+            )
             return json_response({
                 "dataSourceStatus": data_source,
                 "schedulerStatus": {"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."},
-                "schedulerAutoScan": {"action": "ready", "autoScanEnabled": True, "manualScanEnabled": True, "scan": None},
+                "schedulerAutoScan": {"action": "ready", "autoScanEnabled": settings.get("auto_scan_full_market", True), "manualScanEnabled": settings.get("manual_scan_enabled", True), "scan": None},
                 "integrationStatus": {"line": False, "telegram": False, "email": False, "broker": False},
                 "backtestStatus": {"status": "not_configured", "annualizedReturn": None},
             })
