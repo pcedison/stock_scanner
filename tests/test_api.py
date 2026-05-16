@@ -5,7 +5,8 @@ from uuid import uuid4
 import backend.main as main_module
 from backend.main import app
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AuthService
+from backend.services.auth import AuthService, SUPER_USER_USERNAME
+from backend.services.settings_service import load_settings, save_settings
 
 
 client = TestClient(app)
@@ -14,12 +15,12 @@ MOCK_SETTINGS = ScannerSettings(use_mock_data=True)
 
 @pytest.fixture(autouse=True)
 def force_mock_provider_for_api_tests():
-    original = client.get("/api/settings").json()
-    client.put("/api/settings", json={**original, "use_mock_data": True})
+    original = load_settings()
+    save_settings(ScannerSettings(**{**original.model_dump(), "use_mock_data": True}))
     try:
         yield
     finally:
-        client.put("/api/settings", json=original)
+        save_settings(original)
 
 
 def test_health_endpoint():
@@ -27,6 +28,22 @@ def test_health_endpoint():
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.headers["Strict-Transport-Security"].startswith("max-age=31536000")
+    assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert "geolocation=()" in response.headers["Permissions-Policy"]
+
+
+def test_companies_endpoint_is_paginated():
+    response = client.get("/api/companies?page=1&limit=2")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert len(payload["items"]) == 2
+    assert payload["page"] == 1
+    assert payload["limit"] == 2
+    assert payload["total"] >= 2
+    assert payload["hasMore"] is True
 
 
 def test_company_search_supports_code_and_name():
@@ -74,17 +91,22 @@ def test_scan_holdings_returns_exit_for_exit_mock_stock():
     assert payload["results"][0]["reasons"]
 
 
-def test_settings_api_round_trip():
+def test_settings_put_requires_auth():
     original = client.get("/api/settings").json()
-    updated = {**original, "manual_scan_enabled": False}
-    try:
-        put_response = client.put("/api/settings", json=updated)
-        get_response = client.get("/api/settings")
+    response = client.put("/api/settings", json={**original, "manual_scan_enabled": False})
+    assert response.status_code == 401
 
+
+def test_settings_api_round_trip_as_super_user(monkeypatch):
+    monkeypatch.setattr(main_module, "_require_super_user", lambda req: None)
+    original = load_settings()
+    try:
+        put_response = client.put("/api/settings", json={**original.model_dump(), "manual_scan_enabled": False})
+        get_response = client.get("/api/settings")
         assert put_response.status_code == 200
         assert get_response.json()["manual_scan_enabled"] is False
     finally:
-        client.put("/api/settings", json=original)
+        save_settings(original)
 
 
 def test_lightweight_auth_persists_server_side_holdings():
@@ -114,6 +136,17 @@ def test_lightweight_auth_persists_server_side_holdings():
     assert holdings_response.json()["holdings"] == [
         {"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600.0}
     ]
+
+
+def test_auth_accepts_common_email_symbols(tmp_path):
+    service = AuthService(tmp_path / "auth.sqlite3")
+
+    user = service.create_user(" Qa+audit%2026@example.com ", "test-password-123")
+
+    assert user.username == "qa+audit%2026@example.com"
+    assert service.authenticate("qa+audit%2026@example.com", "test-password-123") is not None
+    with pytest.raises(ValueError):
+        service.create_user("bad account@example.com", "test-password-123")
 
 
 def test_market_scan_is_independent_from_holding_add_and_delete():
@@ -162,10 +195,17 @@ def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
 
     admin_response = admin_client.post(
         "/api/auth/register",
-        json={"username": "pcedison@gmail.com", "password": password},
+        json={"username": " PCEDISON@GMAIL.COM ", "password": password},
     )
     assert admin_response.status_code == 200
+    assert admin_response.json()["user"]["username"] == "pcedison@gmail.com"
     assert admin_response.json()["user"]["isSuperUser"] is True
+
+    me_response = admin_client.get("/api/auth/me")
+    assert me_response.status_code == 200
+    assert me_response.json()["authenticated"] is True
+    assert me_response.json()["user"]["username"] == "pcedison@gmail.com"
+    assert me_response.json()["user"]["isSuperUser"] is True
 
     users_response = admin_client.get("/api/admin/users")
     assert users_response.status_code == 200

@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +40,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+SECURITY_HEADERS = {
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "upgrade-insecure-requests"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for key, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+    return response
 
 mock_provider = MockDataProvider()
 official_provider = OfficialDataProvider()
@@ -139,6 +168,21 @@ def _ensure_manual_scan_enabled(settings: ScannerSettings) -> None:
         raise HTTPException(status_code=403, detail="手動掃描已在設定中停用")
 
 
+def _paginated_items(items: list, page: int, limit: int) -> dict:
+    total = len(items)
+    safe_page = max(1, page)
+    safe_limit = max(1, min(limit, 500))
+    start = (safe_page - 1) * safe_limit
+    end = start + safe_limit
+    return {
+        "items": items[start:end],
+        "page": safe_page,
+        "limit": safe_limit,
+        "total": total,
+        "hasMore": end < total,
+    }
+
+
 def _scan_market_payload(settings: ScannerSettings) -> dict:
     provider = _active_provider(settings)
     context = filing_context()
@@ -227,7 +271,8 @@ def register(payload: AuthRequest, response: Response) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     token = auth_service.create_session(user.id)
     _set_session_cookie(response, token)
-    return {"authenticated": True, "user": user.public_dict()}
+    holdings = auth_service.list_holdings(user.id)
+    return {"authenticated": True, "user": user.public_dict(), "holdings": [h.model_dump() for h in holdings]}
 
 
 @app.post("/api/auth/login")
@@ -237,7 +282,8 @@ def login(payload: AuthRequest, response: Response) -> dict:
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
     token = auth_service.create_session(user.id)
     _set_session_cookie(response, token)
-    return {"authenticated": True, "user": user.public_dict()}
+    holdings = auth_service.list_holdings(user.id)
+    return {"authenticated": True, "user": user.public_dict(), "holdings": [h.model_dump() for h in holdings]}
 
 
 @app.post("/api/auth/logout")
@@ -251,8 +297,9 @@ def logout(request: Request, response: Response) -> dict:
 def auth_me(request: Request) -> dict:
     user = _current_user(request)
     if user is None:
-        return {"authenticated": False, "user": None}
-    return {"authenticated": True, "user": user.public_dict()}
+        return {"authenticated": False, "user": None, "holdings": []}
+    holdings = auth_service.list_holdings(user.id)
+    return {"authenticated": True, "user": user.public_dict(), "holdings": [h.model_dump() for h in holdings]}
 
 
 @app.get("/api/admin/users")
@@ -433,9 +480,9 @@ def search_companies(q: str, limit: int = 20) -> dict:
 
 
 @app.get("/api/companies")
-def list_companies() -> dict:
+def list_companies(page: int = Query(default=1, ge=1), limit: int = Query(default=100, ge=1, le=500)) -> dict:
     provider = _active_provider(load_settings())
-    return {"items": provider.list_companies()}
+    return _paginated_items(provider.list_companies(), page, limit)
 
 
 @app.post("/api/analyze/{stock_code}")
@@ -503,13 +550,39 @@ def backtest_status() -> dict:
     return run_backtest()
 
 
+@app.get("/api/app-status")
+def app_status(today: Optional[date] = None) -> dict:
+    settings = load_settings()
+    official_status = official_provider.status(refresh=False) if not settings.use_mock_data else None
+    data_source_payload = {
+        "activeProvider": "MockDataProvider" if settings.use_mock_data else "OfficialDataProvider",
+        "mockDataAvailable": True,
+        "officialDataAvailable": official_status is not None,
+    }
+    scheduler_payload = should_wake_up(today).__dict__
+    auto_scan_payload = {
+        "action": "ready",
+        "autoScanEnabled": settings.auto_scan_full_market,
+        "manualScanEnabled": settings.manual_scan_enabled,
+        "scan": None,
+    }
+    return {
+        "dataSourceStatus": data_source_payload,
+        "schedulerStatus": scheduler_payload,
+        "schedulerAutoScan": auto_scan_payload,
+        "integrationStatus": integration_status(),
+        "backtestStatus": run_backtest(),
+    }
+
+
 @app.get("/api/settings")
 def get_settings() -> ScannerSettings:
     return load_settings()
 
 
 @app.put("/api/settings")
-def put_settings(settings: ScannerSettings) -> ScannerSettings:
+def put_settings(settings: ScannerSettings, request: Request) -> ScannerSettings:
+    _require_super_user(request)
     return save_settings(settings)
 
 

@@ -1805,6 +1805,7 @@ async function saveSettings() {
       method: "PUT",
       body: JSON.stringify(state.settings),
     });
+    await loadCompanies();
     await loadDataStatus();
     $("#settings-status").textContent = "已儲存";
   } catch {
@@ -2297,7 +2298,8 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
-  await Promise.all([loadSettings(), loadCompanies(), loadAccountState()]);
+  await Promise.all([loadSettings(), loadCompanies()]);
+  await loadAccountState();
   await loadDataStatus();
   renderSelectedCompany();
   renderHoldings();
