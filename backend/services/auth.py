@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import random
 import re
 import secrets
 import sqlite3
@@ -22,6 +21,7 @@ SUPER_USER_USERNAME = "pcedison@gmail.com"
 AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
+SESSION_CLEANUP_INTERVAL_SECONDS = 15 * 60
 
 
 class AuthRateLimitError(Exception):
@@ -48,6 +48,7 @@ class AuthUser:
 class AuthService:
     def __init__(self, db_path: Path | str = DEFAULT_DB_PATH):
         self.db_path = Path(db_path)
+        self._last_session_cleanup_at: datetime | None = None
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -81,6 +82,7 @@ class AuthService:
 
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
                 CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+                CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 
                 CREATE TABLE IF NOT EXISTS auth_attempts (
                     identifier TEXT PRIMARY KEY,
@@ -263,6 +265,13 @@ class AuthService:
         with self._connect() as connection:
             connection.execute("DELETE FROM auth_attempts WHERE identifier = ?", (identifier,))
 
+    def _should_cleanup_sessions(self, now: datetime) -> bool:
+        last_cleanup = self._last_session_cleanup_at
+        if last_cleanup and last_cleanup > now - timedelta(seconds=SESSION_CLEANUP_INTERVAL_SECONDS):
+            return False
+        self._last_session_cleanup_at = now
+        return True
+
     def create_session(self, user_id: int, days: int = 30) -> str:
         token = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc)
@@ -280,9 +289,10 @@ class AuthService:
     def get_user_by_session(self, token: str | None) -> AuthUser | None:
         if not token:
             return None
-        now = self._now()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
         with self._connect() as connection:
-            if random.random() < 0.01:
+            if self._should_cleanup_sessions(now_dt):
                 connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
             row = connection.execute(
                 """

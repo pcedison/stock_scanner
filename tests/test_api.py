@@ -1,11 +1,13 @@
-from fastapi.testclient import TestClient
-import pytest
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
 
 import backend.main as main_module
 from backend.main import app
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AUTH_FAILURE_LIMIT, AuthService, SUPER_USER_USERNAME
+from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService, SUPER_USER_USERNAME
 from backend.services.settings_service import load_settings, save_settings
 
 
@@ -188,6 +190,43 @@ def test_failed_login_attempts_are_rate_limited(tmp_path, monkeypatch):
         json={"username": username, "password": "test-password-123"},
     )
     assert other_source_response.status_code == 200
+
+
+def test_session_cleanup_is_throttled_but_deterministic(tmp_path):
+    service = AuthService(tmp_path / "auth.sqlite3")
+    user = service.create_user(f"cleanup_{uuid4().hex[:10]}@example.com", "test-password-123")
+    token = service.create_session(user.id)
+    old_time = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+    def insert_expired_session(token_value: str) -> None:
+        with service._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO sessions (user_id, token_hash, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user.id, service._token_hash(token_value), old_time, old_time),
+            )
+
+    def expired_session_exists(token_value: str) -> bool:
+        with service._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM sessions WHERE token_hash = ?",
+                (service._token_hash(token_value),),
+            ).fetchone()
+        return row is not None
+
+    insert_expired_session("expired-a")
+    assert service.get_user_by_session(token) == user
+    assert not expired_session_exists("expired-a")
+
+    insert_expired_session("expired-b")
+    assert service.get_user_by_session(token) == user
+    assert expired_session_exists("expired-b")
+
+    service._last_session_cleanup_at = datetime.now(timezone.utc) - timedelta(seconds=SESSION_CLEANUP_INTERVAL_SECONDS + 1)
+    assert service.get_user_by_session(token) == user
+    assert not expired_session_exists("expired-b")
 
 
 def test_market_scan_is_independent_from_holding_add_and_delete():

@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -45,6 +46,31 @@ class SingleReadRequest:
         if self.text_reads > 1:
             raise TypeError("Body has already been used")
         return self.text_value
+
+
+class FakeStatement:
+    def __init__(self, sql):
+        self.sql = sql
+        self.params = ()
+
+    def bind(self, *params):
+        self.params = params
+        return self
+
+
+class FakeD1:
+    def __init__(self):
+        self.prepared = []
+        self.batches = []
+
+    def prepare(self, sql):
+        statement = FakeStatement(sql)
+        self.prepared.append(statement)
+        return statement
+
+    async def batch(self, statements):
+        self.batches.append(list(statements))
+        return []
 
 
 def test_worker_request_json_reads_body_once(monkeypatch):
@@ -125,3 +151,80 @@ def test_worker_settings_payload_validation(monkeypatch):
     with pytest.raises(worker.BadRequestError):
         worker.settings_from_payload({"revenue_growth_mode": "bad-mode"}, strict=True)
     assert worker.settings_from_payload({"manual_scan_enabled": "false"})["manual_scan_enabled"] is True
+
+
+def test_worker_app_status_reads_d1_settings(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+
+    async def fake_r2_json(key, fallback):
+        assert key == "public/data_sources_status.json"
+        return {"activeProvider": "CloudflareR2Seed"}
+
+    async def fake_get_settings():
+        return {"auto_scan_full_market": False, "manual_scan_enabled": False}
+
+    api.r2_json = fake_r2_json
+    api.get_settings = fake_get_settings
+
+    response = asyncio.run(api.route(types.SimpleNamespace(method="GET"), "/api/app-status", {}))
+    payload = json.loads(response.body)
+
+    assert payload["dataSourceStatus"]["activeProvider"] == "CloudflareR2Seed"
+    assert payload["schedulerAutoScan"]["autoScanEnabled"] is False
+    assert payload["schedulerAutoScan"]["manualScanEnabled"] is False
+
+
+def test_worker_replace_holdings_uses_single_d1_batch_and_preserves_null_average_cost(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    fake_db = FakeD1()
+    api = worker.Api(env=types.SimpleNamespace(DB=fake_db))
+
+    async def fake_list_holdings(user_id):
+        assert user_id == 42
+        return [
+            {"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": None},
+            {"stockCode": "2357", "name": "華碩", "shares": 200, "averageCost": 510.5},
+        ]
+
+    api.list_holdings = fake_list_holdings
+
+    result = asyncio.run(
+        api.replace_holdings(
+            42,
+            [
+                {"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": None},
+                {"stockCode": "2357", "name": "華碩", "shares": 200, "averageCost": 510.5},
+            ],
+        )
+    )
+
+    assert len(fake_db.batches) == 1
+    batch = fake_db.batches[0]
+    assert len(batch) == 3
+    assert batch[0].sql == "DELETE FROM holdings WHERE user_id = ?"
+    assert batch[0].params == (42,)
+    assert "INSERT INTO holdings" in batch[1].sql
+    assert batch[1].params[:4] == (42, "2330", "台積電", 1000)
+    assert batch[1].params[4] is None
+    assert batch[2].params[:4] == (42, "2357", "華碩", 200)
+    assert batch[2].params[4] == 510.5
+    assert result[0]["averageCost"] is None
+
+
+def test_worker_upsert_holding_preserves_null_average_cost(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+    calls = []
+
+    async def fake_db_run(sql, *params):
+        calls.append((sql, params))
+
+    api.db_run = fake_db_run
+
+    asyncio.run(api.upsert_holding(7, {"stockCode": "2330", "name": "台積電", "shares": 3, "averageCost": None}))
+
+    assert len(calls) == 1
+    assert "INSERT INTO holdings" in calls[0][0]
+    assert calls[0][1][:4] == (7, "2330", "台積電", 3)
+    assert calls[0][1][4] is None

@@ -822,7 +822,7 @@ class Api:
             holding["stockCode"],
             holding.get("name") or "",
             holding.get("shares", 0),
-            holding.get("averageCost") if holding.get("averageCost") is not None else 0,
+            holding.get("averageCost"),
             now,
             now,
         )
@@ -845,7 +845,7 @@ class Api:
                     h["stockCode"],
                     h.get("name") or "",
                     h.get("shares", 0),
-                    h.get("averageCost") if h.get("averageCost") is not None else 0,
+                    h.get("averageCost"),
                     now,
                     now,
                 )
