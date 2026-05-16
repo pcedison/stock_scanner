@@ -18,6 +18,15 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 SUPER_USER_USERNAME = "pcedison@gmail.com"
+AUTH_FAILURE_LIMIT = 5
+AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
+AUTH_LOCK_SECONDS = 15 * 60
+
+
+class AuthRateLimitError(Exception):
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("登入嘗試過多，請稍後再試。")
 
 
 @dataclass(frozen=True)
@@ -72,6 +81,16 @@ class AuthService:
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
                 CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
 
+                CREATE TABLE IF NOT EXISTS auth_attempts (
+                    identifier TEXT PRIMARY KEY,
+                    failure_count INTEGER NOT NULL,
+                    first_failed_at TEXT NOT NULL,
+                    last_failed_at TEXT NOT NULL,
+                    locked_until TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_auth_attempts_locked_until ON auth_attempts(locked_until);
+
                 CREATE TABLE IF NOT EXISTS holdings (
                     user_id INTEGER NOT NULL,
                     stock_code TEXT NOT NULL,
@@ -105,8 +124,23 @@ class AuthService:
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
+    def _parse_time(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    @staticmethod
     def _token_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _auth_attempt_identifier(username: str, source: str | None) -> str:
+        normalized_username = (username or "").strip().lower()
+        normalized_source = (source or "unknown").split(",", 1)[0].strip().lower() or "unknown"
+        return hashlib.sha256(f"{normalized_source}|{normalized_username}".encode("utf-8")).hexdigest()
 
     @staticmethod
     def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -173,6 +207,60 @@ class AuthService:
         if row is None or not self._verify_password(password, row["password_hash"]):
             return None
         return self._row_to_user(row)
+
+    def assert_auth_allowed(self, username: str, source: str | None) -> None:
+        identifier = self._auth_attempt_identifier(username, source)
+        now = datetime.now(timezone.utc)
+        stale_before = (now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS)).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM auth_attempts WHERE locked_until IS NULL AND first_failed_at <= ?",
+                (stale_before,),
+            )
+            row = connection.execute(
+                "SELECT locked_until FROM auth_attempts WHERE identifier = ?",
+                (identifier,),
+            ).fetchone()
+            locked_until = self._parse_time(row["locked_until"]) if row else None
+            if locked_until and locked_until > now:
+                retry_after = max(1, int((locked_until - now).total_seconds()))
+                raise AuthRateLimitError(retry_after)
+            if locked_until:
+                connection.execute("DELETE FROM auth_attempts WHERE identifier = ?", (identifier,))
+
+    def record_auth_failure(self, username: str, source: str | None) -> None:
+        identifier = self._auth_attempt_identifier(username, source)
+        now = datetime.now(timezone.utc)
+        now_text = now.isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT failure_count, first_failed_at FROM auth_attempts WHERE identifier = ?",
+                (identifier,),
+            ).fetchone()
+            first_failed_at = self._parse_time(row["first_failed_at"]) if row else None
+            if not first_failed_at or first_failed_at <= now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS):
+                failure_count = 1
+                first_failed_at = now
+            else:
+                failure_count = int(row["failure_count"]) + 1
+            locked_until = (now + timedelta(seconds=AUTH_LOCK_SECONDS)).isoformat() if failure_count >= AUTH_FAILURE_LIMIT else None
+            connection.execute(
+                """
+                INSERT INTO auth_attempts (identifier, failure_count, first_failed_at, last_failed_at, locked_until)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(identifier) DO UPDATE SET
+                    failure_count = excluded.failure_count,
+                    first_failed_at = excluded.first_failed_at,
+                    last_failed_at = excluded.last_failed_at,
+                    locked_until = excluded.locked_until
+                """,
+                (identifier, failure_count, first_failed_at.isoformat(), now_text, locked_until),
+            )
+
+    def clear_auth_failures(self, username: str, source: str | None) -> None:
+        identifier = self._auth_attempt_identifier(username, source)
+        with self._connect() as connection:
+            connection.execute("DELETE FROM auth_attempts WHERE identifier = ?", (identifier,))
 
     def create_session(self, user_id: int, days: int = 30) -> str:
         token = secrets.token_urlsafe(32)

@@ -42,6 +42,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run quality gates
+        run: |
+          python -m pytest tests/test_api.py tests/test_frontend_parser.py tests/test_cloudflare_worker.py -q
+          python -m pip check
+          npm audit --audit-level=low
+
       - name: Rebuild Cloudflare seed from committed cache
         run: |
           if [ -f data/official_cache_seed_2026-05-14.zip ]; then

@@ -18,3 +18,4 @@ cloudflare/python_modules/
 cloudflare/__pycache__/
 .wrangler/
 node_modules/
+.claude/

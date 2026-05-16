@@ -5,7 +5,7 @@ from uuid import uuid4
 import backend.main as main_module
 from backend.main import app
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AuthService, SUPER_USER_USERNAME
+from backend.services.auth import AUTH_FAILURE_LIMIT, AuthService, SUPER_USER_USERNAME
 from backend.services.settings_service import load_settings, save_settings
 
 
@@ -109,6 +109,15 @@ def test_settings_api_round_trip_as_super_user(monkeypatch):
         save_settings(original)
 
 
+def test_settings_rejects_string_booleans(monkeypatch):
+    monkeypatch.setattr(main_module, "_require_super_user", lambda req: None)
+    original = load_settings()
+
+    response = client.put("/api/settings", json={**original.model_dump(), "manual_scan_enabled": "false"})
+
+    assert response.status_code == 422
+
+
 def test_lightweight_auth_persists_server_side_holdings():
     test_client = TestClient(app)
     username = f"user_{uuid4().hex[:10]}"
@@ -147,6 +156,38 @@ def test_auth_accepts_common_email_symbols(tmp_path):
     assert service.authenticate("qa+audit%2026@example.com", "test-password-123") is not None
     with pytest.raises(ValueError):
         service.create_user("bad account@example.com", "test-password-123")
+
+
+def test_failed_login_attempts_are_rate_limited(tmp_path, monkeypatch):
+    auth_service = AuthService(tmp_path / "auth.sqlite3")
+    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    username = f"rate_{uuid4().hex[:10]}@example.com"
+    auth_service.create_user(username, "test-password-123")
+    test_client = TestClient(app)
+    headers = {"x-forwarded-for": "203.0.113.10"}
+
+    for _ in range(AUTH_FAILURE_LIMIT):
+        response = test_client.post(
+            "/api/auth/login",
+            headers=headers,
+            json={"username": username, "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+
+    limited_response = test_client.post(
+        "/api/auth/login",
+        headers=headers,
+        json={"username": username, "password": "test-password-123"},
+    )
+    assert limited_response.status_code == 429
+    assert int(limited_response.headers["retry-after"]) > 0
+
+    other_source_response = test_client.post(
+        "/api/auth/login",
+        headers={"x-forwarded-for": "203.0.113.11"},
+        json={"username": username, "password": "test-password-123"},
+    )
+    assert other_source_response.status_code == 200
 
 
 def test_market_scan_is_independent_from_holding_add_and_delete():

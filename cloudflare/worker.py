@@ -22,8 +22,12 @@ PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
 SUPER_USER_USERNAME = "pcedison@gmail.com"
-_LOCALHOST_ORIGIN_RE = re.compile(r"^http://localhost:\d{1,5}$")
+_LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
 ALLOWED_ORIGINS = frozenset({"https://stock-scanner-beta.pages.dev"})
+AUTH_FAILURE_LIMIT = 5
+AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
+AUTH_LOCK_SECONDS = 15 * 60
+REVENUE_GROWTH_MODES = frozenset({"cumulative_ytd", "monthly", "trailing_3m_avg"})
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,
@@ -64,6 +68,12 @@ class ForbiddenError(Exception):
 
 class BadRequestError(Exception):
     pass
+
+
+class RateLimitError(Exception):
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("登入嘗試過多，請稍後再試。")
 
 
 def utc_now() -> str:
@@ -114,8 +124,33 @@ def text_response(content, status=200, media_type="text/plain; charset=utf-8", h
     return Response.new(content, to_js({"status": status, "headers": response_headers}, dict_converter=Object.fromEntries))
 
 
-def error_response(detail, status=400):
-    return json_response({"detail": detail}, status=status)
+def error_response(detail, status=400, headers=None):
+    return json_response({"detail": detail}, status=status, headers=headers)
+
+
+def settings_from_payload(payload, strict=False):
+    if not isinstance(payload, dict):
+        if strict:
+            raise BadRequestError("設定內容需為物件")
+        payload = {}
+    settings = {}
+    for key, default in DEFAULT_SETTINGS.items():
+        value = payload.get(key, default)
+        if key == "revenue_growth_mode":
+            if value in REVENUE_GROWTH_MODES:
+                settings[key] = value
+            elif strict:
+                raise BadRequestError("revenue_growth_mode 值不正確")
+            else:
+                settings[key] = default
+            continue
+        if isinstance(value, bool):
+            settings[key] = value
+        elif strict:
+            raise BadRequestError(f"{key} 必須為布林值")
+        else:
+            settings[key] = default
+    return settings
 
 
 def normalize_username(username: str) -> str:
@@ -254,6 +289,8 @@ class Api:
             response = error_response(str(exc), status=401)
         except ForbiddenError as exc:
             response = error_response(str(exc), status=403)
+        except RateLimitError as exc:
+            response = error_response(str(exc), status=429, headers={"retry-after": str(exc.retry_after_seconds)})
         except Exception as exc:
             print(f"Cloudflare Worker API error: {exc}")
             response = error_response("伺服器暫時無法處理請求，請稍後再試。", status=500)
@@ -272,6 +309,7 @@ class Api:
             "access-control-allow-origin": origin,
             "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
             "access-control-allow-headers": "content-type,cookie",
+            "access-control-allow-credentials": "true",
             "vary": "Origin",
         }
 
@@ -637,6 +675,70 @@ class Api:
         )
         return token
 
+    def auth_source(self, request):
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+        return (
+            forwarded_for
+            or str(request.headers.get("cf-connecting-ip") or "").strip()
+            or str(request.headers.get("x-real-ip") or "").strip()
+            or "unknown"
+        )
+
+    def auth_attempt_identifier(self, username: str, request):
+        source = self.auth_source(request).lower()
+        normalized = str(username or "").strip().lower()
+        return hashlib.sha256(f"{source}|{normalized}".encode("utf-8")).hexdigest()
+
+    async def require_auth_attempt_allowed(self, username: str, request):
+        identifier = self.auth_attempt_identifier(username, request)
+        now = datetime.now(timezone.utc)
+        stale_before = (now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS)).isoformat()
+        await self.db_run(
+            "DELETE FROM auth_attempts WHERE locked_until IS NULL AND first_failed_at <= ?",
+            stale_before,
+        )
+        row = await self.db_first("SELECT locked_until FROM auth_attempts WHERE identifier = ?", identifier)
+        locked_until = parse_time(row.get("locked_until")) if row else None
+        if locked_until and locked_until > now:
+            retry_after = max(1, int((locked_until - now).total_seconds()))
+            raise RateLimitError(retry_after)
+        if locked_until:
+            await self.db_run("DELETE FROM auth_attempts WHERE identifier = ?", identifier)
+
+    async def record_auth_failure(self, username: str, request):
+        identifier = self.auth_attempt_identifier(username, request)
+        now = datetime.now(timezone.utc)
+        row = await self.db_first(
+            "SELECT failure_count, first_failed_at FROM auth_attempts WHERE identifier = ?",
+            identifier,
+        )
+        first_failed_at = parse_time(row.get("first_failed_at")) if row else None
+        if not first_failed_at or first_failed_at <= now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS):
+            failure_count = 1
+            first_failed_at = now
+        else:
+            failure_count = int(row.get("failure_count") or 0) + 1
+        locked_until = (now + timedelta(seconds=AUTH_LOCK_SECONDS)).isoformat() if failure_count >= AUTH_FAILURE_LIMIT else None
+        await self.db_run(
+            """
+            INSERT INTO auth_attempts (identifier, failure_count, first_failed_at, last_failed_at, locked_until)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(identifier) DO UPDATE SET
+                failure_count = excluded.failure_count,
+                first_failed_at = excluded.first_failed_at,
+                last_failed_at = excluded.last_failed_at,
+                locked_until = excluded.locked_until
+            """,
+            identifier,
+            failure_count,
+            first_failed_at.isoformat(),
+            now.isoformat(),
+            locked_until,
+        )
+
+    async def clear_auth_failures(self, username: str, request):
+        await self.db_run("DELETE FROM auth_attempts WHERE identifier = ?", self.auth_attempt_identifier(username, request))
+
     async def register(self, request):
         payload = await self.request_json(request)
         try:
@@ -645,8 +747,10 @@ class Api:
             validate_password(password)
         except ValueError as exc:
             return error_response(str(exc), status=400)
+        await self.require_auth_attempt_allowed(username, request)
         existing = await self.db_first("SELECT id FROM users WHERE username = ?", username)
         if existing:
+            await self.record_auth_failure(username, request)
             return error_response("帳號已存在", status=400)
         now = utc_now()
         await self.db_run(
@@ -657,17 +761,24 @@ class Api:
             now,
         )
         user = await self.db_first("SELECT id, username, display_name FROM users WHERE username = ?", username)
+        await self.clear_auth_failures(username, request)
         token = await self.create_session(user["id"])
         holdings = await self.list_holdings(user["id"])
         return json_response({"authenticated": True, "user": public_user(user), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def login(self, request):
         payload = await self.request_json(request)
-        username = normalize_username(payload.get("username"))
+        try:
+            username = normalize_username(payload.get("username"))
+        except ValueError:
+            return error_response("帳號或密碼錯誤", status=401)
         password = str(payload.get("password") or "")
+        await self.require_auth_attempt_allowed(username, request)
         row = await self.db_first("SELECT id, username, display_name, password_hash FROM users WHERE username = ?", username)
         if not row or not verify_password(password, row["password_hash"]):
+            await self.record_auth_failure(username, request)
             return error_response("帳號或密碼錯誤", status=401)
+        await self.clear_auth_failures(username, request)
         token = await self.create_session(row["id"])
         holdings = await self.list_holdings(row["id"])
         return json_response({"authenticated": True, "user": public_user(row), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
@@ -724,12 +835,12 @@ class Api:
         if not row:
             return DEFAULT_SETTINGS
         try:
-            return {**DEFAULT_SETTINGS, **json.loads(row["value"])}
+            return settings_from_payload({**DEFAULT_SETTINGS, **json.loads(row["value"])})
         except Exception:
             return DEFAULT_SETTINGS
 
     async def put_settings(self, payload):
-        settings = {**DEFAULT_SETTINGS, **{key: payload.get(key, value) for key, value in DEFAULT_SETTINGS.items()}}
+        settings = settings_from_payload(payload, strict=True)
         await self.db_run(
             """
             INSERT INTO app_kv (key, value, updated_at)

@@ -14,6 +14,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS auth_attempts (
+    identifier TEXT PRIMARY KEY,
+    failure_count INTEGER NOT NULL,
+    first_failed_at TEXT NOT NULL,
+    last_failed_at TEXT NOT NULL,
+    locked_until TEXT
+);
+
 CREATE TABLE IF NOT EXISTS holdings (
     user_id INTEGER NOT NULL,
     stock_code TEXT NOT NULL,
@@ -46,4 +54,5 @@ CREATE TABLE IF NOT EXISTS refresh_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_locked_until ON auth_attempts(locked_until);
 CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status ON refresh_jobs(job_type, status, queued_at);

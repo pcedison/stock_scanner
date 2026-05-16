@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AuthService, SUPER_USER_USERNAME
+from backend.services.auth import AuthRateLimitError, AuthService, SUPER_USER_USERNAME
 from backend.services.backtest import run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
@@ -131,6 +131,13 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+
+
+def _auth_source(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
 
 
 def _current_user(request: Request):
@@ -264,11 +271,18 @@ def health() -> dict:
 
 
 @app.post("/api/auth/register")
-def register(payload: AuthRequest, response: Response) -> dict:
+def register(payload: AuthRequest, request: Request, response: Response) -> dict:
+    source = _auth_source(request)
+    try:
+        auth_service.assert_auth_allowed(payload.username, source)
+    except AuthRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc
     try:
         user = auth_service.create_user(payload.username, payload.password, payload.displayName)
     except ValueError as exc:
+        auth_service.record_auth_failure(payload.username, source)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    auth_service.clear_auth_failures(payload.username, source)
     token = auth_service.create_session(user.id)
     _set_session_cookie(response, token)
     holdings = auth_service.list_holdings(user.id)
@@ -276,10 +290,17 @@ def register(payload: AuthRequest, response: Response) -> dict:
 
 
 @app.post("/api/auth/login")
-def login(payload: AuthRequest, response: Response) -> dict:
+def login(payload: AuthRequest, request: Request, response: Response) -> dict:
+    source = _auth_source(request)
+    try:
+        auth_service.assert_auth_allowed(payload.username, source)
+    except AuthRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc
     user = auth_service.authenticate(payload.username, payload.password)
     if user is None:
+        auth_service.record_auth_failure(payload.username, source)
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    auth_service.clear_auth_failures(payload.username, source)
     token = auth_service.create_session(user.id)
     _set_session_cookie(response, token)
     holdings = auth_service.list_holdings(user.id)
