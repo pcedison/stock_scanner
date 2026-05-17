@@ -4,6 +4,7 @@ import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -31,11 +32,75 @@ from backend.services.settings_service import load_settings, save_settings
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT_DIR / "frontend"
+DEFAULT_CORS_ALLOW_ORIGINS = ("http://localhost", "http://localhost:8000", "http://127.0.0.1:8000")
+LOCAL_CORS_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cookie_secure() -> bool:
+    return _env_flag("SESSION_COOKIE_SECURE")
+
+
+def _runtime_environment() -> str:
+    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower() or "development"
+
+
+def _is_production_environment() -> bool:
+    return _runtime_environment() in {"prod", "production"}
+
+
+def _csv_env(name: str, default: tuple[str, ...] = ()) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _cors_allowed_origins() -> list[str]:
+    return _csv_env("APP_CORS_ALLOW_ORIGINS", DEFAULT_CORS_ALLOW_ORIGINS)
+
+
+def _origin_host(origin: str) -> str:
+    return (urlparse(origin).hostname or "").lower()
+
+
+def _is_local_cors_origin(origin: str) -> bool:
+    return _origin_host(origin) in LOCAL_CORS_HOSTS
+
+
+def _is_https_origin(origin: str) -> bool:
+    return urlparse(origin).scheme.lower() == "https"
+
+
+def _validate_runtime_security(cors_origins: list[str]) -> None:
+    if not _is_production_environment():
+        return
+    if not _cookie_secure():
+        raise RuntimeError("SESSION_COOKIE_SECURE must be enabled when APP_ENV=production")
+    local_origins = sorted(origin for origin in cors_origins if _is_local_cors_origin(origin))
+    if local_origins and not _env_flag("APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
+        raise RuntimeError(
+            "APP_CORS_ALLOW_ORIGINS must not include localhost origins in production: "
+            + ", ".join(local_origins)
+        )
+    insecure_origins = sorted(origin for origin in cors_origins if not _is_https_origin(origin))
+    if insecure_origins and not _env_flag("APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
+        raise RuntimeError(
+            "APP_CORS_ALLOW_ORIGINS must use https origins in production: "
+            + ", ".join(insecure_origins)
+        )
+
+
+CORS_ALLOWED_ORIGINS = _cors_allowed_origins()
+_validate_runtime_security(CORS_ALLOWED_ORIGINS)
 
 app = FastAPI(title="台股財報事件驅動掃描器", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -111,10 +176,6 @@ class HoldingUpsertRequest(BaseModel):
 
 class ReportFormatRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
-
-
-def _cookie_secure() -> bool:
-    return os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _set_session_cookie(response: Response, token: str) -> None:

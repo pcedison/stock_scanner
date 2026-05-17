@@ -38,6 +38,44 @@ def test_health_endpoint():
     assert "geolocation=()" in response.headers["Permissions-Policy"]
 
 
+def test_cors_allowlist_can_be_configured(monkeypatch):
+    monkeypatch.setenv("APP_CORS_ALLOW_ORIGINS", "https://app.example, http://127.0.0.1:8000")
+
+    assert main_module._cors_allowed_origins() == ["https://app.example", "http://127.0.0.1:8000"]
+
+
+def test_production_runtime_security_requires_secure_cookie(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
+
+    with pytest.raises(RuntimeError, match="SESSION_COOKIE_SECURE"):
+        main_module._validate_runtime_security(["https://stock-scanner-beta.pages.dev"])
+
+
+def test_production_runtime_security_rejects_local_cors(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "1")
+    monkeypatch.delenv("APP_ALLOW_LOCAL_CORS_IN_PRODUCTION", raising=False)
+
+    with pytest.raises(RuntimeError, match="localhost"):
+        main_module._validate_runtime_security(["http://localhost:5173", "https://stock-scanner-beta.pages.dev"])
+
+
+def test_production_runtime_security_allows_explicit_https_origin(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "1")
+
+    main_module._validate_runtime_security(["https://stock-scanner-beta.pages.dev"])
+
+
+def test_production_runtime_security_rejects_non_https_origin(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "1")
+
+    with pytest.raises(RuntimeError, match="https origins"):
+        main_module._validate_runtime_security(["http://stock-scanner-beta.pages.dev"])
+
+
 def test_app_status_contract_shape():
     response = client.get("/api/app-status")
     payload = response.json()

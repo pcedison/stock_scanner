@@ -98,3 +98,6 @@ pytest
 通知、券商同步與 AI 摘要目前提供安全的狀態檢查。未提供 `TELEGRAM_BOT_TOKEN`、`LINE_CHANNEL_ACCESS_TOKEN`、SMTP、券商 API 或 `OPENAI_API_KEY` 前，系統不會對外傳送訊息，也不會讀取真實券商持股。
 
 若需要離線示範，可在設定中開啟 `使用 Mock Data`，改用 `data/sample_companies.json` 與 `data/sample_fundamentals.json`。
+# Current Architecture Notice
+
+The current project state is server-backed and Cloudflare-ready, not localStorage-only. Start with `docs/current_architecture.md` for the authoritative snapshot of auth/session/settings storage, offline seed deployment, CI/deploy boundaries, runtime health checks, and production security defaults.

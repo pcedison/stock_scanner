@@ -53,4 +53,4 @@ jobs:
       - name: Rebuild Cloudflare seed dry run
         run: |
           unzip -o data/official_cache_seed_2026-05-14.zip -d data
-          python scripts/build_cloudflare_seed.py
+          CLOUDFLARE_SEED_MODE=offline python scripts/build_cloudflare_seed.py

@@ -689,3 +689,6 @@ pytest
 10. T-090 README
 
 完成以上後，就是可用 MVP。
+# Current Task State
+
+The remaining near-term quality work has been folded into the active architecture snapshot in `docs/current_architecture.md`. Current validation covers offline seed packaging, FastAPI/Worker response contracts, production security guards, Worker cache-quality health checks, browser smoke/E2E flows, and frontend renderer XSS regression tests.

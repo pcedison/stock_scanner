@@ -12,9 +12,16 @@ DEFAULT_ZIP = Path("data/official_cache_seed_2026-05-14.zip")
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
+    "cloudflare_seed/manifest.json",
+    "cloudflare_seed/companies.json",
+    "cloudflare_seed/data_sources_status.json",
+    "cloudflare_seed/market_scan_latest.json",
+    "cloudflare_seed/analysis_by_code.json",
 }
 MIN_HISTORY_COMPANIES = 1000
 MIN_HISTORY_ROWS = 5000
+MIN_SEED_COMPANIES = 1000
+MIN_SEED_ANALYSIS = 1000
 
 
 def _load_json_from_zip(archive: zipfile.ZipFile, name: str) -> Any:
@@ -39,6 +46,12 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
 
         history = _load_json_from_zip(archive, "official_fundamentals_history.json")
         _load_json_from_zip(archive, "official_history_backfill_progress.json")
+        manifest = _load_json_from_zip(archive, "cloudflare_seed/manifest.json")
+        analysis_shards = sorted(
+            name for name in names if name.startswith("cloudflare_seed/analysis_shards/") and name.endswith(".json")
+        )
+        if not analysis_shards:
+            raise ValueError("Seed zip is missing cloudflare_seed/analysis_shards/*.json entries")
 
     if not isinstance(history, dict):
         raise ValueError("official_fundamentals_history.json must be a JSON object")
@@ -62,11 +75,30 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
     if row_count < MIN_HISTORY_ROWS:
         raise ValueError(f"Seed history has only {row_count} quarterly rows; expected at least {MIN_HISTORY_ROWS}")
 
+    if not isinstance(manifest, dict):
+        raise ValueError("cloudflare_seed/manifest.json must be a JSON object")
+    counts = manifest.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError("cloudflare_seed/manifest.json must contain a counts object")
+    seed_companies = int(counts.get("companies") or 0)
+    seed_analysis = int(counts.get("analysis") or 0)
+    seed_universe = sum(int(counts.get(key) or 0) for key in ("entry", "watch", "excluded"))
+    if seed_companies < MIN_SEED_COMPANIES:
+        raise ValueError(f"Cloudflare seed has only {seed_companies} companies; expected at least {MIN_SEED_COMPANIES}")
+    if seed_analysis < MIN_SEED_ANALYSIS:
+        raise ValueError(f"Cloudflare seed has only {seed_analysis} analysis rows; expected at least {MIN_SEED_ANALYSIS}")
+    if seed_universe < MIN_SEED_ANALYSIS:
+        raise ValueError(f"Cloudflare seed universe has only {seed_universe} rows; expected at least {MIN_SEED_ANALYSIS}")
+
     return {
         "zip": str(path),
         "companies": company_count,
         "quarterlyRows": row_count,
         "latestPeriod": latest_period,
+        "seedCompanies": seed_companies,
+        "seedAnalysis": seed_analysis,
+        "seedUniverse": seed_universe,
+        "seedShards": len(analysis_shards),
         "requiredEntries": sorted(REQUIRED_ENTRIES),
     }
 

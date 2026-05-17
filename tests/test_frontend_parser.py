@@ -265,3 +265,52 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["hasFinancialForContext"] is True
     assert payload["hasPublished"] is True
     assert payload["isPartialPublished"] is True
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_frontend_renderers_escape_untrusted_html_payloads():
+    script = r"""
+const { state, renderAnalysisCard, renderMarketResultRow, renderRuleEvidence, renderRule } = require("./frontend/app.js");
+
+state.holdings = [];
+const hostileRule = {
+  code: '<img src=x onerror="alert(1)">',
+  title: '<script>alert(2)</script>',
+  passed: false,
+  severity: "WATCH",
+  message: 'message <img src=x onerror="alert(3)"> & <b>bold</b>',
+  evidence: [
+    { label: '<svg onload="alert(4)">', value: 1000, unit: "shares" },
+  ],
+};
+const hostileResult = {
+  stockCode: '2357" onclick="alert(5)',
+  companyName: '<img src=x onerror="alert(6)">',
+  status: "WATCH",
+  summary: '<script>alert(7)</script>',
+  reasons: [hostileRule],
+};
+
+console.log(JSON.stringify({
+  analysisCard: renderAnalysisCard(hostileResult, { allowAddAction: true }),
+  marketRow: renderMarketResultRow(hostileResult, { disclosureGroup: "announced", columnKey: "watch" }),
+  rule: renderRule(hostileRule),
+  evidence: renderRuleEvidence(hostileRule),
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    for rendered in payload.values():
+        lowered = rendered.lower()
+        assert "<script" not in lowered
+        assert "<img" not in lowered
+        assert "<svg" not in lowered
+        assert "&lt;" in rendered

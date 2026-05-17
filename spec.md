@@ -915,3 +915,6 @@ MVP 必須完成：
 - 公開發行公司財務報告及營運情形公告申報特殊適用範圍辦法: https://law.fsc.gov.tw/LawContent.aspx?id=GL000593
 - TWSE 市場開休市日期: https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html
 
+# Current Spec Notice
+
+The implementation has moved beyond the original MVP notes. The authoritative current architecture snapshot is `docs/current_architecture.md`: server-backed auth/settings/holdings, FastAPI/Worker contract tests, offline reproducible Cloudflare seed packaging, runtime cache quality checks, and production CORS/cookie guards.

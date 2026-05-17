@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +13,15 @@ from fastapi.encoders import jsonable_encoder
 ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "cloudflare" / "seed"
 ANALYSIS_SHARD_DIR = OUT_DIR / "analysis_shards"
+SEED_CACHE_ZIP = ROOT_DIR / "data" / "official_cache_seed_2026-05-14.zip"
+OFFLINE_SEED_PREFIX = "cloudflare_seed/"
+OFFLINE_SEED_REQUIRED_FILES = {
+    "manifest.json",
+    "companies.json",
+    "data_sources_status.json",
+    "market_scan_latest.json",
+    "analysis_by_code.json",
+}
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 sys.path.insert(0, str(ROOT_DIR))
 
@@ -36,6 +46,13 @@ def clear_generated_analysis_shards() -> None:
         return
     for path in ANALYSIS_SHARD_DIR.glob("*.json"):
         path.unlink()
+
+
+def clear_seed_output() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    for path in OUT_DIR.glob("*.json"):
+        path.unlink()
+    clear_generated_analysis_shards()
 
 
 def analysis_shard_key(stock_code: str) -> str:
@@ -222,12 +239,72 @@ def assert_seed_quality(scan_payload: dict, companies: list, analysis_by_code: d
         )
 
 
+def has_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> bool:
+    if not path.exists():
+        return False
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+    return all(f"{OFFLINE_SEED_PREFIX}{name}" in names for name in OFFLINE_SEED_REQUIRED_FILES) and any(
+        name.startswith(f"{OFFLINE_SEED_PREFIX}analysis_shards/") and name.endswith(".json")
+        for name in names
+    )
+
+
+def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
+    clear_seed_output()
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        missing = sorted(f"{OFFLINE_SEED_PREFIX}{name}" for name in OFFLINE_SEED_REQUIRED_FILES if f"{OFFLINE_SEED_PREFIX}{name}" not in names)
+        if missing:
+            raise RuntimeError(f"Offline seed cache is missing required entries: {', '.join(missing)}")
+
+        for name in names:
+            if not name.startswith(OFFLINE_SEED_PREFIX) or name.endswith("/"):
+                continue
+            relative = Path(name.removeprefix(OFFLINE_SEED_PREFIX))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError(f"Unsafe offline seed entry path: {name}")
+            target = OUT_DIR / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(name))
+
+    manifest = json.loads((OUT_DIR / "manifest.json").read_text(encoding="utf-8"))
+    counts = manifest.get("counts", {})
+    assert_seed_quality(
+        {
+            "universeSize": sum(int(counts.get(key) or 0) for key in ("entry", "watch", "excluded")),
+            "entry": [None] * int(counts.get("entry") or 0),
+            "watch": [None] * int(counts.get("watch") or 0),
+            "excluded": [None] * int(counts.get("excluded") or 0),
+        },
+        [None] * int(counts.get("companies") or 0),
+        {str(index): None for index in range(int(counts.get("analysis") or 0))},
+        "cloudflare_seed_cache",
+    )
+    return manifest
+
+
 def main() -> None:
+    seed_mode = os.getenv("CLOUDFLARE_SEED_MODE", "offline_first").strip().lower()
+    if seed_mode in {"offline", "offline_first"}:
+        if has_offline_seed_payload(SEED_CACHE_ZIP):
+            manifest = copy_offline_seed_payload(SEED_CACHE_ZIP)
+            manifest["qualityGates"] = {
+                **manifest.get("qualityGates", {}),
+                "buildMode": "offline",
+                "sourceZip": str(SEED_CACHE_ZIP.relative_to(ROOT_DIR)),
+            }
+            write_json(OUT_DIR / "manifest.json", manifest)
+            print(json.dumps(manifest, ensure_ascii=False, indent=2))
+            return
+        if seed_mode == "offline":
+            raise RuntimeError(f"{SEED_CACHE_ZIP} does not contain a complete cloudflare_seed payload")
+
     settings = load_settings()
     settings.use_mock_data = False
     settings.manual_scan_enabled = True
 
-    clear_generated_analysis_shards()
+    clear_seed_output()
     scan_payload = _scan_market_payload(settings)
     policy = refresh_policy()
     generated_at = datetime.fromisoformat(scan_payload["generatedAt"])

@@ -39,6 +39,8 @@ DEFAULT_SETTINGS = {
     "spring_festival_guard": True,
     "revenue_growth_mode": "cumulative_ytd",
 }
+MIN_CACHE_COMPANIES = 1000
+MIN_CACHE_ANALYSIS = 1000
 
 SECURITY_HEADERS = {
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
@@ -126,6 +128,27 @@ def text_response(content, status=200, media_type="text/plain; charset=utf-8", h
 
 def error_response(detail, status=400, headers=None):
     return json_response({"detail": detail}, status=status, headers=headers)
+
+
+def manifest_quality(manifest):
+    counts = manifest.get("counts") if isinstance(manifest, dict) else {}
+    counts = counts if isinstance(counts, dict) else {}
+    companies = int(counts.get("companies") or 0)
+    analysis = int(counts.get("analysis") or 0)
+    universe = sum(int(counts.get(key) or 0) for key in ("entry", "watch", "excluded"))
+    problems = []
+    if companies < MIN_CACHE_COMPANIES:
+        problems.append(f"companies below {MIN_CACHE_COMPANIES}")
+    if analysis < MIN_CACHE_ANALYSIS:
+        problems.append(f"analysis below {MIN_CACHE_ANALYSIS}")
+    if universe < MIN_CACHE_ANALYSIS:
+        problems.append(f"universe below {MIN_CACHE_ANALYSIS}")
+    return {
+        "ok": not problems,
+        "problems": problems,
+        "counts": {"companies": companies, "analysis": analysis, "universe": universe},
+        "minimums": {"companies": MIN_CACHE_COMPANIES, "analysis": MIN_CACHE_ANALYSIS, "universe": MIN_CACHE_ANALYSIS},
+    }
 
 
 def empty_backtest_status():
@@ -326,7 +349,14 @@ class Api:
     async def route(self, request, path: str, query: dict[str, list[str]]):
         if path == "/api/health" and request.method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
-            return json_response({"status": "ok", "runtime": "cloudflare-python-worker", "time": utc_now(), "cache": manifest})
+            quality = manifest_quality(manifest)
+            return json_response({
+                "status": "ok" if quality["ok"] else "degraded",
+                "runtime": "cloudflare-python-worker",
+                "time": utc_now(),
+                "cache": manifest,
+                "cacheQuality": quality,
+            })
 
         if path == "/api/cache/status" and request.method == "GET":
             return json_response(await self.cache_status())
@@ -523,6 +553,7 @@ class Api:
             "nextRefreshAfter": next_refresh,
             "latestRevenuePeriod": manifest.get("latestRevenuePeriod"),
             "latestFinancialPeriod": manifest.get("latestFinancialPeriod"),
+            "quality": manifest_quality(manifest),
         }
 
     async def ensure_refresh_job(self, manifest, force=False):

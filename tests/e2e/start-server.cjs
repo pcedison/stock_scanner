@@ -5,6 +5,7 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..", "..");
 const port = Number(process.argv[2] || process.env.E2E_PORT || 8010);
 const tempDir = path.join(root, ".tmp", "e2e");
+fs.rmSync(tempDir, { recursive: true, force: true });
 fs.mkdirSync(tempDir, { recursive: true });
 
 const settingsPath = path.join(tempDir, "settings.json");

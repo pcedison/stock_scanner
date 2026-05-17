@@ -20,6 +20,26 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": quarters}))
         archive.writestr("official_history_backfill_progress.json", "{}")
+        archive.writestr(
+            "cloudflare_seed/manifest.json",
+            json.dumps(
+                {
+                    "counts": {
+                        "companies": companies,
+                        "entry": 10,
+                        "watch": companies - 20,
+                        "excluded": 10,
+                        "analysis": companies,
+                        "analysisShards": 1,
+                    }
+                }
+            ),
+        )
+        archive.writestr("cloudflare_seed/companies.json", json.dumps({"items": []}))
+        archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
+        archive.writestr("cloudflare_seed/market_scan_latest.json", "{}")
+        archive.writestr("cloudflare_seed/analysis_by_code.json", "{}")
+        archive.writestr("cloudflare_seed/analysis_shards/10.json", "{}")
 
 
 def test_validate_seed_zip_accepts_populated_history(tmp_path):
@@ -31,6 +51,9 @@ def test_validate_seed_zip_accepts_populated_history(tmp_path):
     assert summary["companies"] == 1000
     assert summary["quarterlyRows"] == 5000
     assert summary["latestPeriod"] == "2024Q4"
+    assert summary["seedCompanies"] == 1000
+    assert summary["seedAnalysis"] == 1000
+    assert summary["seedShards"] == 1
 
 
 def test_validate_seed_zip_rejects_empty_history(tmp_path):
@@ -38,6 +61,12 @@ def test_validate_seed_zip_rejects_empty_history(tmp_path):
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": {}}))
         archive.writestr("official_history_backfill_progress.json", "{}")
+        archive.writestr("cloudflare_seed/manifest.json", json.dumps({"counts": {}}))
+        archive.writestr("cloudflare_seed/companies.json", "{}")
+        archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
+        archive.writestr("cloudflare_seed/market_scan_latest.json", "{}")
+        archive.writestr("cloudflare_seed/analysis_by_code.json", "{}")
+        archive.writestr("cloudflare_seed/analysis_shards/10.json", "{}")
 
     with pytest.raises(ValueError, match="companies"):
         validate_seed_zip(archive_path)

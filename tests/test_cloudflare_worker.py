@@ -203,6 +203,17 @@ def test_worker_error_response_preserves_rate_limit_retry_after(monkeypatch):
     assert response.headers["retry-after"] == "30"
 
 
+def test_worker_manifest_quality_flags_undersized_seed(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    bad = worker.manifest_quality({"counts": {"companies": 10, "entry": 1, "watch": 2, "excluded": 3, "analysis": 9}})
+    good = worker.manifest_quality({"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}})
+
+    assert bad["ok"] is False
+    assert bad["problems"]
+    assert good["ok"] is True
+
+
 def test_worker_settings_payload_validation(monkeypatch):
     worker = load_worker_module(monkeypatch)
 
@@ -260,6 +271,23 @@ def test_worker_app_status_reads_d1_settings(monkeypatch):
     assert payload["schedulerAutoScan"]["manualScanEnabled"] is False
     assert set(payload["backtestStatus"]) >= {"status", "trades", "metrics"}
     assert set(payload["backtestStatus"]["metrics"]) == {"tradeCount", "winRate", "totalReturn", "maxDrawdown"}
+
+
+def test_worker_health_reports_degraded_cache_quality(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+
+    async def fake_r2_json(key, fallback):
+        assert key == "public/manifest.json"
+        return {"counts": {"companies": 0, "entry": 0, "watch": 0, "excluded": 0, "analysis": 0}}
+
+    api.r2_json = fake_r2_json
+
+    response = asyncio.run(api.route(types.SimpleNamespace(method="GET"), "/api/health", {}))
+    payload = json.loads(response.body)
+
+    assert payload["status"] == "degraded"
+    assert payload["cacheQuality"]["ok"] is False
 
 
 def test_worker_scheduler_auto_scan_reads_d1_settings(monkeypatch):
