@@ -32,8 +32,27 @@ def test_health_endpoint():
     assert response.json()["status"] == "ok"
     assert response.headers["Strict-Transport-Security"].startswith("max-age=31536000")
     assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert "style-src 'self';" in response.headers["Content-Security-Policy"]
+    assert "unsafe-inline" not in response.headers["Content-Security-Policy"]
     assert response.headers["X-Frame-Options"] == "DENY"
     assert "geolocation=()" in response.headers["Permissions-Policy"]
+
+
+def test_app_status_contract_shape():
+    response = client.get("/api/app-status")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert set(payload) == {
+        "dataSourceStatus",
+        "schedulerStatus",
+        "schedulerAutoScan",
+        "integrationStatus",
+        "backtestStatus",
+    }
+    assert set(payload["schedulerAutoScan"]) == {"action", "autoScanEnabled", "manualScanEnabled", "scan"}
+    assert set(payload["backtestStatus"]) >= {"status", "trades", "metrics"}
+    assert set(payload["backtestStatus"]["metrics"]) == {"tradeCount", "winRate", "totalReturn", "maxDrawdown"}
 
 
 def test_companies_endpoint_is_paginated():

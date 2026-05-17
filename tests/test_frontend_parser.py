@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -144,8 +144,11 @@ const pcedisonMissingFlag = normalizeAuthUser({ username: "pcedison@gmail.com" }
 const normalWithFlag = normalizeAuthUser({ username: "normal@example.com", isSuperUser: true });
 state.auth = { authenticated: true, user: pcedisonFromUsername };
 const superState = isSuperUser();
-state.auth = { authenticated: true, user: normalWithFlag };
+state.auth = { checked: true, authenticated: true, user: normalWithFlag };
 const normalState = isSuperUser();
+const normalSettingsPermission = settingsPermissionMessage();
+state.auth = { checked: true, authenticated: false, user: null };
+const anonymousSettingsPermission = settingsPermissionMessage();
 const header = (contentType) => ({ get: () => contentType });
 const apiErrors = {
   html500: apiErrorMessage({ status: 500, headers: header("text/html") }, '<!DOCTYPE html><html><head><title>Worker threw exception</title></head><body>raw</body></html>'),
@@ -162,7 +165,7 @@ const adminErrors = {
   notFound: adminUsersErrorMessage("Not found"),
   normal: adminUsersErrorMessage("請先登入"),
 };
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { superUserUsername: SUPER_USER_USERNAME, normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { superUserUsername: SUPER_USER_USERNAME, normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -230,6 +233,8 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["auth"]["normalIdentity"] is False
     assert payload["auth"]["superState"] is True
     assert payload["auth"]["normalState"] is False
+    assert payload["auth"]["normalSettingsPermission"] == "需要管理員"
+    assert payload["auth"]["anonymousSettingsPermission"] == "需要登入管理員"
     assert payload["marketGroups"]["announced"]["entry"][0]["stockCode"] == "2357"
     assert payload["marketGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert payload["marketGroups"]["announced"]["excluded"][0]["stockCode"] == "2881"
@@ -240,6 +245,8 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert [item["stockCode"] for item in payload["filingAwareGroups"]["pending"]["watch"]] == ["1102", "1103"]
     assert payload["evidenceValue"] == "119.63 億"
     assert "evidence-table" in payload["evidenceHtml"]
+    assert "data-evidence-width" in payload["evidenceHtml"]
+    assert 'style="' not in payload["evidenceHtml"]
     assert "2025" in payload["evidenceHtml"]
     assert "虧損" in payload["evidenceRuleHtml"]
     assert payload["orderedCodes"] == ["E1", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X2", "T3", "A1", "HOLDING"]

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from backend.models.settings import ScannerSettings
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +75,53 @@ class FakeD1:
         return []
 
 
+class CompleteFakeStatement:
+    def __init__(self, sql):
+        self.sql = sql
+        self.params = ()
+
+    def bind(self, *params):
+        self.params = params
+        return self
+
+    async def run(self):
+        return {"success": True, "meta": {"changed_db": True}}
+
+    async def first(self):
+        return {"id": 1, "name": "row"}
+
+    async def all(self):
+        return {"results": [{"id": 1}, {"id": 2}]}
+
+
+class CompleteFakeD1:
+    def __init__(self):
+        self.prepared = []
+
+    def prepare(self, sql):
+        statement = CompleteFakeStatement(sql)
+        self.prepared.append(statement)
+        return statement
+
+
+class FakeR2Object:
+    def __init__(self, text):
+        self._text = text
+
+    async def text(self):
+        return self._text
+
+
+class FakeR2Cache:
+    def __init__(self, objects=None):
+        self.objects = objects or {}
+        self.calls = []
+
+    async def get(self, key):
+        self.calls.append(key)
+        return self.objects.get(key)
+
+
 def test_worker_request_json_reads_body_once(monkeypatch):
     worker = load_worker_module(monkeypatch)
     request = SingleReadRequest('{"username":"pcedison@gmail.com","password":"test-password-123"}')
@@ -102,6 +151,8 @@ def test_worker_security_headers_and_auth_pattern(monkeypatch):
 
     assert response.headers["strict-transport-security"].startswith("max-age=31536000")
     assert "script-src 'self'" in response.headers["content-security-policy"]
+    assert "style-src 'self';" in response.headers["content-security-policy"]
+    assert "unsafe-inline" not in response.headers["content-security-policy"]
     assert response.headers["x-frame-options"] == "DENY"
     assert worker.normalize_username(" Qa+audit%2026@example.com ") == "qa+audit%2026@example.com"
     try:
@@ -124,6 +175,32 @@ def test_worker_cors_allows_pages_and_local_loopback(monkeypatch):
     assert api.cors_headers(types.SimpleNamespace(headers={"origin": "https://evil.example"}))[
         "access-control-allow-origin"
     ] == "https://stock-scanner-beta.pages.dev"
+
+
+def test_worker_options_preflight_uses_cors_and_security_headers(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+    request = types.SimpleNamespace(
+        method="OPTIONS",
+        url="https://stock-scanner-beta-api.example/api/settings",
+        headers={"origin": "http://localhost:8000"},
+    )
+
+    response = asyncio.run(api.fetch(request))
+
+    assert response.init["status"] == 204
+    headers = response.headers
+    assert headers["access-control-allow-origin"] == "http://localhost:8000"
+    assert headers["strict-transport-security"].startswith("max-age=31536000")
+
+
+def test_worker_error_response_preserves_rate_limit_retry_after(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    response = worker.error_response("slow down", status=429, headers={"retry-after": "30"})
+
+    assert response.init["status"] == 429
+    assert response.headers["retry-after"] == "30"
 
 
 def test_worker_settings_payload_validation(monkeypatch):
@@ -153,6 +230,14 @@ def test_worker_settings_payload_validation(monkeypatch):
     assert worker.settings_from_payload({"manual_scan_enabled": "false"})["manual_scan_enabled"] is True
 
 
+def test_worker_default_settings_matches_fastapi_schema(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    fastapi_settings = ScannerSettings().model_dump()
+
+    assert set(worker.DEFAULT_SETTINGS) == set(fastapi_settings)
+    assert worker.DEFAULT_SETTINGS == fastapi_settings
+
+
 def test_worker_app_status_reads_d1_settings(monkeypatch):
     worker = load_worker_module(monkeypatch)
     api = worker.Api(env=None)
@@ -173,6 +258,55 @@ def test_worker_app_status_reads_d1_settings(monkeypatch):
     assert payload["dataSourceStatus"]["activeProvider"] == "CloudflareR2Seed"
     assert payload["schedulerAutoScan"]["autoScanEnabled"] is False
     assert payload["schedulerAutoScan"]["manualScanEnabled"] is False
+    assert set(payload["backtestStatus"]) >= {"status", "trades", "metrics"}
+    assert set(payload["backtestStatus"]["metrics"]) == {"tradeCount", "winRate", "totalReturn", "maxDrawdown"}
+
+
+def test_worker_scheduler_auto_scan_reads_d1_settings(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+
+    async def fake_get_settings():
+        return {"auto_scan_full_market": False, "manual_scan_enabled": False}
+
+    api.get_settings = fake_get_settings
+
+    response = asyncio.run(api.route(types.SimpleNamespace(method="GET"), "/api/scheduler/auto-scan", {}))
+    payload = json.loads(response.body)
+
+    assert payload["autoScanEnabled"] is False
+    assert payload["manualScanEnabled"] is False
+
+
+def test_worker_db_helpers_normalize_d1_shapes(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    fake_db = CompleteFakeD1()
+    api = worker.Api(env=types.SimpleNamespace(DB=fake_db))
+
+    run_result = asyncio.run(api.db_run("UPDATE items SET value = ?", 1))
+    first_result = asyncio.run(api.db_first("SELECT * FROM items WHERE id = ?", 1))
+    all_result = asyncio.run(api.db_all("SELECT * FROM items"))
+
+    assert run_result["success"] is True
+    assert first_result == {"id": 1, "name": "row"}
+    assert all_result == [{"id": 1}, {"id": 2}]
+    assert fake_db.prepared[0].params == (1,)
+    assert fake_db.prepared[1].params == (1,)
+
+
+def test_worker_r2_json_caches_misses_and_parses_json(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    cache = FakeR2Cache({"public/ok.json": FakeR2Object('{"ok": true}')})
+    api = worker.Api(env=types.SimpleNamespace(CACHE=cache))
+
+    ok = asyncio.run(api.r2_json("public/ok.json", {"ok": False}))
+    missing = asyncio.run(api.r2_json("public/missing.json", {"items": []}))
+    cached_missing = asyncio.run(api.r2_json("public/missing.json", {"items": ["should-not-appear"]}))
+
+    assert ok == {"ok": True}
+    assert missing == {"items": []}
+    assert cached_missing == {"items": []}
+    assert cache.calls == ["public/ok.json", "public/missing.json"]
 
 
 def test_worker_replace_holdings_uses_single_d1_batch_and_preserves_null_average_cost(monkeypatch):

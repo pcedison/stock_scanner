@@ -644,6 +644,7 @@ function renderAccountPanel() {
   }
   renderAuthGate();
   renderAdminVisibility();
+  renderSettings();
 }
 
 function isSuperUser() {
@@ -966,7 +967,7 @@ function renderRuleEvidence(rule = {}) {
     return `
       <div class="evidence-bar-row">
         <span class="evidence-label">${escapeHtml(item.label || "")}</span>
-        <span class="evidence-track"><span class="evidence-bar ${tone.className}" style="--bar-width: ${width}%"></span></span>
+        <span class="evidence-track"><span class="evidence-bar ${tone.className}" data-evidence-width="${escapeHtml(width)}"></span></span>
         <span class="evidence-value ${tone.className}">${escapeHtml(formatEvidenceValue(item))}</span>
       </div>
     `;
@@ -992,6 +993,17 @@ function renderRuleEvidence(rule = {}) {
       </table>
     </div>
   `;
+}
+
+function applyEvidenceBarWidths(root = null) {
+  if (typeof document === "undefined" && !root) return;
+  const scope = root || document;
+  if (!scope.querySelectorAll) return;
+  scope.querySelectorAll("[data-evidence-width]").forEach((bar) => {
+    const value = Number(bar.dataset.evidenceWidth);
+    const width = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+    bar.style.setProperty("--bar-width", `${width}%`);
+  });
 }
 
 function renderRule(rule = {}) {
@@ -1188,9 +1200,21 @@ function renderOnboardingDraft() {
 }
 
 function renderSettings() {
+  const canEditSettings = isSuperUser();
+  const status = $("#settings-status");
   $$("[data-setting]").forEach((input) => {
     input.checked = Boolean(state.settings[input.dataset.setting]);
+    input.disabled = !canEditSettings;
+    input.closest("label")?.classList.toggle("disabled", !canEditSettings);
   });
+  if (status && !canEditSettings) status.textContent = settingsPermissionMessage();
+}
+
+function settingsPermissionMessage() {
+  if (isSuperUser()) return "";
+  if (state.auth?.authenticated) return "需要管理員";
+  if (state.auth?.checked) return "需要登入管理員";
+  return "確認權限中";
 }
 
 function findStrategyStatusDetail(key) {
@@ -1233,6 +1257,7 @@ function renderStrategyStatusDetail() {
         .join("")}
     </div>
   `;
+  applyEvidenceBarWidths(target);
 }
 
 function strategyThresholdsFor(code, title) {
@@ -1627,6 +1652,7 @@ function renderMarketResults() {
       ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
     </div>
   `;
+  applyEvidenceBarWidths(target);
 }
 
 function renderDataAndScheduler() {
@@ -1709,6 +1735,7 @@ function renderHoldingResults() {
       ${!(state.holdingsScan.results || []).length && !missing.length ? `<div class="empty-state">沒有可掃描持股</div>` : ""}
     </div>
   `;
+  applyEvidenceBarWidths(target);
 }
 
 function showTab(tab) {
@@ -1800,6 +1827,11 @@ async function loadDataStatus() {
 }
 
 async function saveSettings() {
+  if (!isSuperUser()) {
+    $("#settings-status").textContent = settingsPermissionMessage();
+    renderSettings();
+    return;
+  }
   try {
     state.settings = await apiJson("/api/settings", {
       method: "PUT",
@@ -1808,8 +1840,8 @@ async function saveSettings() {
     await loadCompanies();
     await loadDataStatus();
     $("#settings-status").textContent = "已儲存";
-  } catch {
-    $("#settings-status").textContent = "儲存失敗";
+  } catch (error) {
+    $("#settings-status").textContent = error.message || "儲存失敗";
   }
   renderSelectedCompany();
   renderHoldings();
@@ -1867,6 +1899,7 @@ async function analyzeSelectedCompany() {
       body: JSON.stringify({ settings: state.settings }),
     });
     target.innerHTML = renderAnalysisCard(result);
+    applyEvidenceBarWidths(target);
   } catch (error) {
     target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "分析失敗")}</p>`;
   }
@@ -2212,7 +2245,13 @@ function bindEvents() {
   });
 
   $$(".settings-grid input").forEach((input) => {
-    input.addEventListener("change", () => {
+    input.addEventListener("change", (event) => {
+      if (!isSuperUser()) {
+        event.preventDefault();
+        $("#settings-status").textContent = settingsPermissionMessage();
+        renderSettings();
+        return;
+      }
       state.settings[input.dataset.setting] = input.checked;
       saveSettings();
     });
@@ -2341,6 +2380,7 @@ if (typeof module !== "undefined") {
     adminUsersErrorMessage,
     formatEvidenceValue,
     renderRuleEvidence,
+    applyEvidenceBarWidths,
     renderRule,
     renderStrategyRuleCards,
     ruleDisplayOrder,
@@ -2357,6 +2397,7 @@ if (typeof module !== "undefined") {
     hasFinancialReportForContext,
     hasPublishedScanData,
     isPartialPublishedResult,
+    settingsPermissionMessage,
     safeText,
   };
 }

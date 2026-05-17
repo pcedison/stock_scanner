@@ -45,7 +45,7 @@ SECURITY_HEADERS = {
     "content-security-policy": (
         "default-src 'self'; "
         "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "style-src 'self'; "
         "img-src 'self' data:; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
@@ -126,6 +126,16 @@ def text_response(content, status=200, media_type="text/plain; charset=utf-8", h
 
 def error_response(detail, status=400, headers=None):
     return json_response({"detail": detail}, status=status, headers=headers)
+
+
+def empty_backtest_status():
+    return {
+        "status": "NO_DATA",
+        "sourcePath": "cloudflare-cache",
+        "trades": [],
+        "metrics": {"tradeCount": 0, "winRate": None, "totalReturn": None, "maxDrawdown": None},
+        "note": "Backtest history is not bundled with the Cloudflare deployment.",
+    }
 
 
 def settings_from_payload(payload, strict=False):
@@ -338,7 +348,7 @@ class Api:
                 "schedulerStatus": {"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."},
                 "schedulerAutoScan": {"action": "ready", "autoScanEnabled": settings.get("auto_scan_full_market", True), "manualScanEnabled": settings.get("manual_scan_enabled", True), "scan": None},
                 "integrationStatus": {"line": False, "telegram": False, "email": False, "broker": False},
-                "backtestStatus": {"status": "not_configured", "annualizedReturn": None},
+                "backtestStatus": empty_backtest_status(),
             })
 
         if path == "/api/companies" and request.method == "GET":
@@ -437,7 +447,13 @@ class Api:
             return json_response({"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."})
 
         if path == "/api/scheduler/auto-scan" and request.method == "GET":
-            return json_response({"action": "ready", "autoScanEnabled": True, "manualScanEnabled": True, "scan": None})
+            settings = await self.get_settings()
+            return json_response({
+                "action": "ready",
+                "autoScanEnabled": settings.get("auto_scan_full_market", True),
+                "manualScanEnabled": settings.get("manual_scan_enabled", True),
+                "scan": None,
+            })
 
         if path.startswith("/api/calendar/") and request.method == "GET":
             year = path.rsplit("/", 1)[-1]
@@ -447,7 +463,7 @@ class Api:
             return json_response({"line": False, "telegram": False, "email": False, "broker": False})
 
         if path == "/api/backtest" and request.method == "GET":
-            return json_response({"status": "not_configured", "annualizedReturn": None})
+            return json_response(empty_backtest_status())
 
         return error_response("Not found", status=404)
 

@@ -720,6 +720,15 @@ textarea {
   accent-color: var(--primary);
 }
 
+.settings-grid label.disabled {
+  color: var(--muted);
+}
+
+.settings-grid input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .settings-grid strong,
 .settings-grid small {
   display: block;
