@@ -6,6 +6,7 @@ import json
 import sys
 import zipfile
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,8 +103,30 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         "seedAnalysis": seed_analysis,
         "seedUniverse": seed_universe,
         "seedShards": len(analysis_shards),
+        "generatedAt": manifest.get("generatedAt"),
+        "sourceLastCheckedAt": manifest.get("sourceLastCheckedAt"),
+        "latestRevenuePeriod": manifest.get("latestRevenuePeriod"),
+        "latestFinancialPeriod": manifest.get("latestFinancialPeriod"),
         "requiredEntries": sorted(REQUIRED_ENTRIES),
     }
+
+
+def validate_seed_freshness(summary: dict[str, Any], max_age_days: int | None, now: datetime | None = None) -> None:
+    if max_age_days is None:
+        return
+    generated_at = summary.get("generatedAt")
+    if not generated_at:
+        raise ValueError("Seed manifest is missing generatedAt; cannot enforce freshness")
+    try:
+        generated = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Seed manifest generatedAt is not a valid ISO datetime: {generated_at}") from exc
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    age_days = (current - generated).total_seconds() / 86400
+    if age_days > max_age_days:
+        raise ValueError(f"Seed manifest is {age_days:.1f} days old; maximum allowed is {max_age_days}")
 
 
 def failed_company_summary(path: Path = DEFAULT_FAILED_COMPANIES_CSV) -> dict[str, Any]:
@@ -134,6 +157,9 @@ def render_seed_summary(summary: dict[str, Any], failed_summary: dict[str, Any] 
         f"- official history companies: {summary['companies']}",
         f"- official history quarterly rows: {summary['quarterlyRows']}",
         f"- latest official period: {summary['latestPeriod']}",
+        f"- manifest generated at: {summary.get('generatedAt') or 'unknown'}",
+        f"- latest revenue period: {summary.get('latestRevenuePeriod') or 'unknown'}",
+        f"- latest financial period: {summary.get('latestFinancialPeriod') or 'unknown'}",
         f"- seed companies: {summary['seedCompanies']}",
         f"- seed analysis rows: {summary['seedAnalysis']}",
         f"- seed universe rows: {summary['seedUniverse']}",
@@ -160,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the committed Cloudflare seed cache inputs.")
     parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP, help="Path to the committed seed zip")
     parser.add_argument("--summary-md", type=Path, help="Optional Markdown quality summary output path")
+    parser.add_argument("--summary-json", type=Path, help="Optional JSON quality summary output path")
+    parser.add_argument("--max-age-days", type=int, help="Fail if cloudflare_seed/manifest.json generatedAt is older")
     parser.add_argument(
         "--failed-companies-csv",
         type=Path,
@@ -170,14 +198,22 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         summary = validate_seed_zip(args.zip)
+        validate_seed_freshness(summary, args.max_age_days)
     except ValueError as exc:
         print(f"Seed validation failed: {exc}", file=sys.stderr)
         return 1
 
+    failed_summary = failed_company_summary(args.failed_companies_csv)
     if args.summary_md:
         args.summary_md.parent.mkdir(parents=True, exist_ok=True)
         args.summary_md.write_text(
-            render_seed_summary(summary, failed_company_summary(args.failed_companies_csv)),
+            render_seed_summary(summary, failed_summary),
+            encoding="utf-8",
+        )
+    if args.summary_json:
+        args.summary_json.parent.mkdir(parents=True, exist_ok=True)
+        args.summary_json.write_text(
+            json.dumps({"seed": summary, "failedCompanies": failed_summary}, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 

@@ -1,8 +1,8 @@
-# Cloudflare 部署須知
+# Cloudflare Deployment Runbook
 
-目前部署目標為 Cloudflare Pages + Python Worker + D1 + R2。
+Current target: Cloudflare Pages + Python Worker + D1 + R2.
 
-## 資源
+## Resources
 
 - Pages project: `stock-scanner-beta`
 - Production URL: `https://stock-scanner-beta.pages.dev`
@@ -11,75 +11,93 @@
 - D1 database: `stock-scanner-beta-db`
 - R2 bucket: `stock-scanner-beta-cache`
 
-Pages 透過 `frontend/functions/api/[[path]].js` 將 `/api/*` 代理到 Worker；前端仍呼叫同源 `/api`，所以本機 FastAPI 與 Cloudflare Worker 可以共用大部分前端流程。
+Pages proxies `/api/*` through `frontend/functions/api/[[path]].js`. The frontend still calls same-origin `/api`, so local FastAPI and the Cloudflare Worker share the same browser flows.
 
-## 必要設定
+## Required Settings
 
-GitHub Actions secrets：
+GitHub Actions secrets:
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-GitHub Actions repository variables：
+GitHub Actions repository variables:
 
-- `CF_WORKER_HEALTH_URL`，必須是 deployed Worker 的 HTTPS `/api/health` URL。
+- `CF_WORKER_HEALTH_URL`: deployed Worker HTTPS `/api/health` URL.
 
-GitHub environment：
+GitHub environment:
 
-- 建議建立 `production` environment，並在 GitHub repo settings 裡加上 required reviewers 或其他保護規則。
+- Create a `production` environment.
+- Add required reviewers or equivalent approval protection.
 
-Worker production CORS 在 `cloudflare/wrangler.toml` 的 `[vars]` 管理：
+Worker production CORS lives in `cloudflare/wrangler.toml`:
 
 - `APP_ENV = "production"`
 - `APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"`
 
-Production 不應放行 localhost、127.0.0.1 或非 HTTPS origin。
+Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically.
 
-## 部署流程
+## Deploy Flow
 
-`.github/workflows/cloudflare-deploy.yml` 只在 `main`、`master`、schedule 或手動觸發時部署。一般 feature branch 只跑 validation。
+`.github/workflows/cloudflare-deploy.yml` deploys only from `main`, `master`, schedule, or manual dispatch. Feature branches validate only.
 
-部署順序：
+1. Install Python and Node dependencies.
+2. Run pytest, frontend hygiene, operational readiness, pip check, and npm audit.
+3. Run deployment preflight for CORS, production environment, concurrency, D1 migration, health, remote smoke, and rollback guardrails.
+4. Run Playwright browser smoke.
+5. Validate committed seed zip, enforce freshness, and write Markdown/JSON seed quality summaries.
+6. Rebuild `cloudflare/seed/*` from the committed offline zip.
+7. Run Worker dry-run to validate the Cloudflare Python Worker bundle boundary.
+8. Upload seed payloads to R2.
+9. Export a D1 backup artifact before migrations.
+10. Apply pending D1 migrations from `cloudflare/migrations/`.
+11. Deploy Worker and Pages.
+12. Verify deployed `/api/health` and manifest counts.
+13. Run deployed public smoke against `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
+14. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
 
-1. 安裝 Python / Node dependencies。
-2. 執行 pytest、frontend hygiene、pip check、npm audit。
-3. 執行 deployment preflight，確認 CORS、environment gate、concurrency、D1 migration、health check、rollback 等 guardrails 存在。
-4. 執行 Playwright browser smoke。
-5. 驗證 committed seed zip，並輸出 seed quality summary。
-6. 用 offline mode 從 committed zip 重建 `cloudflare/seed/*`。
-7. 執行 Worker dry-run，檢查 Cloudflare Python Worker bundle 邊界。
-8. 上傳 seed payload 到 R2。
-9. 部署前匯出 D1 backup artifact。
-10. 套用 `cloudflare/migrations/` 中尚未執行的 D1 migrations。
-11. 部署 Worker 與 Pages。
-12. 對 `CF_WORKER_HEALTH_URL` 執行 `/api/health` 檢查，並比對 manifest counts。
-13. 若 post-deploy health 驗證失敗，CI 會以 `wrangler rollback --yes` 回復 Worker。
+D1 restore remains an operator-reviewed recovery action. Generate a non-destructive plan with:
 
-D1 rollback 不做自動破壞性還原；部署前的 D1 export 會保留為 artifact，必要時由 operator 下載後人工復原指定資料。
+```powershell
+python scripts\plan_cloudflare_recovery.py --output .tmp\cloudflare-recovery.md
+```
 
-## Seed refresh
+If a deploy exported a D1 artifact, pass it explicitly:
 
-`.github/workflows/refresh-cloudflare-seed.yml` 每週會：
+```powershell
+python scripts\plan_cloudflare_recovery.py --d1-backup .tmp\d1-backups\pre-deploy-123.sql --output .tmp\cloudflare-recovery.md
+```
 
-1. 使用 official source online mode 重建 seed。
-2. 重新封裝 `data/official_cache_seed_2026-05-14.zip` 與 `.sha256`。
-3. 重新產生缺漏公司報告。
-4. 驗證 seed quality gates。
-5. 若內容有變更，開啟或更新 refresh PR。
+## Seed Refresh
 
-這讓 production deploy 可以穩定使用 committed offline seed，同時避免資料長期 stale。
+`.github/workflows/refresh-cloudflare-seed.yml` runs weekly and can also be dispatched manually.
 
-## Health monitoring
+1. Rebuild seed from official sources in online mode.
+2. Repack `data/official_cache_seed_2026-05-14.zip` and its `.sha256`.
+3. Regenerate missing-company reports.
+4. Validate quality gates and freshness.
+5. Open or update a refresh PR when seed artifacts changed.
 
-`.github/workflows/cloudflare-health-monitor.yml` 每 30 分鐘打一次 `CF_WORKER_HEALTH_URL`。目前以 GitHub Actions failure notification 作為基礎告警；若需要更完整的外部監控，可以把同一個 `/api/health` 端點接到 Cloudflare notification、Better Stack、UptimeRobot 或其他監控服務。
+This keeps production deploys deterministic while preventing the committed seed from silently going stale.
 
-## 本機驗證指令
+## Monitoring
+
+`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 30 minutes. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
+
+## Local Verification
 
 ```powershell
 python -m pytest -q
 python scripts\check_frontend_hygiene.py
+python scripts\check_operational_readiness.py
 python scripts\check_deployment_preflight.py
 npx wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir .tmp\worker-dry-run
 python scripts\run_wrangler_dev_smoke.py
 npm run test:e2e
+```
+
+Remote production smoke:
+
+```powershell
+$env:CF_WORKER_HEALTH_URL='https://stock-scanner-beta-api.<account>.workers.dev/api/health'
+python scripts\run_remote_smoke.py --health-url $env:CF_WORKER_HEALTH_URL --manifest cloudflare\seed\manifest.json
 ```

@@ -29,6 +29,9 @@ AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
 REVENUE_GROWTH_MODES = frozenset({"cumulative_ytd", "monthly", "trailing_3m_avg"})
+CSRF_HEADER_NAME = "x-stock-scanner-csrf"
+CSRF_HEADER_VALUE = "1"
+UNSAFE_API_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,
@@ -364,7 +367,10 @@ class Api:
         query = parse_qs(parsed.query)
 
         try:
-            response = await self.route(request, path, query)
+            if self.requires_csrf_header(request, path) and not self.has_valid_csrf_header(request):
+                response = error_response("CSRF header required", status=403)
+            else:
+                response = await self.route(request, path, query)
         except BadRequestError as exc:
             response = error_response(str(exc), status=400)
         except ValidationError as exc:
@@ -382,6 +388,16 @@ class Api:
         for key, value in {**SECURITY_HEADERS, **self.cors_headers(request)}.items():
             set_response_header(response, key, value)
         return response
+
+    def requires_csrf_header(self, request, path: str) -> bool:
+        return (
+            is_production_environment(self.env)
+            and str(getattr(request, "method", "")).upper() in UNSAFE_API_METHODS
+            and path.startswith("/api/")
+        )
+
+    def has_valid_csrf_header(self, request) -> bool:
+        return str(request.headers.get(CSRF_HEADER_NAME) or "") == CSRF_HEADER_VALUE
 
     def cors_allowed_origins(self):
         configured = (

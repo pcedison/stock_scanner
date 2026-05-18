@@ -7,6 +7,8 @@ const DOM_HELPERS =
   typeof require === "function" && typeof module !== "undefined" && module.exports
     ? require("./dom.js")
     : globalThis.StockScannerDom;
+const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
+const CSRF_HEADER_VALUE = "1";
 
 const DEFAULT_COMPANIES = [
   { stockCode: "2330", name: "台積電", market: "TWSE", industryName: "半導體業", isFinancial: false },
@@ -304,6 +306,10 @@ function emptyStateHtml(message) {
   return DOM_HELPERS.emptyStateHtml(message);
 }
 
+function setEmptyState(target, message) {
+  DOM_HELPERS.setEmptyState(target, message);
+}
+
 function safeCompanyName(companyOrHolding) {
   if (!companyOrHolding) return "未知公司";
   const directName = safeText(companyOrHolding.name || companyOrHolding.companyName);
@@ -526,7 +532,7 @@ async function apiJson(url, options = {}) {
   const { headers = {}, ...rest } = options;
   const response = await fetch(url, {
     ...rest,
-    headers: { "Content-Type": "application/json", ...headers },
+    headers: { "Content-Type": "application/json", [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE, ...headers },
     credentials: "same-origin",
   });
   const text = await response.text();
@@ -802,15 +808,15 @@ function renderAdminUsers() {
   }
   message.textContent = state.adminIsLoading ? "讀取使用者清單中..." : state.adminError || state.adminMessage || "";
   if (state.adminIsLoading) {
-    target.innerHTML = emptyStateHtml("讀取中");
+    setEmptyState(target, "讀取中");
     return;
   }
   if (state.adminError) {
-    target.innerHTML = emptyStateHtml(state.adminError);
+    setEmptyState(target, state.adminError);
     return;
   }
   if (!state.adminUsers.length) {
-    target.innerHTML = emptyStateHtml("目前沒有其他使用者");
+    setEmptyState(target, "目前沒有其他使用者");
     return;
   }
   target.innerHTML = state.adminUsers
@@ -1105,7 +1111,7 @@ function renderSelectedCompany() {
 function renderHoldings() {
   const target = $("#holdings-list");
   if (!state.holdings.length) {
-    target.innerHTML = emptyStateHtml("目前沒有持股");
+    setEmptyState(target, "目前沒有持股");
     return;
   }
 
@@ -1609,7 +1615,7 @@ function renderScanCacheStatus(scan = {}) {
 function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
-    target.innerHTML = emptyStateHtml("尚未掃描市場");
+    setEmptyState(target, "尚未掃描市場");
     updateMarketColumnNav();
     return;
   }
@@ -1663,7 +1669,7 @@ function renderDataAndScheduler() {
   const schedulerTarget = $("#scheduler-status");
   if (dataTarget) {
     if (!state.dataSourceStatus) {
-      dataTarget.innerHTML = emptyStateHtml("尚未讀取資料來源狀態");
+      setEmptyState(dataTarget, "尚未讀取資料來源狀態");
     } else {
       const status = state.dataSourceStatus;
       dataTarget.innerHTML = `
@@ -1713,7 +1719,7 @@ function renderDataAndScheduler() {
 function renderHoldingResults() {
   const target = $("#holding-results");
   if (!state.holdingsScan) {
-    target.innerHTML = emptyStateHtml("尚未掃描持股");
+    setEmptyState(target, "尚未掃描持股");
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.holdingsScan.generatedAt).toLocaleString()}`;
@@ -1895,7 +1901,7 @@ function renderSuggestions(items) {
 async function analyzeSelectedCompany() {
   if (!state.selectedCompany) return;
   const target = $("#single-analysis");
-  target.innerHTML = emptyStateHtml("分析中");
+  setEmptyState(target, "分析中");
   try {
     const result = await apiJson(`/api/analyze/${state.selectedCompany.stockCode}`, {
       method: "POST",
@@ -1910,7 +1916,7 @@ async function analyzeSelectedCompany() {
 
 async function scanMarket() {
   const target = $("#market-results");
-  target.innerHTML = emptyStateHtml("掃描中");
+  setEmptyState(target, "掃描中");
   showView("scan");
   showTab("market");
   try {
@@ -1928,7 +1934,7 @@ async function scanMarket() {
 
 async function scanHoldings() {
   const target = $("#holding-results");
-  target.innerHTML = emptyStateHtml("掃描中");
+  setEmptyState(target, "掃描中");
   showView("scan");
   showTab("holdings");
   try {
@@ -1951,8 +1957,9 @@ async function exportReport(kind, reportFormat) {
       : { settings: state.settings };
   const response = await fetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
     body: JSON.stringify(payload),
+    credentials: "same-origin",
   });
   if (!response.ok) throw new Error(await response.text());
   const blob = await response.blob();
@@ -2404,5 +2411,6 @@ if (typeof module !== "undefined") {
     safeText,
     escapeHtml,
     emptyStateHtml,
+    setEmptyState,
   };
 }

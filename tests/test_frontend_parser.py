@@ -12,10 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_frontend_dom_helpers_escape_empty_state_html():
     script = r"""
-const { emptyStateHtml, escapeHtml } = require("./frontend/dom.js");
+const { emptyStateHtml, escapeHtml, setEmptyState } = require("./frontend/dom.js");
+const target = {};
+Object.defineProperty(target, "innerHTML", { set(value) { this.value = value; } });
+setEmptyState(target, '<img src=x onerror="alert(1)">');
 console.log(JSON.stringify({
   escaped: escapeHtml('<img src=x onerror="alert(1)">'),
   empty: emptyStateHtml('<script>alert(1)</script>'),
+  setEmpty: target.value,
 }));
 """
     completed = subprocess.run(
@@ -32,6 +36,8 @@ console.log(JSON.stringify({
     assert "&lt;img" in payload["escaped"]
     assert "<script" not in payload["empty"].lower()
     assert "&lt;script" in payload["empty"].lower()
+    assert "<img" not in payload["setEmpty"].lower()
+    assert "&lt;img" in payload["setEmpty"].lower()
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")

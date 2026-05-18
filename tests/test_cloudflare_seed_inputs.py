@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from scripts.validate_cloudflare_seed_inputs import failed_company_summary, render_seed_summary, validate_seed_zip
+from scripts.validate_cloudflare_seed_inputs import (
+    failed_company_summary,
+    render_seed_summary,
+    validate_seed_freshness,
+    validate_seed_zip,
+)
 
 
 def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5) -> None:
@@ -24,6 +30,9 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
             "cloudflare_seed/manifest.json",
             json.dumps(
                 {
+                    "generatedAt": "2026-05-17T00:00:00+00:00",
+                    "latestRevenuePeriod": "2026-04",
+                    "latestFinancialPeriod": "2026Q1",
                     "counts": {
                         "companies": companies,
                         "entry": 10,
@@ -54,6 +63,14 @@ def test_validate_seed_zip_accepts_populated_history(tmp_path):
     assert summary["seedCompanies"] == 1000
     assert summary["seedAnalysis"] == 1000
     assert summary["seedShards"] == 1
+    assert summary["generatedAt"] == "2026-05-17T00:00:00+00:00"
+
+
+def test_seed_freshness_rejects_stale_manifest():
+    summary = {"generatedAt": "2026-01-01T00:00:00+00:00"}
+
+    with pytest.raises(ValueError, match="maximum allowed"):
+        validate_seed_freshness(summary, max_age_days=45, now=datetime(2026, 5, 18, tzinfo=timezone.utc))
 
 
 def test_validate_seed_zip_rejects_empty_history(tmp_path):

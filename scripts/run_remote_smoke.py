@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from http.cookiejar import CookieJar
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+try:
+    from check_cloudflare_health import validate_health_payload
+except ModuleNotFoundError:  # Imported as scripts.run_remote_smoke under pytest.
+    from scripts.check_cloudflare_health import validate_health_payload
+
+
+def base_url_from_health_url(health_url: str) -> str:
+    parsed = urlparse(health_url)
+    if parsed.scheme != "https" or not parsed.netloc or not parsed.path.endswith("/api/health"):
+        raise RuntimeError("health URL must be an https URL ending in /api/health")
+    base_path = parsed.path[: -len("/api/health")]
+    return f"{parsed.scheme}://{parsed.netloc}{base_path}/"
+
+
+def _load_json_file(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+class RemoteClient:
+    def __init__(self, base_url: str, timeout: int):
+        self.base_url = base_url
+        self.timeout = timeout
+        self.opener = build_opener(HTTPCookieProcessor(CookieJar()))
+
+    def request_json(self, path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "stock-scanner-remote-smoke/1.0",
+            "X-Stock-Scanner-CSRF": "1",
+        }
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(urljoin(self.base_url, path.lstrip("/")), data=body, headers=headers, method=method)
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {path} returned HTTP {exc.code}: {body_text[:500]}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"{method} {path} failed to connect: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{method} {path} did not return valid JSON") from exc
+
+
+def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    problems: list[str] = []
+    health = payloads.get("health") or {}
+    app_status = payloads.get("appStatus") or {}
+    data_sources = payloads.get("dataSources") or {}
+
+    if health.get("runtime") != "cloudflare-python-worker":
+        problems.append("health.runtime is not cloudflare-python-worker")
+    if not isinstance(app_status.get("dataSourceStatus"), dict):
+        problems.append("app-status is missing dataSourceStatus")
+    if not isinstance(app_status.get("schedulerAutoScan"), dict):
+        problems.append("app-status is missing schedulerAutoScan")
+    if not data_sources.get("activeProvider"):
+        problems.append("data-sources status is missing activeProvider")
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    return {
+        "healthStatus": health.get("status"),
+        "runtime": health.get("runtime"),
+        "activeProvider": data_sources.get("activeProvider"),
+        "schedulerAction": app_status.get("schedulerAutoScan", {}).get("action"),
+    }
+
+
+def run_public_smoke(health_url: str, manifest: Path | None, timeout: int) -> dict[str, Any]:
+    base_url = base_url_from_health_url(health_url)
+    client = RemoteClient(base_url, timeout)
+    health = client.request_json("/api/health")
+    validate_health_payload(health, _load_json_file(manifest))
+    payloads = {
+        "health": health,
+        "appStatus": client.request_json("/api/app-status"),
+        "dataSources": client.request_json("/api/data-sources/status"),
+    }
+    return validate_public_smoke_payloads(payloads)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run deployed Cloudflare public smoke checks.")
+    parser.add_argument("--health-url", required=True)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--timeout", type=int, default=20)
+    args = parser.parse_args(argv)
+
+    try:
+        summary = run_public_smoke(args.health_url, args.manifest, args.timeout)
+    except RuntimeError as exc:
+        print(f"Remote smoke failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

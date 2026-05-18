@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -127,9 +128,30 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 }
 
+CSRF_HEADER_NAME = "x-stock-scanner-csrf"
+CSRF_HEADER_VALUE = "1"
+UNSAFE_API_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _requires_csrf_header(request: Request) -> bool:
+    return (
+        _is_production_environment()
+        and request.method.upper() in UNSAFE_API_METHODS
+        and request.url.path.startswith("/api/")
+    )
+
+
+def _has_valid_csrf_header(request: Request) -> bool:
+    return request.headers.get(CSRF_HEADER_NAME) == CSRF_HEADER_VALUE
+
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    if _requires_csrf_header(request) and not _has_valid_csrf_header(request):
+        response = JSONResponse({"detail": "CSRF header required"}, status_code=403)
+        for key, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(key, value)
+        return response
     response = await call_next(request)
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)

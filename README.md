@@ -41,6 +41,7 @@ Windows 也可以使用：
 ```powershell
 python -m pytest -q
 python scripts\check_frontend_hygiene.py
+python scripts\check_operational_readiness.py
 python scripts\check_deployment_preflight.py
 python scripts\run_wrangler_dev_smoke.py
 python -m pip check
@@ -51,7 +52,7 @@ npm run test:e2e
 Cloudflare seed 驗證：
 
 ```powershell
-python scripts\validate_cloudflare_seed_inputs.py --zip data\official_cache_seed_2026-05-14.zip --summary-md .tmp\seed-quality.md
+python scripts\validate_cloudflare_seed_inputs.py --zip data\official_cache_seed_2026-05-14.zip --summary-md .tmp\seed-quality.md --summary-json .tmp\seed-quality.json --max-age-days 45
 $env:CLOUDFLARE_SEED_MODE='offline'; python scripts\build_cloudflare_seed.py; Remove-Item Env:\CLOUDFLARE_SEED_MODE
 ```
 
@@ -64,6 +65,7 @@ $env:CLOUDFLARE_SEED_MODE='offline'; python scripts\build_cloudflare_seed.py; Re
 - Worker deploy 前先 `wrangler deploy --dry-run`。
 - D1 使用 `cloudflare/migrations/` 版本化 migration，部署前匯出 D1 backup artifact。
 - Worker/Pages deploy 後檢查 `/api/health` 與 manifest counts。
+- deploy 後執行 remote public smoke，驗證 `/api/health`、`/api/app-status`、`/api/data-sources/status`。
 - post-deploy 驗證失敗時自動執行 Worker rollback。
 
 必要 GitHub secret / variable：
@@ -73,6 +75,12 @@ $env:CLOUDFLARE_SEED_MODE='offline'; python scripts\build_cloudflare_seed.py; Re
 - repository variable `CF_WORKER_HEALTH_URL`，必須指向 deployed Worker 的 `/api/health` HTTPS URL。
 
 更多部署細節見 `docs/cloudflare_deployment.md`。
+
+Recovery runbook 可用非破壞性方式產生：
+
+```powershell
+python scripts\plan_cloudflare_recovery.py --output .tmp\cloudflare-recovery.md
+```
 
 ## 資料更新
 

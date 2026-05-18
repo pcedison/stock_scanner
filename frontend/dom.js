@@ -20,6 +20,10 @@
     return `<div class="empty-state">${escapeHtml(message)}</div>`;
   }
 
+  function setEmptyState(target, message) {
+    setSafeHtml(target, emptyStateHtml(message));
+  }
+
   function setSafeHtml(target, html) {
     if (target) target.innerHTML = String(html ?? "");
   }
@@ -32,6 +36,7 @@
     clearElement,
     emptyStateHtml,
     escapeHtml,
+    setEmptyState,
     setSafeHtml,
   };
 });

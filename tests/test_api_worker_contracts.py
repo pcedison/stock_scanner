@@ -235,3 +235,21 @@ def test_rate_limit_behavior_matches_fastapi_and_worker(tmp_path, monkeypatch):
     assert fastapi_response.status_code == worker_status(worker_response) == 429
     assert int(fastapi_response.headers["retry-after"]) > 0
     assert int(worker_response.headers["retry-after"]) == 30
+
+
+def test_production_csrf_behavior_matches_fastapi_and_worker(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    client = TestClient(app)
+    api = worker.Api(env=types.SimpleNamespace(APP_ENV="production", APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev"))
+
+    async def fake_route(request, path, query):
+        return worker.json_response({"ok": True})
+
+    api.route = fake_route
+
+    fastapi_response = client.post("/api/scan/market", json={"settings": ScannerSettings(use_mock_data=True).model_dump()})
+    worker_response = asyncio.run(api.fetch(ContractRequest("POST", "/api/scan/market", {"settings": {}})))
+
+    assert fastapi_response.status_code == worker_status(worker_response) == 403
+    assert fastapi_response.json()["detail"] == worker_payload(worker_response)["detail"] == "CSRF header required"

@@ -39,6 +39,7 @@ jobs:
         run: |
           python -m pytest -q
           python scripts/check_frontend_hygiene.py
+          python scripts/check_operational_readiness.py
           python -m pip check
           npm audit --audit-level=low
 
@@ -61,7 +62,9 @@ jobs:
         run: |
           python scripts/validate_cloudflare_seed_inputs.py \
             --zip data/official_cache_seed_2026-05-14.zip \
-            --summary-md .tmp/seed-quality.md
+            --summary-md .tmp/seed-quality.md \
+            --summary-json .tmp/seed-quality.json \
+            --max-age-days 45
           cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rebuild Cloudflare seed dry run

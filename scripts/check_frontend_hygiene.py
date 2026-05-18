@@ -45,7 +45,7 @@ def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check frontend single-file and HTML-rendering hygiene budgets.")
     parser.add_argument("--max-app-lines", type=int, default=2450)
-    parser.add_argument("--max-inner-html", type=int, default=29)
+    parser.add_argument("--max-inner-html", type=int, default=19)
     args = parser.parse_args(argv)
 
     report = frontend_hygiene_report()

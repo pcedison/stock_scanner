@@ -76,6 +76,22 @@ def test_production_runtime_security_rejects_non_https_origin(monkeypatch):
         main_module._validate_runtime_security(["http://stock-scanner-beta.pages.dev"])
 
 
+def test_production_csrf_guard_requires_custom_header(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    test_client = TestClient(app)
+
+    missing = test_client.post("/api/scan/market", json={"settings": MOCK_SETTINGS.model_dump()})
+    present = test_client.post(
+        "/api/scan/market",
+        headers={"x-stock-scanner-csrf": "1"},
+        json={"settings": MOCK_SETTINGS.model_dump()},
+    )
+
+    assert missing.status_code == 403
+    assert missing.json()["detail"] == "CSRF header required"
+    assert present.status_code == 200
+
+
 def test_app_status_contract_shape():
     response = client.get("/api/app-status")
     payload = response.json()

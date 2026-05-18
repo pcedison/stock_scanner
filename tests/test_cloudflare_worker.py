@@ -216,6 +216,33 @@ def test_worker_options_preflight_uses_cors_and_security_headers(monkeypatch):
     assert headers["strict-transport-security"].startswith("max-age=31536000")
 
 
+def test_worker_production_csrf_guard_requires_custom_header(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=types.SimpleNamespace(APP_ENV="production", APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev"))
+    missing_header = types.SimpleNamespace(
+        method="POST",
+        url="https://stock-scanner-beta-api.example/api/scan/market",
+        headers={"origin": "https://stock-scanner-beta.pages.dev"},
+    )
+    with_header = types.SimpleNamespace(
+        method="POST",
+        url="https://stock-scanner-beta-api.example/api/scan/market",
+        headers={"origin": "https://stock-scanner-beta.pages.dev", "x-stock-scanner-csrf": "1"},
+    )
+
+    async def fake_route(request, path, query):
+        return worker.json_response({"ok": True})
+
+    api.route = fake_route
+
+    missing = asyncio.run(api.fetch(missing_header))
+    present = asyncio.run(api.fetch(with_header))
+
+    assert missing.init["status"] == 403
+    assert json.loads(missing.body)["detail"] == "CSRF header required"
+    assert present.init["status"] == 200
+
+
 def test_worker_error_response_preserves_rate_limit_retry_after(monkeypatch):
     worker = load_worker_module(monkeypatch)
 
