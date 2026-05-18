@@ -4,11 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260514-market-nav" />
+    <link rel="preload" href="/styles.css?v=20260515-audit-hotfix" as="style" />
+    <link rel="stylesheet" href="/styles.css?v=20260515-audit-hotfix" />
   </head>
   <body>
+    <header class="mobile-topbar" aria-label="手機版功能列">
+      <div class="mobile-topbar-title">
+        <span>台股財報掃描器</span>
+        <small>官方資料 MVP</small>
+      </div>
+      <button id="mobile-menu-toggle" class="mobile-menu-toggle" type="button" aria-controls="mobile-navigation" aria-expanded="false" aria-label="開啟功能選單">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </header>
+    <div id="mobile-nav-backdrop" class="mobile-nav-backdrop hidden"></div>
     <div class="app-shell">
-      <aside class="app-sidebar" aria-label="功能列">
+      <aside id="mobile-navigation" class="app-sidebar" aria-label="功能列">
         <div class="brand-block">
           <p class="eyebrow">官方資料 MVP</p>
           <h1><span>台股財報事件</span><span>驅動掃描器</span></h1>
@@ -18,16 +31,29 @@
           <button class="nav-item active" type="button" data-view="overview">總覽</button>
           <button class="nav-item" type="button" data-view="search">搜尋與單檔分析</button>
           <button class="nav-item" type="button" data-view="holdings">我的持股</button>
-          <button class="nav-item" type="button" data-view="scan">掃描結果</button>
-          <div class="nav-subitems" aria-label="掃描結果分類">
+          <button id="scan-nav-toggle" class="nav-item nav-group-toggle" type="button" data-view="scan" data-nav-group-toggle="scan" aria-expanded="false" aria-controls="scan-nav-subitems">
+            <span>掃描結果</span>
+            <span class="nav-group-icon" aria-hidden="true">+</span>
+          </button>
+          <div id="scan-nav-subitems" class="nav-subitems nav-subitems-collapsible" aria-label="掃描結果分類">
             <button class="nav-subitem active" type="button" data-market-column-nav="entry">適合進場</button>
             <button class="nav-subitem" type="button" data-market-column-nav="watch">接近觀察</button>
             <button class="nav-subitem" type="button" data-market-column-nav="excluded">排除清單</button>
           </div>
+          <button id="admin-nav-item" class="nav-item hidden" type="button" data-view="admin">使用者管理</button>
           <button class="nav-item" type="button" data-view="settings">設定</button>
           <button class="nav-item" type="button" data-view="strategy">策略規則</button>
           <button class="nav-item" type="button" data-view="data">資料與排程</button>
         </nav>
+        <div id="mobile-account-host" class="mobile-account-host">
+          <details id="mobile-account-details" class="mobile-account-details">
+            <summary>
+              <span>帳號同步</span>
+              <small id="mobile-account-summary">登入、同步與登出</small>
+            </summary>
+            <div id="mobile-account-panel-slot" class="mobile-account-panel-slot"></div>
+          </details>
+        </div>
         <div class="sidebar-note">
           <strong>目前狀態</strong>
           <span>官方 TWSE / TPEx universe；依申報窗口分流已公告與尚未公告。</span>
@@ -42,27 +68,27 @@
             <p id="view-subtitle">快速查看資料來源、持股狀態與策略完成度。</p>
           </div>
           <div class="topbar-actions">
-            <button id="scan-market-btn" class="primary-btn" type="button">掃描目前市場</button>
-            <button id="scan-holdings-btn" class="secondary-btn" type="button">掃描我的持股</button>
             <button id="open-onboarding-btn" class="ghost-btn" type="button">初次設定</button>
           </div>
-          <section id="account-panel" class="account-panel" aria-label="帳號與持股同步">
-            <div class="account-head">
-              <span id="account-status" class="status-pill neutral">本機持股</span>
-              <span id="auth-message" class="account-message"></span>
-            </div>
-            <form id="auth-form" class="auth-form">
-              <input id="auth-username" type="text" autocomplete="username" placeholder="帳號" />
-              <input id="auth-password" type="password" autocomplete="current-password" placeholder="密碼" />
-              <button id="auth-login-btn" class="secondary-btn" type="submit">登入</button>
-              <button id="auth-register-btn" class="ghost-btn" type="button">註冊</button>
-            </form>
-            <div id="auth-user-panel" class="auth-user hidden">
-              <span id="auth-user-label"></span>
-              <button id="import-local-holdings-btn" class="ghost-btn" type="button">匯入本機</button>
-              <button id="auth-logout-btn" class="secondary-btn" type="button">登出</button>
-            </div>
-          </section>
+          <div id="desktop-account-panel-slot" class="desktop-account-panel-slot">
+            <section id="account-panel" class="account-panel" aria-label="帳號與持股同步">
+              <div class="account-head">
+                <span id="account-status" class="status-pill neutral">本機持股</span>
+                <span id="auth-message" class="account-message"></span>
+              </div>
+              <form id="auth-form" class="auth-form">
+                <input id="auth-username" type="text" inputmode="email" autocomplete="username" placeholder="電子信箱" />
+                <input id="auth-password" type="password" autocomplete="current-password" placeholder="密碼" />
+                <button id="auth-login-btn" class="secondary-btn" type="submit">登入</button>
+                <button id="auth-register-btn" class="ghost-btn" type="button">註冊</button>
+              </form>
+              <div id="auth-user-panel" class="auth-user hidden">
+                <span id="auth-user-label"></span>
+                <button id="import-local-holdings-btn" class="ghost-btn" type="button">匯入本機</button>
+                <button id="auth-logout-btn" class="secondary-btn" type="button">登出</button>
+              </div>
+            </section>
+          </div>
         </header>
 
         <main class="workspace">
@@ -80,8 +106,8 @@
               </article>
               <article class="panel summary-card">
                 <span class="status-pill neutral">下一步</span>
-                <h3>從左側功能列選服務</h3>
-                <p>你可以先搜尋單檔、建立持股，再掃描目前市場或持股。</p>
+                <h3>選擇下一步</h3>
+                <p>你可以先搜尋單檔、建立持股，再到掃描結果查看股市清單或我的持股。</p>
               </article>
             </div>
             <section class="panel">
@@ -129,7 +155,9 @@
                   <h2 id="holdings-title">我的持股</h2>
                   <p id="holdings-storage-note" class="section-subtitle">目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。</p>
                 </div>
+                <button id="scan-stored-holdings-btn" class="secondary-btn" type="button">套用 X1-X5</button>
               </div>
+              <div id="holding-exit-alerts" class="holding-exit-alerts hidden" aria-live="polite"></div>
               <form id="manual-add-form" class="holding-form">
                 <div class="field">
                   <label for="manual-stock-input">股票代碼或公司名稱</label>
@@ -179,6 +207,20 @@
             </section>
           </section>
 
+          <section class="view-panel hidden" data-view-panel="admin">
+            <section class="panel admin-panel" aria-labelledby="admin-title">
+              <div class="section-heading">
+                <div>
+                  <h2 id="admin-title">使用者管理</h2>
+                  <p class="section-subtitle">僅 pcedison@gmail.com 可查閱與刪除一般使用者；super user 不能被刪除。</p>
+                </div>
+                <button id="refresh-admin-users-btn" class="secondary-btn" type="button">重新整理</button>
+              </div>
+              <p id="admin-users-message" class="section-subtitle"></p>
+              <div id="admin-users-list" class="admin-user-list"></div>
+            </section>
+          </section>
+
           <section class="view-panel hidden" data-view-panel="settings">
             <section class="panel settings-panel" aria-labelledby="settings-title">
               <div class="section-heading">
@@ -190,7 +232,7 @@
               </div>
               <div class="settings-grid">
                 <label><input type="checkbox" data-setting="auto_scan_full_market" /><span><strong>自動掃描市場</strong><small>官方模式會掃描 TWSE / TPEx 月營收 universe</small></span></label>
-                <label><input type="checkbox" data-setting="manual_scan_enabled" /><span><strong>允許手動掃描</strong><small>開啟上方掃描按鈕</small></span></label>
+                <label><input type="checkbox" data-setting="manual_scan_enabled" /><span><strong>允許手動掃描</strong><small>開啟掃描結果分頁的手動掃描</small></span></label>
                 <label><input type="checkbox" data-setting="exclude_financial_industry" /><span><strong>排除金融業</strong><small>金融業不套用主策略</small></span></label>
                 <label><input type="checkbox" data-setting="use_mock_data" /><span><strong>使用 Mock Data</strong><small>僅作離線示範與測試；關閉後使用官方資料</small></span></label>
                 <label><input type="checkbox" data-setting="scan_twse" /><span><strong>掃描上市公司</strong><small>官方模式納入 TWSE universe</small></span></label>
@@ -207,12 +249,7 @@
                   <h2>策略規則</h2>
                 </div>
               </div>
-              <div class="rule-card-grid">
-                <article class="rule-card"><h3>進場條件</h3><p>近 5 年無虧損、近 3 年淨利正成長、累計營收年增 >= 50%、PER < 20、存貨週轉 > 2.5、排除金融業。</p></article>
-                <article class="rule-card"><h3>持有追蹤</h3><p>每月看月營收，每季看 EPS、淨利、毛利率，每年看 5 年虧損與 3 年淨利趨勢。</p></article>
-                <article class="rule-card"><h3>出場條件</h3><p>月營收跌破 30%、較上月降溫超過 20 個百分點、EPS 衰退、季度 EPS 減少超過 10%、淨利衰退。</p></article>
-                <article class="rule-card"><h3>特殊情況</h3><p>春節月搭配 1+2 月或近 3 個月平均；金融業需另建專用策略，不套主策略。</p></article>
-              </div>
+              <div id="strategy-rules-grid" class="strategy-rule-grid"></div>
             </section>
           </section>
 
@@ -232,8 +269,34 @@
       </div>
     </div>
 
+    <div id="auth-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div class="modal auth-gate-modal">
+        <button id="close-auth-modal-btn" class="modal-close-btn" type="button" aria-label="關閉登入視窗">×</button>
+        <p class="eyebrow">帳號同步</p>
+        <h2 id="auth-modal-title">先建立帳號，再儲存個人持股</h2>
+        <p class="modal-copy">請使用電子信箱與密碼註冊或登入。登入後，第一次使用設定才會開始，持股會儲存在你的帳號中。</p>
+        <form id="auth-modal-form" class="auth-gate-form">
+          <div class="field">
+            <label for="auth-modal-username">電子信箱</label>
+            <input id="auth-modal-username" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com" required />
+          </div>
+          <div class="field">
+            <label for="auth-modal-password">密碼</label>
+            <input id="auth-modal-password" type="password" autocomplete="new-password" placeholder="至少 8 個字元" required />
+          </div>
+          <p id="auth-modal-message" class="form-error" role="alert"></p>
+          <div class="modal-actions">
+            <button id="auth-modal-register-btn" class="primary-btn" type="submit">建立帳號</button>
+            <button id="auth-modal-login-btn" class="secondary-btn" type="button">已有帳號，登入</button>
+            <button id="defer-auth-modal-btn" class="ghost-btn" type="button">暫不登入</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div id="onboarding-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
       <div class="modal">
+        <button id="close-onboarding-btn" class="modal-close-btn" type="button" aria-label="關閉第一次使用設定">×</button>
         <p class="eyebrow">第一次使用設定</p>
         <h2 id="onboarding-title">目前手上有持股嗎？</h2>
         <p class="modal-copy">先用清楚欄位新增一檔股票到清單。股數與平均成本都可留空；股票找不到時不會加入。</p>
@@ -268,10 +331,13 @@
         <div class="modal-actions">
           <button id="save-onboarding-btn" class="primary-btn" type="button">儲存清單並開始使用</button>
           <button id="skip-onboarding-btn" class="ghost-btn" type="button">目前沒有持股</button>
+          <button id="defer-onboarding-btn" class="ghost-btn" type="button">稍後再說</button>
         </div>
       </div>
     </div>
 
-    <script src="/app.js?v=20260514-market-nav" defer></script>
+    <script src="/dom.js?v=20260518-dom-helpers" defer></script>
+    <script src="/holding_signals.js?v=20260518-holding-signals" defer></script>
+    <script src="/app.js?v=20260518-dom-helpers" defer></script>
   </body>
 </html>

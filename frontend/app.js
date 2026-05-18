@@ -1,5 +1,18 @@
 const HOLDINGS_KEY = "tw_stock_scanner.holdings.v1";
 const ONBOARDING_KEY = "tw_stock_scanner.onboarding_done.v1";
+const SUPER_USER_USERNAME = "pcedison@gmail.com";
+const COMPANIES_PAGE_LIMIT = 500;
+const MAX_COMPANY_PAGES = 10;
+const DOM_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./dom.js")
+    : globalThis.StockScannerDom;
+const HOLDING_SIGNAL_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./holding_signals.js")
+    : globalThis.StockScannerHoldingSignals;
+const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
+const CSRF_HEADER_VALUE = "1";
 
 const DEFAULT_COMPANIES = [
   { stockCode: "2330", name: "台積電", market: "TWSE", industryName: "半導體業", isFinancial: false },
@@ -36,6 +49,7 @@ const state = {
   schedulerAutoScan: null,
   integrationStatus: null,
   backtestStatus: null,
+  isScanningHoldings: false,
   activeMarketDisclosureTab: "announced",
   activeMarketColumn: "entry",
   marketListPages: {
@@ -51,6 +65,10 @@ const state = {
     user: null,
     message: "",
   },
+  adminUsers: [],
+  adminMessage: "",
+  adminError: "",
+  adminIsLoading: false,
   isSyncingHoldings: false,
   pendingHoldingsSync: false,
 };
@@ -139,11 +157,123 @@ const STRATEGY_STATUS_DETAILS = [
   },
 ];
 
+const STRATEGY_RULE_THRESHOLDS = {
+  E1: ["5 年", "年度淨利皆 > 0"],
+  E2: ["3 年", "淨利逐年增加"],
+  E3: ["營收 YoY >= 50%"],
+  E4: ["PER < 20"],
+  E5: ["存貨週轉率 > 2.5"],
+  E6: ["排除金融業"],
+  A1: ["E1-E6 全通過"],
+  A2: ["營收 YoY >= 50%"],
+  A3: ["EPS YoY > 0"],
+  A4: ["淨利 YoY > 0"],
+  A5: ["PER < 20"],
+  A6: ["存貨週轉率 > 2.5"],
+  A7: ["X1-X5 = 0 項觸發"],
+  X1: ["月營收 YoY < 30%"],
+  X2: ["較上月降溫 > 20 個百分點"],
+  X3: ["EPS YoY < 0"],
+  X4: ["EPS 年減 > 10%"],
+  X5: ["淨利衰退"],
+  "T1/T2": ["尚未啟用"],
+  T3: ["毛利率 YoY < 0"],
+  OFFICIAL_Q: ["最新季報"],
+  SPRING_FESTIVAL_WATCH: ["1+2 月", "近 3 月平均"],
+  "1+2 月合併": ["跨月平滑"],
+  "近 3 個月平均": ["短期趨勢"],
+  "FIN1-FIN6": ["金融專用指標"],
+  INSUFFICIENT_DATA: ["缺資料不硬判"],
+  PARTIAL_DATA: ["可初篩"],
+  OFFICIAL_VALUATION: ["PER / PBR / 殖利率"],
+};
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const MOBILE_NAV_BREAKPOINT = 680;
+let holdingsScanRefreshTimer = null;
+
+function syncAccountPanelPlacement() {
+  if (typeof document === "undefined") return;
+  const panel = $("#account-panel");
+  const desktopSlot = $("#desktop-account-panel-slot");
+  const mobileSlot = $("#mobile-account-panel-slot");
+  if (!panel || !desktopSlot || !mobileSlot) return;
+  const useMobileSlot = window.matchMedia(`(max-width: ${MOBILE_NAV_BREAKPOINT}px)`).matches;
+  const targetSlot = useMobileSlot ? mobileSlot : desktopSlot;
+  if (panel.parentElement !== targetSlot) targetSlot.appendChild(panel);
+}
+
+function isMobileNavigation() {
+  return typeof window !== "undefined" && window.matchMedia(`(max-width: ${MOBILE_NAV_BREAKPOINT}px)`).matches;
+}
+
+function setScanNavExpanded(expanded) {
+  if (typeof document === "undefined") return;
+  const toggle = $("#scan-nav-toggle");
+  const subitems = $("#scan-nav-subitems");
+  const icon = toggle?.querySelector(".nav-group-icon");
+  if (!toggle || !subitems) return;
+  toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  subitems.classList.toggle("open", expanded);
+  if (icon) icon.textContent = expanded ? "−" : "+";
+}
+
+function normalizeResponsiveNavigation() {
+  setScanNavExpanded(!isMobileNavigation());
+  syncAccountPanelPlacement();
+}
+
+function setMobileMenuOpen(open) {
+  const toggle = $("#mobile-menu-toggle");
+  const backdrop = $("#mobile-nav-backdrop");
+  document.body.classList.toggle("mobile-menu-open", open);
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.setAttribute("aria-label", open ? "關閉功能選單" : "開啟功能選單");
+  }
+  if (backdrop) backdrop.classList.toggle("hidden", !open);
+}
+
+function closeMobileMenu() {
+  setMobileMenuOpen(false);
+}
+
+function toggleMobileMenu() {
+  setMobileMenuOpen(!document.body.classList.contains("mobile-menu-open"));
+}
 
 function normalizeText(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function normalizeAuthUsername(username) {
+  return normalizeText(username).toLowerCase();
+}
+
+function isSuperUserIdentity(user) {
+  return normalizeAuthUsername(user?.username) === SUPER_USER_USERNAME;
+}
+
+function normalizeAuthUser(user) {
+  if (!user || typeof user !== "object") return null;
+  const username = normalizeText(user.username);
+  if (!username) return null;
+  return {
+    ...user,
+    username,
+    displayName: normalizeText(user.displayName) || username,
+    isSuperUser: isSuperUserIdentity(user),
+  };
+}
+
+function authValidationMessage(username, password) {
+  const normalized = normalizeAuthUsername(username);
+  if (!normalized) return "請輸入電子信箱。";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return "請輸入有效電子信箱。";
+  if ((password || "").length < 8) return "密碼至少需要 8 個字元。";
+  if ((password || "").length > 128) return "密碼不可超過 128 個字元。";
+  return "";
 }
 
 function safeText(value, fallback = "") {
@@ -175,12 +305,15 @@ function companySource(companies = state.companies) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return DOM_HELPERS.escapeHtml(value);
+}
+
+function emptyStateHtml(message) {
+  return DOM_HELPERS.emptyStateHtml(message);
+}
+
+function setEmptyState(target, message) {
+  DOM_HELPERS.setEmptyState(target, message);
 }
 
 function safeCompanyName(companyOrHolding) {
@@ -301,10 +434,12 @@ function saveHoldings(holdings = state.holdings, storage = localStorage) {
   const normalized = normalizeHoldingRecords(holdings, state.companies);
   state.holdings = normalized;
   saveHoldingsLocalOnly(normalized, storage);
-  if (storage === localStorage && state.auth?.authenticated) {
+  const isBrowserLocalStorage = typeof localStorage !== "undefined" && storage === localStorage;
+  if (isBrowserLocalStorage && state.auth?.authenticated) {
     state.pendingHoldingsSync = true;
     syncHoldingsToServer(normalized);
   }
+  if (isBrowserLocalStorage) requestHoldingsScanRefresh();
 }
 
 async function syncHoldingsToServer(holdings = state.holdings) {
@@ -348,8 +483,118 @@ function isHoldingTracked(stockCode) {
   return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
 }
 
+function holdingScanResultByCode(stockCode, scan = state.holdingsScan) {
+  const normalized = safeText(stockCode);
+  if (!normalized || !scan || !Array.isArray(scan.results)) return null;
+  return scan.results.find((result) => safeText(result?.stockCode) === normalized) || null;
+}
+
+function holdingScanMissingByCode(stockCode, scan = state.holdingsScan) {
+  const normalized = safeText(stockCode);
+  if (!normalized || !scan || !Array.isArray(scan.missing)) return null;
+  return scan.missing.find((item) => safeText(item?.stockCode) === normalized) || null;
+}
+
+function holdingExitCodes(result = {}) {
+  return HOLDING_SIGNAL_HELPERS.holdingExitCodes(result);
+}
+
+function holdingSignal(result = null, missing = null) {
+  const display = result ? displayResultStatus(result, "holding") : null;
+  return HOLDING_SIGNAL_HELPERS.holdingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
+    isScanning: state.isScanningHoldings,
+  });
+}
+
+function renderHoldingSignal(result = null, missing = null) {
+  const display = result ? displayResultStatus(result, "holding") : null;
+  return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
+    isScanning: state.isScanningHoldings,
+  });
+}
+
+function holdingExitAlerts(scan = state.holdingsScan) {
+  const results = Array.isArray(scan?.results) ? scan.results : [];
+  const savedHoldingCodes = new Set(state.holdings.map((holding) => String(holding.stockCode || "").trim()).filter(Boolean));
+  return results
+    .map((result) => {
+      const signal = holdingSignal(result);
+      if (!["EXIT", "WARNING"].includes(signal.status)) return null;
+      const stockCode = safeText(result?.stockCode, "未知代碼");
+      if (savedHoldingCodes.size && !savedHoldingCodes.has(stockCode)) return null;
+      return {
+        stockCode,
+        companyName: safeText(result?.companyName || safeCompanyName(result), "未知公司"),
+        status: signal.status,
+        label: signal.label,
+        summary: signal.summary,
+        exitCodes: holdingExitCodes(result),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left.status !== right.status) return left.status === "EXIT" ? -1 : 1;
+      return left.stockCode.localeCompare(right.stockCode);
+    });
+}
+
+function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
+  if (!alerts.length) return "";
+  const exitCount = alerts.filter((item) => item.status === "EXIT").length;
+  const warningCount = alerts.filter((item) => item.status === "WARNING").length;
+  const title = exitCount ? `${exitCount} 檔持股命中高優先出場條件` : `${warningCount} 檔持股進入出場警戒`;
+  const tone = exitCount ? "critical" : "warning";
+  const lead = exitCount
+    ? "X4/X5 高優先出場已匹配，建議立即檢視部位，避免已累積獲利明顯回吐。"
+    : "X1-X3 出場警戒已匹配，請提高追蹤頻率，必要時先降低持股曝險。";
+  const extraCount = Math.max(0, alerts.length - 4);
+  return `
+    <section class="holding-exit-alert-banner ${tone}" role="alert" aria-live="polite">
+      <div>
+        <p class="eyebrow">持股出場提醒</p>
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(lead)}</p>
+      </div>
+      <ul class="holding-exit-alert-list">
+        ${alerts
+          .slice(0, 4)
+          .map(
+            (item) => `
+              <li>
+                <strong>${escapeHtml(item.stockCode)} ${escapeHtml(item.companyName)}</strong>
+                <span class="status-pill ${statusClass(item.status)}">${escapeHtml(item.label)}</span>
+                <span>${escapeHtml(item.summary)}</span>
+              </li>
+            `,
+          )
+          .join("")}
+        ${extraCount ? `<li class="holding-exit-alert-more"><span>另有 ${escapeHtml(extraCount)} 檔需檢視</span></li>` : ""}
+      </ul>
+      <div class="button-row">
+        <button class="danger-btn" type="button" data-open-holding-alert-details>查看出場明細</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderHoldingExitAlerts() {
+  if (typeof document === "undefined") return;
+  const target = $("#holding-exit-alerts");
+  if (!target) return;
+  const html = renderHoldingExitAlertBanner();
+  if (!html) {
+    target.replaceChildren();
+    target.classList.add("hidden");
+    return;
+  }
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  target.replaceChildren(...Array.from(parsed.body.childNodes));
+  target.classList.remove("hidden");
+}
+
 function refreshHoldingsDependentViews() {
   renderHoldings();
+  if (state.holdingsScan) renderHoldingResults();
   if (state.marketScan) renderMarketResults();
 }
 
@@ -401,28 +646,163 @@ function clearHolding(stockCode) {
   refreshHoldingsDependentViews();
 }
 
+function holdingResultsVisible() {
+  if (typeof document === "undefined") return false;
+  const target = $("#holding-results");
+  return Boolean(target && !target.classList.contains("hidden"));
+}
+
+function requestHoldingsScanRefresh() {
+  if (typeof window === "undefined") return;
+  window.clearTimeout(holdingsScanRefreshTimer);
+  if (!state.holdings.length) {
+    state.holdingsScan = { generatedAt: new Date().toISOString(), dataSource: "local", results: [], missing: [] };
+    refreshHoldingsDependentViews();
+    return;
+  }
+  if (!state.settings.manual_scan_enabled) {
+    state.holdingsScan = null;
+    refreshHoldingsDependentViews();
+    return;
+  }
+  holdingsScanRefreshTimer = window.setTimeout(() => {
+    refreshStoredHoldingAnalysis({ renderResults: holdingResultsVisible(), quiet: true });
+  }, 250);
+}
+
+async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = false } = {}) {
+  const target = typeof document !== "undefined" ? $("#holding-results") : null;
+  if (!state.holdings.length) {
+    state.holdingsScan = { generatedAt: new Date().toISOString(), dataSource: "local", results: [], missing: [] };
+    refreshHoldingsDependentViews();
+    if (renderResults) renderHoldingResults();
+    return true;
+  }
+  if (!state.settings.manual_scan_enabled) {
+    state.holdingsScan = null;
+    refreshHoldingsDependentViews();
+    if (renderResults && target) setEmptyState(target, "手動掃描已停用");
+    return false;
+  }
+
+  state.isScanningHoldings = true;
+  renderHoldings();
+  if (renderResults && target && !quiet) setEmptyState(target, "正在套用 X1-X5 出場規則");
+  try {
+    state.holdingsScan = await apiJson("/api/scan/holdings", {
+      method: "POST",
+      body: JSON.stringify({ holdings: state.holdings, settings: state.settings }),
+    });
+  } catch (error) {
+    if (renderResults && target) {
+      target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "持股掃描失敗")}</p>`;
+    }
+    return false;
+  } finally {
+    state.isScanningHoldings = false;
+    renderHoldings();
+  }
+  if (renderResults) renderHoldingResults();
+  return true;
+}
+
 async function apiJson(url, options = {}) {
   const { headers = {}, ...rest } = options;
   const response = await fetch(url, {
     ...rest,
-    headers: { "Content-Type": "application/json", ...headers },
+    headers: { "Content-Type": "application/json", [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE, ...headers },
     credentials: "same-origin",
   });
   const text = await response.text();
   if (!response.ok) {
-    let detail = text;
-    try {
-      detail = JSON.parse(text).detail || detail;
-    } catch {
-      // Keep the plain response text.
-    }
-    throw new Error(detail || `HTTP ${response.status}`);
+    throw new Error(apiErrorMessage(response, text));
   }
   return text ? JSON.parse(text) : {};
 }
 
+function apiErrorMessage(response, text = "") {
+  const status = Number(response?.status) || 0;
+  const contentType = String(response?.headers?.get?.("content-type") || response?.headers?.get?.("Content-Type") || "").toLowerCase();
+  const fallback =
+    status >= 500
+      ? "伺服器暫時無法處理請求，請稍後再試。"
+      : status === 401
+        ? "請重新登入後再試。"
+        : status === 403
+          ? "目前帳號沒有執行此操作的權限。"
+          : `請求失敗（HTTP ${status || "未知"}）`;
+
+  if (!text) return fallback;
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = JSON.parse(text);
+      const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
+      return status >= 500 || detail.startsWith("Cloudflare Worker API error:") ? fallback : detail || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  const normalized = text.trim();
+  if (!normalized || /<(!doctype|html|head|body|script|style)\b/i.test(normalized)) return fallback;
+  return normalized.length <= 240 ? normalized : fallback;
+}
+
+function onboardingStorageKey() {
+  const user = state.auth?.user;
+  const identity = user?.id || user?.username || "guest";
+  return `${ONBOARDING_KEY}.${identity}`;
+}
+
+function hasCompletedOnboarding() {
+  return localStorage.getItem(onboardingStorageKey()) === "true";
+}
+
+function markOnboardingDone() {
+  localStorage.setItem(onboardingStorageKey(), "true");
+}
+
+function shouldPromptOnboarding() {
+  return Boolean(state.auth?.authenticated && !hasCompletedOnboarding() && !state.holdings.length);
+}
+
+function renderAuthGate() {
+  if (typeof document === "undefined") return;
+  const modal = $("#auth-modal");
+  if (!modal) return;
+  const message = $("#auth-modal-message");
+  if (message) message.textContent = state.auth?.message || "";
+}
+
+function openAuthGate(message = "") {
+  const modal = $("#auth-modal");
+  if (!modal) return;
+  if (message) state.auth.message = message;
+  renderAuthGate();
+  modal.classList.remove("hidden");
+  setTimeout(() => $("#auth-modal-username")?.focus(), 0);
+}
+
+function closeAuthGate(options = {}) {
+  $("#auth-modal")?.classList.add("hidden");
+  if (options.clearMessage && state.auth) state.auth.message = "";
+  const message = $("#auth-modal-message");
+  if (message) message.textContent = "";
+}
+
+function maybeStartFirstRunFlow() {
+  if (!state.auth?.checked) return;
+  if (!state.auth.authenticated) {
+    openAuthGate(state.auth.available ? "" : state.auth.message);
+    return;
+  }
+  closeAuthGate();
+  if (shouldPromptOnboarding()) openOnboarding();
+}
+
 function renderAccountPanel() {
   if (typeof document === "undefined") return;
+  syncAccountPanelPlacement();
   const panel = $("#account-panel");
   if (!panel) return;
   const status = $("#account-status");
@@ -440,10 +820,31 @@ function renderAccountPanel() {
   userPanel.classList.toggle("hidden", !isLoggedIn);
   userLabel.textContent = isLoggedIn ? `已登入：${displayName}` : "";
   message.textContent = state.auth?.message || "";
+  const mobileSummary = $("#mobile-account-summary");
+  if (mobileSummary) {
+    mobileSummary.textContent = isLoggedIn ? `${displayName}，可匯入或登出` : "登入、註冊與同步持股";
+  }
   if (storageNote) {
     storageNote.textContent = isLoggedIn
       ? "持股會同步儲存在伺服器端帳號；瀏覽器也會保留一份本機備援。"
       : "目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。";
+  }
+  renderAuthGate();
+  renderAdminVisibility();
+  renderSettings();
+}
+
+function isSuperUser() {
+  return Boolean(state.auth?.authenticated && isSuperUserIdentity(state.auth?.user));
+}
+
+function renderAdminVisibility() {
+  if (typeof document === "undefined") return;
+  const adminNavItem = $("#admin-nav-item");
+  const canManageUsers = isSuperUser();
+  if (adminNavItem) adminNavItem.classList.toggle("hidden", !canManageUsers);
+  if (!canManageUsers && state.activeView === "admin") {
+    showView("overview");
   }
 }
 
@@ -451,11 +852,12 @@ async function loadAccountState() {
   const localHoldings = loadHoldings();
   try {
     const me = await apiJson("/api/auth/me");
+    const authUser = normalizeAuthUser(me.user);
     state.auth = {
       checked: true,
       available: true,
-      authenticated: Boolean(me.authenticated),
-      user: me.user || null,
+      authenticated: Boolean(me.authenticated && authUser),
+      user: authUser,
       message: "",
     };
     if (!state.auth.authenticated) {
@@ -463,8 +865,7 @@ async function loadAccountState() {
       renderAccountPanel();
       return;
     }
-    const serverPayload = await apiJson("/api/me/holdings");
-    const serverHoldings = normalizeHoldingRecords(serverPayload.holdings, state.companies);
+    const serverHoldings = normalizeHoldingRecords(me.holdings || [], state.companies);
     if (!serverHoldings.length && localHoldings.length) {
       state.holdings = localHoldings;
       await syncHoldingsToServer(localHoldings);
@@ -486,11 +887,19 @@ async function loadAccountState() {
   renderAccountPanel();
 }
 
-async function authenticateFromForm(mode) {
-  const usernameInput = $("#auth-username");
-  const passwordInput = $("#auth-password");
+async function authenticateFromForm(mode, source = "header") {
+  const isModal = source === "modal";
+  const usernameInput = isModal ? $("#auth-modal-username") : $("#auth-username");
+  const passwordInput = isModal ? $("#auth-modal-password") : $("#auth-password");
   const username = usernameInput.value.trim();
   const password = passwordInput.value;
+  const validationMessage = authValidationMessage(username, password);
+  if (validationMessage) {
+    state.auth.message = validationMessage;
+    renderAccountPanel();
+    usernameInput.focus();
+    return;
+  }
   state.auth.message = "";
   renderAccountPanel();
   try {
@@ -499,15 +908,15 @@ async function authenticateFromForm(mode) {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
+    const authUser = normalizeAuthUser(result.user);
     state.auth = {
       checked: true,
       available: true,
-      authenticated: Boolean(result.authenticated),
-      user: result.user || null,
+      authenticated: Boolean(result.authenticated && authUser),
+      user: authUser,
       message: mode === "register" ? "帳號已建立。" : "已登入。",
     };
-    const serverPayload = await apiJson("/api/me/holdings");
-    const serverHoldings = normalizeHoldingRecords(serverPayload.holdings, state.companies);
+    const serverHoldings = normalizeHoldingRecords(result.holdings || [], state.companies);
     if (!serverHoldings.length && localHoldings.length) {
       state.holdings = localHoldings;
       await syncHoldingsToServer(localHoldings);
@@ -518,6 +927,12 @@ async function authenticateFromForm(mode) {
     }
     passwordInput.value = "";
     renderHoldings();
+    requestHoldingsScanRefresh();
+    if (isModal) {
+      $("#auth-username").value = username;
+      closeAuthGate();
+    }
+    maybeStartFirstRunFlow();
   } catch (error) {
     state.auth.available = true;
     state.auth.authenticated = false;
@@ -540,8 +955,13 @@ async function logoutAccount() {
     user: null,
     message: "已登出，畫面保留目前本機持股。",
   };
+  state.adminUsers = [];
+  state.adminMessage = "";
+  state.adminError = "";
   saveHoldingsLocalOnly(state.holdings);
+  closeOnboarding(false);
   renderAccountPanel();
+  maybeStartFirstRunFlow();
 }
 
 async function importLocalHoldingsToAccount() {
@@ -552,7 +972,106 @@ async function importLocalHoldingsToAccount() {
   const ok = await syncHoldingsToServer(merged);
   state.auth.message = ok ? "已將本機持股合併同步到帳號。" : state.auth.message;
   renderHoldings();
+  requestHoldingsScanRefresh();
   renderAccountPanel();
+}
+
+function renderAdminUsers() {
+  if (typeof document === "undefined") return;
+  const target = $("#admin-users-list");
+  const message = $("#admin-users-message");
+  if (!target || !message) return;
+  if (!isSuperUser()) {
+    message.textContent = "此頁面僅限 super user 使用。";
+    target.innerHTML = "";
+    return;
+  }
+  message.textContent = state.adminIsLoading ? "讀取使用者清單中..." : state.adminError || state.adminMessage || "";
+  if (state.adminIsLoading) {
+    setEmptyState(target, "讀取中");
+    return;
+  }
+  if (state.adminError) {
+    setEmptyState(target, state.adminError);
+    return;
+  }
+  if (!state.adminUsers.length) {
+    setEmptyState(target, "目前沒有其他使用者");
+    return;
+  }
+  target.innerHTML = state.adminUsers
+    .map((user) => {
+      const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
+      const badge = user.isSuperUser ? `<span class="status-pill status-entry">super user</span>` : `<span class="status-pill neutral">一般使用者</span>`;
+      const deleteButton = user.canDelete
+        ? `<button class="small-danger-btn" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-username="${escapeHtml(user.username)}">刪除</button>`
+        : `<button class="ghost-btn" type="button" disabled>不可刪除</button>`;
+      return `
+        <article class="admin-user-card">
+          <div>
+            <div class="admin-user-title">
+              <strong>${escapeHtml(user.displayName || user.username)}</strong>
+              ${badge}
+            </div>
+            <p>${escapeHtml(user.username)}</p>
+            <dl class="admin-user-meta">
+              <div><dt>建立時間</dt><dd>${escapeHtml(createdAt)}</dd></div>
+              <div><dt>持股數</dt><dd>${escapeHtml(user.holdingsCount ?? 0)}</dd></div>
+              <div><dt>有效登入</dt><dd>${escapeHtml(user.activeSessionCount ?? 0)}</dd></div>
+            </dl>
+          </div>
+          ${deleteButton}
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function adminUsersErrorMessage(message) {
+  const normalized = normalizeText(message || "使用者清單讀取失敗。");
+  if (normalized === "Not found" || normalized.includes("404")) {
+    return "使用者管理 API 尚未部署，或 API_ORIGIN 仍指向舊版後端。請重新部署 Cloudflare Worker / Pages 後再整理。";
+  }
+  return `使用者清單讀取失敗：${normalized}`;
+}
+
+async function loadAdminUsers() {
+  if (!isSuperUser()) return;
+  state.adminIsLoading = true;
+  state.adminMessage = "";
+  state.adminError = "";
+  renderAdminUsers();
+  try {
+    const payload = await apiJson("/api/admin/users");
+    state.adminUsers = Array.isArray(payload.users) ? payload.users : [];
+    state.adminMessage = `已載入 ${state.adminUsers.length} 個帳號。`;
+  } catch (error) {
+    state.adminUsers = [];
+    state.adminError = adminUsersErrorMessage(error.message);
+  } finally {
+    state.adminIsLoading = false;
+    renderAdminUsers();
+  }
+}
+
+async function deleteAdminUser(userId, username) {
+  if (!isSuperUser() || !userId) return;
+  const confirmed = window.confirm(`確定要刪除 ${username}？此動作會移除該帳號的持股與登入 session。`);
+  if (!confirmed) return;
+  state.adminIsLoading = true;
+  state.adminMessage = "";
+  state.adminError = "";
+  renderAdminUsers();
+  try {
+    const payload = await apiJson(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    state.adminUsers = Array.isArray(payload.users) ? payload.users : [];
+    state.adminMessage = `已刪除 ${username}。`;
+  } catch (error) {
+    state.adminError = `刪除使用者失敗：${error.message || "未知錯誤"}`;
+  } finally {
+    state.adminIsLoading = false;
+    renderAdminUsers();
+  }
 }
 
 function statusLabel(status) {
@@ -637,7 +1156,7 @@ function renderRuleEvidence(rule = {}) {
     return `
       <div class="evidence-bar-row">
         <span class="evidence-label">${escapeHtml(item.label || "")}</span>
-        <span class="evidence-track"><span class="evidence-bar ${tone.className}" style="--bar-width: ${width}%"></span></span>
+        <span class="evidence-track"><span class="evidence-bar ${tone.className}" data-evidence-width="${escapeHtml(width)}"></span></span>
         <span class="evidence-value ${tone.className}">${escapeHtml(formatEvidenceValue(item))}</span>
       </div>
     `;
@@ -663,6 +1182,17 @@ function renderRuleEvidence(rule = {}) {
       </table>
     </div>
   `;
+}
+
+function applyEvidenceBarWidths(root = null) {
+  if (typeof document === "undefined" && !root) return;
+  const scope = root || document;
+  if (!scope.querySelectorAll) return;
+  scope.querySelectorAll("[data-evidence-width]").forEach((bar) => {
+    const value = Number(bar.dataset.evidenceWidth);
+    const width = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+    bar.style.setProperty("--bar-width", `${width}%`);
+  });
 }
 
 function renderRule(rule = {}) {
@@ -759,9 +1289,10 @@ function renderSelectedCompany() {
 }
 
 function renderHoldings() {
+  renderHoldingExitAlerts();
   const target = $("#holdings-list");
   if (!state.holdings.length) {
-    target.innerHTML = `<div class="empty-state">目前沒有持股</div>`;
+    setEmptyState(target, "目前沒有持股");
     return;
   }
 
@@ -772,12 +1303,15 @@ function renderHoldings() {
       const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
       const averageCost = optionalNumber(holding.averageCost);
       const isEditing = state.editingHoldingCode === stockCode;
+      const analysis = holdingScanResultByCode(stockCode);
+      const missing = holdingScanMissingByCode(stockCode);
       return `
         <article class="card" data-holding-code="${escapeHtml(stockCode)}">
           <div class="card-head">
             <div>
               <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(name)}</h3>
               <p class="muted">目前 ${escapeHtml(shares)} 股，平均成本 ${escapeHtml(averageCost ?? "未填")}</p>
+              ${renderHoldingSignal(analysis, missing)}
             </div>
             <div class="button-row compact-actions">
               ${
@@ -859,11 +1393,21 @@ function renderOnboardingDraft() {
 }
 
 function renderSettings() {
+  const canEditSettings = isSuperUser();
+  const status = $("#settings-status");
   $$("[data-setting]").forEach((input) => {
     input.checked = Boolean(state.settings[input.dataset.setting]);
+    input.disabled = !canEditSettings;
+    input.closest("label")?.classList.toggle("disabled", !canEditSettings);
   });
-  $("#scan-market-btn").disabled = !state.settings.manual_scan_enabled;
-  $("#scan-holdings-btn").disabled = !state.settings.manual_scan_enabled;
+  if (status && !canEditSettings) status.textContent = settingsPermissionMessage();
+}
+
+function settingsPermissionMessage() {
+  if (isSuperUser()) return "";
+  if (state.auth?.authenticated) return "需要管理員";
+  if (state.auth?.checked) return "需要登入管理員";
+  return "確認權限中";
 }
 
 function findStrategyStatusDetail(key) {
@@ -906,6 +1450,52 @@ function renderStrategyStatusDetail() {
         .join("")}
     </div>
   `;
+  applyEvidenceBarWidths(target);
+}
+
+function strategyThresholdsFor(code, title) {
+  const direct = STRATEGY_RULE_THRESHOLDS[code];
+  if (direct) return direct;
+  const compactTitle = normalizeText(title);
+  const matches = compactTitle.match(/(>=|>|<|≤|小於|大於)\s*\d+(?:\.\d+)?%?/g);
+  return matches?.length ? matches : ["條件檢查"];
+}
+
+function renderStrategyRuleCards(details = STRATEGY_STATUS_DETAILS) {
+  return details
+    .map(
+      (detail) => `
+        <article class="strategy-rule-card">
+          <div>
+            <h3>${escapeHtml(detail.label)}</h3>
+            <p class="strategy-rule-summary">${escapeHtml(detail.summary)}</p>
+          </div>
+          <ul class="strategy-rule-list">
+            ${detail.items
+              .map(([code, title]) => {
+                const thresholds = strategyThresholdsFor(code, title);
+                return `
+                  <li class="strategy-rule-item">
+                    <span class="strategy-rule-code">${escapeHtml(code)}</span>
+                    <p class="strategy-rule-title">${escapeHtml(title)}</p>
+                    <div class="strategy-rule-thresholds">
+                      ${thresholds.map((threshold) => `<span class="rule-threshold-pill">${escapeHtml(threshold)}</span>`).join("")}
+                    </div>
+                  </li>
+                `;
+              })
+              .join("")}
+          </ul>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderStrategyRulesGrid() {
+  const target = $("#strategy-rules-grid");
+  if (!target) return;
+  target.innerHTML = renderStrategyRuleCards();
 }
 
 const MARKET_RESULT_COLUMNS = [
@@ -1030,6 +1620,43 @@ function marketResultId(result = {}, groupKey = "", columnKey = "") {
   return [groupKey, columnKey, safeText(result.stockCode, "unknown"), safeText(result.status, "unknown")].join(":");
 }
 
+function findMarketResultById(resultId) {
+  if (!state.marketScan) return null;
+  const grouped = groupMarketScanResults(state.marketScan);
+  for (const tab of MARKET_DISCLOSURE_TABS) {
+    for (const [columnKey] of MARKET_RESULT_COLUMNS) {
+      for (const result of grouped?.[tab.key]?.[columnKey] || []) {
+        if (marketResultId(result, tab.key, columnKey) === resultId) return result;
+      }
+    }
+  }
+  return null;
+}
+
+async function loadMarketResultDetails(resultId) {
+  const result = findMarketResultById(resultId);
+  if (!result || result.hasFullDetails || result.detailLoading || !result.detailsAvailable) return;
+  result.detailLoading = true;
+  result.detailError = "";
+  renderMarketResults();
+  try {
+    const detail = await apiJson(`/api/analyze/${result.stockCode}`, {
+      method: "POST",
+      body: JSON.stringify({ settings: state.settings }),
+    });
+    Object.assign(result, detail, {
+      detailsAvailable: false,
+      hasFullDetails: true,
+      detailLoading: false,
+      detailError: "",
+    });
+  } catch (error) {
+    result.detailLoading = false;
+    result.detailError = error.message || "細項載入失敗";
+  }
+  renderMarketResults();
+}
+
 function getMarketPage(groupKey, columnKey) {
   return Math.max(0, Number(state.marketListPages?.[groupKey]?.[columnKey]) || 0);
 }
@@ -1076,6 +1703,8 @@ function renderMarketResultDetails(result, options = {}) {
   const { status: displayStatus, summary } = displayResultStatus(result, options.disclosureGroup);
   return `
     <div class="market-result-details">
+      ${result.detailLoading ? `<p class="muted">正在載入完整細項...</p>` : ""}
+      ${result.detailError ? `<p class="form-error">${escapeHtml(result.detailError)}</p>` : ""}
       <div class="detail-summary">
         <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
         <p class="muted">${escapeHtml(summary)}</p>
@@ -1170,7 +1799,7 @@ function renderScanCacheStatus(scan = {}) {
 function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
-    target.innerHTML = `<div class="empty-state">尚未掃描市場</div>`;
+    setEmptyState(target, "尚未掃描市場");
     updateMarketColumnNav();
     return;
   }
@@ -1216,6 +1845,7 @@ function renderMarketResults() {
       ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
     </div>
   `;
+  applyEvidenceBarWidths(target);
 }
 
 function renderDataAndScheduler() {
@@ -1223,7 +1853,7 @@ function renderDataAndScheduler() {
   const schedulerTarget = $("#scheduler-status");
   if (dataTarget) {
     if (!state.dataSourceStatus) {
-      dataTarget.innerHTML = `<div class="empty-state">尚未讀取資料來源狀態</div>`;
+      setEmptyState(dataTarget, "尚未讀取資料來源狀態");
     } else {
       const status = state.dataSourceStatus;
       dataTarget.innerHTML = `
@@ -1273,7 +1903,7 @@ function renderDataAndScheduler() {
 function renderHoldingResults() {
   const target = $("#holding-results");
   if (!state.holdingsScan) {
-    target.innerHTML = `<div class="empty-state">尚未掃描持股</div>`;
+    setEmptyState(target, "尚未掃描持股");
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.holdingsScan.generatedAt).toLocaleString()}`;
@@ -1298,6 +1928,7 @@ function renderHoldingResults() {
       ${!(state.holdingsScan.results || []).length && !missing.length ? `<div class="empty-state">沒有可掃描持股</div>` : ""}
     </div>
   `;
+  applyEvidenceBarWidths(target);
 }
 
 function showTab(tab) {
@@ -1307,7 +1938,11 @@ function showTab(tab) {
 }
 
 function showView(view) {
+  if (view === "admin" && !isSuperUser()) {
+    view = "overview";
+  }
   state.activeView = view;
+  document.body.classList.toggle("scan-view-active", view === "scan");
   const titles = {
     overview: ["總覽", "快速查看資料來源、持股狀態與策略完成度。"],
     search: ["搜尋與單檔分析", "查詢股票並查看單檔規則原因。"],
@@ -1317,20 +1952,31 @@ function showView(view) {
     strategy: ["策略規則", ""],
     data: ["資料與排程", "查看資料來源、官方 adapter 與事件驅動排程狀態。"],
   };
+  titles.admin = ["使用者管理", "只允許 pcedison@gmail.com 管理註冊帳號與刪除一般使用者。"];
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.viewPanel !== view));
   const [title, subtitle] = titles[view] || titles.overview;
   $("#view-title").textContent = title;
   $("#view-subtitle").textContent = subtitle;
   $("#view-subtitle").classList.toggle("hidden", !subtitle);
+  if (view === "admin" && isSuperUser() && !state.adminUsers.length && !state.adminIsLoading) loadAdminUsers();
+  if (view === "admin") renderAdminUsers();
   if (view === "data") renderDataAndScheduler();
   updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
 }
 
 async function loadCompanies() {
   try {
-    const payload = await apiJson("/api/companies");
-    const normalized = normalizeCompanies(payload.items);
+    const items = [];
+    let page = 1;
+    let hasMore = true;
+    while (hasMore && page <= MAX_COMPANY_PAGES) {
+      const payload = await apiJson(`/api/companies?page=${page}&limit=${COMPANIES_PAGE_LIMIT}`);
+      items.push(...(Array.isArray(payload.items) ? payload.items : []));
+      hasMore = payload.hasMore === true;
+      page += 1;
+    }
+    const normalized = normalizeCompanies(items);
     state.companies = normalized.length ? normalized : normalizeCompanies(DEFAULT_COMPANIES);
     $("#api-status").textContent = "已連線";
   } catch {
@@ -1352,18 +1998,12 @@ async function loadSettings() {
 
 async function loadDataStatus() {
   try {
-    const [dataSourceStatus, schedulerStatus, schedulerAutoScan, integrationStatus, backtestStatus] = await Promise.all([
-      apiJson("/api/data-sources/status"),
-      apiJson("/api/scheduler/wakeup"),
-      apiJson("/api/scheduler/auto-scan?execute=false"),
-      apiJson("/api/integrations/status"),
-      apiJson("/api/backtest"),
-    ]);
-    state.dataSourceStatus = dataSourceStatus;
-    state.schedulerStatus = schedulerStatus;
-    state.schedulerAutoScan = schedulerAutoScan;
-    state.integrationStatus = integrationStatus;
-    state.backtestStatus = backtestStatus;
+    const status = await apiJson("/api/app-status");
+    state.dataSourceStatus = status.dataSourceStatus;
+    state.schedulerStatus = status.schedulerStatus;
+    state.schedulerAutoScan = status.schedulerAutoScan;
+    state.integrationStatus = status.integrationStatus;
+    state.backtestStatus = status.backtestStatus;
     if (state.schedulerAutoScan?.scan) {
       state.marketScan = state.schedulerAutoScan.scan;
       resetMarketListUi();
@@ -1380,6 +2020,11 @@ async function loadDataStatus() {
 }
 
 async function saveSettings() {
+  if (!isSuperUser()) {
+    $("#settings-status").textContent = settingsPermissionMessage();
+    renderSettings();
+    return;
+  }
   try {
     state.settings = await apiJson("/api/settings", {
       method: "PUT",
@@ -1388,11 +2033,12 @@ async function saveSettings() {
     await loadCompanies();
     await loadDataStatus();
     $("#settings-status").textContent = "已儲存";
-  } catch {
-    $("#settings-status").textContent = "儲存失敗";
+  } catch (error) {
+    $("#settings-status").textContent = error.message || "儲存失敗";
   }
   renderSelectedCompany();
   renderHoldings();
+  requestHoldingsScanRefresh();
   renderSettings();
 }
 
@@ -1440,13 +2086,14 @@ function renderSuggestions(items) {
 async function analyzeSelectedCompany() {
   if (!state.selectedCompany) return;
   const target = $("#single-analysis");
-  target.innerHTML = `<div class="empty-state">分析中</div>`;
+  setEmptyState(target, "分析中");
   try {
     const result = await apiJson(`/api/analyze/${state.selectedCompany.stockCode}`, {
       method: "POST",
       body: JSON.stringify({ settings: state.settings }),
     });
     target.innerHTML = renderAnalysisCard(result);
+    applyEvidenceBarWidths(target);
   } catch (error) {
     target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "分析失敗")}</p>`;
   }
@@ -1454,7 +2101,7 @@ async function analyzeSelectedCompany() {
 
 async function scanMarket() {
   const target = $("#market-results");
-  target.innerHTML = `<div class="empty-state">掃描中</div>`;
+  setEmptyState(target, "掃描中");
   showView("scan");
   showTab("market");
   try {
@@ -1472,19 +2119,10 @@ async function scanMarket() {
 
 async function scanHoldings() {
   const target = $("#holding-results");
-  target.innerHTML = `<div class="empty-state">掃描中</div>`;
   showView("scan");
   showTab("holdings");
-  try {
-    state.holdingsScan = await apiJson("/api/scan/holdings", {
-      method: "POST",
-      body: JSON.stringify({ holdings: state.holdings, settings: state.settings }),
-    });
-  } catch (error) {
-    target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "掃描失敗")}</p>`;
-    return;
-  }
-  renderHoldingResults();
+  setEmptyState(target, "正在套用 X1-X5 出場規則");
+  await refreshStoredHoldingAnalysis({ renderResults: true });
 }
 
 async function exportReport(kind, reportFormat) {
@@ -1495,8 +2133,9 @@ async function exportReport(kind, reportFormat) {
       : { settings: state.settings };
   const response = await fetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
     body: JSON.stringify(payload),
+    credentials: "same-origin",
   });
   if (!response.ok) throw new Error(await response.text());
   const blob = await response.blob();
@@ -1512,15 +2151,19 @@ async function exportReport(kind, reportFormat) {
 }
 
 function openOnboarding() {
+  if (!state.auth?.authenticated) {
+    openAuthGate();
+    return;
+  }
   renderOnboardingDraft();
   $("#onboarding-modal").classList.remove("hidden");
   $("#onboarding-error").textContent = "";
   $("#onboarding-stock-input").focus();
 }
 
-function closeOnboarding() {
+function closeOnboarding(markDone = true) {
   $("#onboarding-modal").classList.add("hidden");
-  localStorage.setItem(ONBOARDING_KEY, "true");
+  if (markDone) markOnboardingDone();
   $("#onboarding-error").textContent = "";
 }
 
@@ -1569,6 +2212,58 @@ function addOnboardingDraftFromFields() {
 }
 
 function bindEvents() {
+  normalizeResponsiveNavigation();
+  const mobileMenuToggle = $("#mobile-menu-toggle");
+  if (mobileMenuToggle) mobileMenuToggle.addEventListener("click", toggleMobileMenu);
+  const mobileNavBackdrop = $("#mobile-nav-backdrop");
+  if (mobileNavBackdrop) mobileNavBackdrop.addEventListener("click", closeMobileMenu);
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!$("#onboarding-modal")?.classList.contains("hidden")) {
+      closeOnboarding(false);
+      return;
+    }
+    if (!$("#auth-modal")?.classList.contains("hidden")) {
+      closeAuthGate({ clearMessage: true });
+      return;
+    }
+    closeMobileMenu();
+  });
+  let _resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+      normalizeResponsiveNavigation();
+      if (window.innerWidth > MOBILE_NAV_BREAKPOINT) closeMobileMenu();
+    }, 100);
+  });
+
+  const sideNav = document.querySelector(".side-nav");
+  if (sideNav) {
+    sideNav.addEventListener("click", (event) => {
+      const marketColumnButton = event.target.closest("[data-market-column-nav]");
+      if (marketColumnButton && sideNav.contains(marketColumnButton)) {
+        state.activeMarketColumn = marketColumnButton.dataset.marketColumnNav;
+        showView("scan");
+        showTab("market");
+        renderMarketResults();
+        closeMobileMenu();
+        return;
+      }
+
+      const navButton = event.target.closest(".nav-item[data-view]");
+      if (!navButton || !sideNav.contains(navButton)) return;
+      if (navButton.dataset.navGroupToggle === "scan" && isMobileNavigation()) {
+        const nextExpanded = navButton.getAttribute("aria-expanded") !== "true";
+        setScanNavExpanded(nextExpanded);
+        showView("scan");
+        return;
+      }
+      showView(navButton.dataset.view);
+      closeMobileMenu();
+    });
+  }
+
   const authForm = $("#auth-form");
   if (authForm) {
     authForm.addEventListener("submit", (event) => {
@@ -1578,10 +2273,39 @@ function bindEvents() {
   }
   const registerButton = $("#auth-register-btn");
   if (registerButton) registerButton.addEventListener("click", () => authenticateFromForm("register"));
+  const authModalForm = $("#auth-modal-form");
+  if (authModalForm) {
+    authModalForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      authenticateFromForm("register", "modal");
+    });
+  }
+  const authModalLoginButton = $("#auth-modal-login-btn");
+  if (authModalLoginButton) authModalLoginButton.addEventListener("click", () => authenticateFromForm("login", "modal"));
+  const closeAuthModalButton = $("#close-auth-modal-btn");
+  if (closeAuthModalButton) closeAuthModalButton.addEventListener("click", () => closeAuthGate({ clearMessage: true }));
+  const deferAuthModalButton = $("#defer-auth-modal-btn");
+  if (deferAuthModalButton) deferAuthModalButton.addEventListener("click", () => closeAuthGate({ clearMessage: true }));
+  const authModal = $("#auth-modal");
+  if (authModal) {
+    authModal.addEventListener("click", (event) => {
+      if (event.target === authModal) closeAuthGate({ clearMessage: true });
+    });
+  }
   const logoutButton = $("#auth-logout-btn");
   if (logoutButton) logoutButton.addEventListener("click", logoutAccount);
   const importLocalButton = $("#import-local-holdings-btn");
   if (importLocalButton) importLocalButton.addEventListener("click", importLocalHoldingsToAccount);
+  const refreshAdminUsersButton = $("#refresh-admin-users-btn");
+  if (refreshAdminUsersButton) refreshAdminUsersButton.addEventListener("click", loadAdminUsers);
+  const adminUsersList = $("#admin-users-list");
+  if (adminUsersList) {
+    adminUsersList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-delete-user]");
+      if (!button) return;
+      deleteAdminUser(button.dataset.deleteUser, button.dataset.deleteUsername || "此使用者");
+    });
+  }
 
   let searchTimer = null;
   $("#stock-search").addEventListener("input", (event) => {
@@ -1620,6 +2344,23 @@ function bindEvents() {
     if (result.ok) event.target.reset();
   });
 
+  const scanStoredHoldingsButton = $("#scan-stored-holdings-btn");
+  if (scanStoredHoldingsButton) {
+    scanStoredHoldingsButton.addEventListener("click", () => {
+      refreshStoredHoldingAnalysis({ renderResults: false });
+    });
+  }
+
+  const holdingExitAlertsTarget = $("#holding-exit-alerts");
+  if (holdingExitAlertsTarget) {
+    holdingExitAlertsTarget.addEventListener("click", (event) => {
+      if (!event.target.closest("[data-open-holding-alert-details]")) return;
+      showView("scan");
+      showTab("holdings");
+      renderHoldingResults();
+    });
+  }
+
   $("#holdings-list").addEventListener("click", (event) => {
     const card = event.target.closest("[data-holding-code]");
     const action = event.target.dataset.action;
@@ -1655,18 +2396,32 @@ function bindEvents() {
     }
   });
 
-  $("#scan-market-btn").addEventListener("click", scanMarket);
-  $("#scan-holdings-btn").addEventListener("click", scanHoldings);
   $("#export-market-md-btn").addEventListener("click", () => exportReport("market", "markdown"));
   $("#export-market-csv-btn").addEventListener("click", () => exportReport("market", "csv"));
   $("#export-holdings-md-btn").addEventListener("click", () => exportReport("holdings", "markdown"));
   $("#export-holdings-csv-btn").addEventListener("click", () => exportReport("holdings", "csv"));
-  $("#open-onboarding-btn").addEventListener("click", openOnboarding);
+  $("#open-onboarding-btn").addEventListener("click", () => {
+    if (!state.auth?.authenticated) {
+      openAuthGate();
+      return;
+    }
+    openOnboarding();
+  });
   $("#skip-onboarding-btn").addEventListener("click", () => {
     state.onboardingDraft = [];
     renderOnboardingDraft();
     closeOnboarding();
   });
+  const closeOnboardingButton = $("#close-onboarding-btn");
+  if (closeOnboardingButton) closeOnboardingButton.addEventListener("click", () => closeOnboarding(false));
+  const deferOnboardingButton = $("#defer-onboarding-btn");
+  if (deferOnboardingButton) deferOnboardingButton.addEventListener("click", () => closeOnboarding(false));
+  const onboardingModal = $("#onboarding-modal");
+  if (onboardingModal) {
+    onboardingModal.addEventListener("click", (event) => {
+      if (event.target === onboardingModal) closeOnboarding(false);
+    });
+  }
 
   $("#onboarding-add-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1693,7 +2448,13 @@ function bindEvents() {
   });
 
   $$(".settings-grid input").forEach((input) => {
-    input.addEventListener("change", () => {
+    input.addEventListener("change", (event) => {
+      if (!isSuperUser()) {
+        event.preventDefault();
+        $("#settings-status").textContent = settingsPermissionMessage();
+        renderSettings();
+        return;
+      }
       state.settings[input.dataset.setting] = input.checked;
       saveSettings();
     });
@@ -1710,7 +2471,20 @@ function bindEvents() {
   }
 
   $$(".tab").forEach((button) => {
-    button.addEventListener("click", () => showTab(button.dataset.tab));
+    button.addEventListener("click", () => {
+      const tab = button.dataset.tab;
+      if (tab === "market") {
+        if (state.settings.manual_scan_enabled) scanMarket();
+        else showTab("market");
+        return;
+      }
+      if (tab === "holdings") {
+        if (state.settings.manual_scan_enabled) scanHoldings();
+        else showTab("holdings");
+        return;
+      }
+      showTab(tab);
+    });
   });
 
   $("#holding-results").addEventListener("click", (event) => {
@@ -1721,7 +2495,7 @@ function bindEvents() {
     scanMarket();
   });
 
-  $("#market-results").addEventListener("click", (event) => {
+  $("#market-results").addEventListener("click", async (event) => {
     const tabButton = event.target.closest("[data-market-disclosure-tab]");
     if (tabButton) {
       state.activeMarketDisclosureTab = tabButton.dataset.marketDisclosureTab;
@@ -1746,6 +2520,7 @@ function bindEvents() {
         state.expandedMarketResultIds.delete(resultId);
       } else {
         state.expandedMarketResultIds.add(resultId);
+        loadMarketResultDetails(resultId);
       }
       renderMarketResults();
       return;
@@ -1761,35 +2536,22 @@ function bindEvents() {
     showView("holdings");
   });
 
-  $$(".nav-item").forEach((button) => {
-    button.addEventListener("click", () => showView(button.dataset.view));
-  });
-
-  $$("[data-market-column-nav]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.activeMarketColumn = button.dataset.marketColumnNav;
-      showView("scan");
-      showTab("market");
-      renderMarketResults();
-    });
-  });
 }
 
 async function init() {
   bindEvents();
-  await loadSettings();
-  await loadCompanies();
+  await Promise.all([loadSettings(), loadCompanies()]);
   await loadAccountState();
   await loadDataStatus();
   renderSelectedCompany();
   renderHoldings();
   renderStrategyStatusDetail();
+  renderStrategyRulesGrid();
   renderMarketResults();
   renderHoldingResults();
   showView("overview");
-  if (localStorage.getItem(ONBOARDING_KEY) !== "true") {
-    openOnboarding();
-  }
+  requestHoldingsScanRefresh();
+  maybeStartFirstRunFlow();
 }
 
 if (typeof document !== "undefined") {
@@ -1798,8 +2560,11 @@ if (typeof document !== "undefined") {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    SUPER_USER_USERNAME,
+    COMPANIES_PAGE_LIMIT,
     DEFAULT_COMPANIES,
     STRATEGY_STATUS_DETAILS,
+    STRATEGY_RULE_THRESHOLDS,
     state,
     findCompanyByCodeOrName,
     findStrategyStatusDetail,
@@ -1810,9 +2575,25 @@ if (typeof module !== "undefined") {
     parseStockInput,
     loadHoldingsFromStorage,
     normalizeText,
+    apiErrorMessage,
+    normalizeAuthUsername,
+    normalizeAuthUser,
+    isSuperUserIdentity,
+    isSuperUser,
+    authValidationMessage,
+    adminUsersErrorMessage,
     formatEvidenceValue,
     renderRuleEvidence,
+    applyEvidenceBarWidths,
     renderRule,
+    holdingScanResultByCode,
+    holdingScanMissingByCode,
+    holdingExitCodes,
+    holdingSignal,
+    renderHoldingSignal,
+    holdingExitAlerts,
+    renderHoldingExitAlertBanner,
+    renderStrategyRuleCards,
     ruleDisplayOrder,
     sortRulesForDisplay,
     renderAnalysisCard,
@@ -1827,6 +2608,10 @@ if (typeof module !== "undefined") {
     hasFinancialReportForContext,
     hasPublishedScanData,
     isPartialPublishedResult,
+    settingsPermissionMessage,
     safeText,
+    escapeHtml,
+    emptyStateHtml,
+    setEmptyState,
   };
 }

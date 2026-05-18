@@ -10,9 +10,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_frontend_dom_helpers_escape_empty_state_html():
+    script = r"""
+const { emptyStateHtml, escapeHtml, setEmptyState } = require("./frontend/dom.js");
+const target = {};
+Object.defineProperty(target, "innerHTML", { set(value) { this.value = value; } });
+setEmptyState(target, '<img src=x onerror="alert(1)">');
+console.log(JSON.stringify({
+  escaped: escapeHtml('<img src=x onerror="alert(1)">'),
+  empty: emptyStateHtml('<script>alert(1)</script>'),
+  setEmpty: target.value,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert "<img" not in payload["escaped"]
+    assert "&lt;img" in payload["escaped"]
+    assert "<script" not in payload["empty"].lower()
+    assert "&lt;script" in payload["empty"].lower()
+    assert "<img" not in payload["setEmpty"].lower()
+    assert "&lt;img" in payload["setEmpty"].lower()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, loadHoldingsFromStorage, normalizeHoldingRecords, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -139,7 +170,51 @@ const orderedHtml = renderAnalysisCard({
     { code: "A1", title: "原進場條件仍符合", passed: true, severity: "INFO", message: "A1" },
   ],
 });
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+const exitHoldingResult = {
+  stockCode: "3008",
+  companyName: "大立光",
+  status: "EXIT",
+  summary: "已觸發高優先出場條件，建議出清或至少大幅降低部位。",
+  reasons: [
+    { code: "X1", title: "月營收年增率不可低於 30%", passed: false, severity: "WARNING", message: "X1" },
+    { code: "X4", title: "季度 EPS 不可減少超過 10%", passed: false, severity: "EXIT", message: "X4" },
+    { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "目前 1000 股" },
+  ],
+};
+const exitCodes = holdingExitCodes(exitHoldingResult);
+const exitSignal = holdingSignal(exitHoldingResult);
+const exitSignalHtml = renderHoldingSignal(exitHoldingResult);
+state.holdings = [{ stockCode: "3008", name: "Largan", shares: 100, averageCost: 2000 }];
+const exitAlerts = holdingExitAlerts({ results: [exitHoldingResult], missing: [] });
+const exitAlertBanner = renderHoldingExitAlertBanner(exitAlerts);
+state.holdings = [];
+const pcedisonFromUsername = normalizeAuthUser({ username: " PCEDISON@GMAIL.COM ", displayName: "", isSuperUser: false });
+const pcedisonMissingFlag = normalizeAuthUser({ username: "pcedison@gmail.com" });
+const normalWithFlag = normalizeAuthUser({ username: "normal@example.com", isSuperUser: true });
+state.auth = { authenticated: true, user: pcedisonFromUsername };
+const superState = isSuperUser();
+state.auth = { checked: true, authenticated: true, user: normalWithFlag };
+const normalState = isSuperUser();
+const normalSettingsPermission = settingsPermissionMessage();
+state.auth = { checked: true, authenticated: false, user: null };
+const anonymousSettingsPermission = settingsPermissionMessage();
+const header = (contentType) => ({ get: () => contentType });
+const apiErrors = {
+  html500: apiErrorMessage({ status: 500, headers: header("text/html") }, '<!DOCTYPE html><html><head><title>Worker threw exception</title></head><body>raw</body></html>'),
+  workerJson500: apiErrorMessage({ status: 500, headers: header("application/json") }, JSON.stringify({ detail: "Cloudflare Worker API error: internal detail" })),
+  login401: apiErrorMessage({ status: 401, headers: header("application/json") }, JSON.stringify({ detail: "帳號或密碼錯誤" })),
+};
+const strategyCardsHtml = renderStrategyRuleCards();
+const authValidation = {
+  valid: authValidationMessage("qa@example.com", "test-password-123"),
+  badEmail: authValidationMessage("qa", "test-password-123"),
+  shortPassword: authValidationMessage("qa@example.com", "short"),
+};
+const adminErrors = {
+  notFound: adminUsersErrorMessage("Not found"),
+  normal: adminUsersErrorMessage("請先登入"),
+};
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { superUserUsername: SUPER_USER_USERNAME, normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, exitCodes, exitSignal, exitSignalHtml, exitAlerts, exitAlertBanner, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -190,6 +265,25 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["repaired"] == []
     assert payload["repairedStorage"] == "[]"
     assert payload["normalizedHoldings"][0]["shares"] == 2
+    assert payload["apiErrors"]["html500"] == "伺服器暫時無法處理請求，請稍後再試。"
+    assert payload["apiErrors"]["workerJson500"] == "伺服器暫時無法處理請求，請稍後再試。"
+    assert payload["apiErrors"]["login401"] == "帳號或密碼錯誤"
+    assert payload["authValidation"]["valid"] == ""
+    assert payload["authValidation"]["badEmail"] == "請輸入有效電子信箱。"
+    assert payload["authValidation"]["shortPassword"] == "密碼至少需要 8 個字元。"
+    assert "管理 API 尚未部署" in payload["adminErrors"]["notFound"]
+    assert payload["adminErrors"]["normal"] == "使用者清單讀取失敗：請先登入"
+    assert payload["auth"]["superUserUsername"] == "pcedison@gmail.com"
+    assert payload["auth"]["normalizedSuperUsername"] == "pcedison@gmail.com"
+    assert payload["auth"]["pcedisonFromUsername"]["isSuperUser"] is True
+    assert payload["auth"]["pcedisonMissingFlag"]["isSuperUser"] is True
+    assert payload["auth"]["normalWithFlag"]["isSuperUser"] is False
+    assert payload["auth"]["pcedisonIdentity"] is True
+    assert payload["auth"]["normalIdentity"] is False
+    assert payload["auth"]["superState"] is True
+    assert payload["auth"]["normalState"] is False
+    assert payload["auth"]["normalSettingsPermission"] == "需要管理員"
+    assert payload["auth"]["anonymousSettingsPermission"] == "需要登入管理員"
     assert payload["marketGroups"]["announced"]["entry"][0]["stockCode"] == "2357"
     assert payload["marketGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
     assert payload["marketGroups"]["announced"]["excluded"][0]["stockCode"] == "2881"
@@ -200,13 +294,30 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert [item["stockCode"] for item in payload["filingAwareGroups"]["pending"]["watch"]] == ["1102", "1103"]
     assert payload["evidenceValue"] == "119.63 億"
     assert "evidence-table" in payload["evidenceHtml"]
+    assert "data-evidence-width" in payload["evidenceHtml"]
+    assert 'style="' not in payload["evidenceHtml"]
     assert "2025" in payload["evidenceHtml"]
     assert "虧損" in payload["evidenceRuleHtml"]
     assert payload["orderedCodes"] == ["E1", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X2", "T3", "A1", "HOLDING"]
     assert payload["orderedHtml"].find("E1 通過") < payload["orderedHtml"].find("OFFICIAL_Q 通過")
     assert payload["orderedHtml"].find("OFFICIAL_VALUATION 通過") < payload["orderedHtml"].find("X1 通過")
     assert payload["orderedHtml"].find("T3 通過") < payload["orderedHtml"].find("A1 通過")
+    assert payload["exitCodes"] == ["X1", "X4"]
+    assert payload["exitSignal"]["status"] == "EXIT"
+    assert payload["exitSignal"]["label"] == "出場 X1、X4"
+    assert "holding-signal" in payload["exitSignalHtml"]
+    assert payload["exitAlerts"][0]["status"] == "EXIT"
+    assert payload["exitAlerts"][0]["stockCode"] == "3008"
+    assert payload["exitAlerts"][0]["exitCodes"] == ["X1", "X4"]
+    assert "holding-exit-alert-banner" in payload["exitAlertBanner"]
+    assert "3008" in payload["exitAlertBanner"]
+    assert "data-open-holding-alert-details" in payload["exitAlertBanner"]
+    assert "出場 X1、X4" in payload["exitSignalHtml"]
     assert payload["strategyDetailLabels"] == ["進場 E1-E6", "加碼 A1-A7", "出場 X1-X5", "T 系列追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
+    assert "strategy-rule-card" in payload["strategyCardsHtml"]
+    assert "營收 YoY &gt;= 50%" in payload["strategyCardsHtml"]
+    assert "PER &lt; 20" in payload["strategyCardsHtml"]
+    assert "存貨週轉率 &gt; 2.5" in payload["strategyCardsHtml"]
     assert [item[0] for item in payload["entryDetail"]["items"]] == ["E1", "E2", "E3", "E4", "E5", "E6"]
     assert [item[0] for item in payload["addWatchDetail"]["items"]] == ["A1", "A2", "A3", "A4", "A5", "A6", "A7"]
     assert [item[0] for item in payload["tSeriesDetail"]["items"]][:2] == ["T1/T2", "T3"]
@@ -214,3 +325,52 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["hasFinancialForContext"] is True
     assert payload["hasPublished"] is True
     assert payload["isPartialPublished"] is True
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_frontend_renderers_escape_untrusted_html_payloads():
+    script = r"""
+const { state, renderAnalysisCard, renderMarketResultRow, renderRuleEvidence, renderRule } = require("./frontend/app.js");
+
+state.holdings = [];
+const hostileRule = {
+  code: '<img src=x onerror="alert(1)">',
+  title: '<script>alert(2)</script>',
+  passed: false,
+  severity: "WATCH",
+  message: 'message <img src=x onerror="alert(3)"> & <b>bold</b>',
+  evidence: [
+    { label: '<svg onload="alert(4)">', value: 1000, unit: "shares" },
+  ],
+};
+const hostileResult = {
+  stockCode: '2357" onclick="alert(5)',
+  companyName: '<img src=x onerror="alert(6)">',
+  status: "WATCH",
+  summary: '<script>alert(7)</script>',
+  reasons: [hostileRule],
+};
+
+console.log(JSON.stringify({
+  analysisCard: renderAnalysisCard(hostileResult, { allowAddAction: true }),
+  marketRow: renderMarketResultRow(hostileResult, { disclosureGroup: "announced", columnKey: "watch" }),
+  rule: renderRule(hostileRule),
+  evidence: renderRuleEvidence(hostileRule),
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    for rendered in payload.values():
+        lowered = rendered.lower()
+        assert "<script" not in lowered
+        assert "<img" not in lowered
+        assert "<svg" not in lowered
+        assert "&lt;" in rendered

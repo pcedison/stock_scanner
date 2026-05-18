@@ -1,0 +1,64 @@
+{
+  "settings": {
+    "input": {
+      "auto_scan_full_market": false,
+      "manual_scan_enabled": true,
+      "exclude_financial_industry": true,
+      "use_mock_data": false,
+      "scan_twse": true,
+      "scan_tpex": false,
+      "spring_festival_guard": true,
+      "revenue_growth_mode": "monthly"
+    },
+    "response": {
+      "auto_scan_full_market": false,
+      "manual_scan_enabled": true,
+      "exclude_financial_industry": true,
+      "use_mock_data": false,
+      "scan_twse": true,
+      "scan_tpex": false,
+      "spring_festival_guard": true,
+      "revenue_growth_mode": "monthly"
+    }
+  },
+  "holding": {
+    "input": {
+      "stockCode": "2330",
+      "name": "TSMC",
+      "shares": 1000,
+      "averageCost": null
+    },
+    "response": {
+      "stockCode": "2330",
+      "name": "TSMC",
+      "shares": 1000,
+      "averageCost": null
+    }
+  },
+  "publicUser": {
+    "input": {
+      "id": 7,
+      "username": "pcedison@gmail.com",
+      "display_name": ""
+    },
+    "response": {
+      "id": 7,
+      "username": "pcedison@gmail.com",
+      "displayName": "pcedison@gmail.com",
+      "isSuperUser": true
+    }
+  },
+  "appStatusKeys": [
+    "dataSourceStatus",
+    "schedulerStatus",
+    "schedulerAutoScan",
+    "integrationStatus",
+    "backtestStatus"
+  ],
+  "schedulerAutoScanKeys": [
+    "action",
+    "autoScanEnabled",
+    "manualScanEnabled",
+    "scan"
+  ]
+}

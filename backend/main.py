@@ -4,17 +4,19 @@ import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
-from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AuthService
+from backend.services.auth import AuthRateLimitError, AuthService, SUPER_USER_USERNAME
 from backend.services.backtest import run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
@@ -31,15 +33,129 @@ from backend.services.settings_service import load_settings, save_settings
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT_DIR / "frontend"
+DEFAULT_CORS_ALLOW_ORIGINS = ("http://localhost", "http://localhost:8000", "http://127.0.0.1:8000")
+LOCAL_CORS_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cookie_secure() -> bool:
+    return _env_flag("SESSION_COOKIE_SECURE")
+
+
+def _runtime_environment() -> str:
+    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower() or "development"
+
+
+def _is_production_environment() -> bool:
+    return _runtime_environment() in {"prod", "production"}
+
+
+def _csv_env(name: str, default: tuple[str, ...] = ()) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _cors_allowed_origins() -> list[str]:
+    return _csv_env("APP_CORS_ALLOW_ORIGINS", DEFAULT_CORS_ALLOW_ORIGINS)
+
+
+def _origin_host(origin: str) -> str:
+    return (urlparse(origin).hostname or "").lower()
+
+
+def _is_local_cors_origin(origin: str) -> bool:
+    return _origin_host(origin) in LOCAL_CORS_HOSTS
+
+
+def _is_https_origin(origin: str) -> bool:
+    return urlparse(origin).scheme.lower() == "https"
+
+
+def _validate_runtime_security(cors_origins: list[str]) -> None:
+    if not _is_production_environment():
+        return
+    if not _cookie_secure():
+        raise RuntimeError("SESSION_COOKIE_SECURE must be enabled when APP_ENV=production")
+    local_origins = sorted(origin for origin in cors_origins if _is_local_cors_origin(origin))
+    if local_origins and not _env_flag("APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
+        raise RuntimeError(
+            "APP_CORS_ALLOW_ORIGINS must not include localhost origins in production: "
+            + ", ".join(local_origins)
+        )
+    insecure_origins = sorted(origin for origin in cors_origins if not _is_https_origin(origin))
+    if insecure_origins and not _env_flag("APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
+        raise RuntimeError(
+            "APP_CORS_ALLOW_ORIGINS must use https origins in production: "
+            + ", ".join(insecure_origins)
+        )
+
+
+CORS_ALLOWED_ORIGINS = _cors_allowed_origins()
+_validate_runtime_security(CORS_ALLOWED_ORIGINS)
 
 app = FastAPI(title="台股財報事件驅動掃描器", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+SECURITY_HEADERS = {
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "upgrade-insecure-requests"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
+
+CSRF_HEADER_NAME = "x-stock-scanner-csrf"
+CSRF_HEADER_VALUE = "1"
+UNSAFE_API_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _requires_csrf_header(request: Request) -> bool:
+    return (
+        _is_production_environment()
+        and request.method.upper() in UNSAFE_API_METHODS
+        and request.url.path.startswith("/api/")
+    )
+
+
+def _has_valid_csrf_header(request: Request) -> bool:
+    return request.headers.get(CSRF_HEADER_NAME) == CSRF_HEADER_VALUE
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    if _requires_csrf_header(request) and not _has_valid_csrf_header(request):
+        response = JSONResponse({"detail": "CSRF header required"}, status_code=403)
+        for key, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(key, value)
+        return response
+    response = await call_next(request)
+    for key, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+    return response
 
 mock_provider = MockDataProvider()
 official_provider = OfficialDataProvider()
@@ -84,10 +200,6 @@ class ReportFormatRequest(BaseModel):
     settings: Optional[ScannerSettings] = None
 
 
-def _cookie_secure() -> bool:
-    return os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         SESSION_COOKIE_NAME,
@@ -104,6 +216,13 @@ def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
 
 
+def _auth_source(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
+
+
 def _current_user(request: Request):
     return auth_service.get_user_by_session(request.cookies.get(SESSION_COOKIE_NAME))
 
@@ -112,6 +231,13 @@ def _require_user(request: Request):
     user = _current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def _require_super_user(request: Request):
+    user = _require_user(request)
+    if not auth_service.is_super_user(user):
+        raise HTTPException(status_code=403, detail="Only the super user can manage users")
     return user
 
 
@@ -130,6 +256,21 @@ def _active_provider(settings: ScannerSettings):
 def _ensure_manual_scan_enabled(settings: ScannerSettings) -> None:
     if not settings.manual_scan_enabled:
         raise HTTPException(status_code=403, detail="手動掃描已在設定中停用")
+
+
+def _paginated_items(items: list, page: int, limit: int) -> dict:
+    total = len(items)
+    safe_page = max(1, page)
+    safe_limit = max(1, min(limit, 500))
+    start = (safe_page - 1) * safe_limit
+    end = start + safe_limit
+    return {
+        "items": items[start:end],
+        "page": safe_page,
+        "limit": safe_limit,
+        "total": total,
+        "hasMore": end < total,
+    }
 
 
 def _scan_market_payload(settings: ScannerSettings) -> dict:
@@ -213,24 +354,40 @@ def health() -> dict:
 
 
 @app.post("/api/auth/register")
-def register(payload: AuthRequest, response: Response) -> dict:
+def register(payload: AuthRequest, request: Request, response: Response) -> dict:
+    source = _auth_source(request)
+    try:
+        auth_service.assert_auth_allowed(payload.username, source)
+    except AuthRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc
     try:
         user = auth_service.create_user(payload.username, payload.password, payload.displayName)
     except ValueError as exc:
+        auth_service.record_auth_failure(payload.username, source)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    auth_service.clear_auth_failures(payload.username, source)
     token = auth_service.create_session(user.id)
     _set_session_cookie(response, token)
-    return {"authenticated": True, "user": user.public_dict()}
+    holdings = auth_service.list_holdings(user.id)
+    return {"authenticated": True, "user": user.public_dict(), "holdings": [h.model_dump() for h in holdings]}
 
 
 @app.post("/api/auth/login")
-def login(payload: AuthRequest, response: Response) -> dict:
+def login(payload: AuthRequest, request: Request, response: Response) -> dict:
+    source = _auth_source(request)
+    try:
+        auth_service.assert_auth_allowed(payload.username, source)
+    except AuthRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc
     user = auth_service.authenticate(payload.username, payload.password)
     if user is None:
+        auth_service.record_auth_failure(payload.username, source)
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    auth_service.clear_auth_failures(payload.username, source)
     token = auth_service.create_session(user.id)
     _set_session_cookie(response, token)
-    return {"authenticated": True, "user": user.public_dict()}
+    holdings = auth_service.list_holdings(user.id)
+    return {"authenticated": True, "user": user.public_dict(), "holdings": [h.model_dump() for h in holdings]}
 
 
 @app.post("/api/auth/logout")
@@ -244,8 +401,27 @@ def logout(request: Request, response: Response) -> dict:
 def auth_me(request: Request) -> dict:
     user = _current_user(request)
     if user is None:
-        return {"authenticated": False, "user": None}
-    return {"authenticated": True, "user": user.public_dict()}
+        return {"authenticated": False, "user": None, "holdings": []}
+    holdings = auth_service.list_holdings(user.id)
+    return {"authenticated": True, "user": user.public_dict(), "holdings": [h.model_dump() for h in holdings]}
+
+
+@app.get("/api/admin/users")
+def list_admin_users(request: Request) -> dict:
+    _require_super_user(request)
+    return {"superUser": SUPER_USER_USERNAME, "users": auth_service.list_users()}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def delete_admin_user(user_id: int, request: Request) -> dict:
+    _require_super_user(request)
+    try:
+        deleted = auth_service.delete_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"superUser": SUPER_USER_USERNAME, "users": auth_service.list_users()}
 
 
 @app.get("/api/me/holdings")
@@ -408,9 +584,9 @@ def search_companies(q: str, limit: int = 20) -> dict:
 
 
 @app.get("/api/companies")
-def list_companies() -> dict:
+def list_companies(page: int = Query(default=1, ge=1), limit: int = Query(default=100, ge=1, le=500)) -> dict:
     provider = _active_provider(load_settings())
-    return {"items": provider.list_companies()}
+    return _paginated_items(provider.list_companies(), page, limit)
 
 
 @app.post("/api/analyze/{stock_code}")
@@ -478,13 +654,39 @@ def backtest_status() -> dict:
     return run_backtest()
 
 
+@app.get("/api/app-status")
+def app_status(today: Optional[date] = None) -> dict:
+    settings = load_settings()
+    official_status = official_provider.status(refresh=False) if not settings.use_mock_data else None
+    data_source_payload = {
+        "activeProvider": "MockDataProvider" if settings.use_mock_data else "OfficialDataProvider",
+        "mockDataAvailable": True,
+        "officialDataAvailable": official_status is not None,
+    }
+    scheduler_payload = should_wake_up(today).__dict__
+    auto_scan_payload = {
+        "action": "ready",
+        "autoScanEnabled": settings.auto_scan_full_market,
+        "manualScanEnabled": settings.manual_scan_enabled,
+        "scan": None,
+    }
+    return {
+        "dataSourceStatus": data_source_payload,
+        "schedulerStatus": scheduler_payload,
+        "schedulerAutoScan": auto_scan_payload,
+        "integrationStatus": integration_status(),
+        "backtestStatus": run_backtest(),
+    }
+
+
 @app.get("/api/settings")
 def get_settings() -> ScannerSettings:
     return load_settings()
 
 
 @app.put("/api/settings")
-def put_settings(settings: ScannerSettings) -> ScannerSettings:
+def put_settings(settings: ScannerSettings, request: Request) -> ScannerSettings:
+    _require_super_user(request)
     return save_settings(settings)
 
 

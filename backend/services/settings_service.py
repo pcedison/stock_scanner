@@ -1,11 +1,12 @@
 import json
+import os
 from pathlib import Path
 
 from backend.models.settings import ScannerSettings
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-SETTINGS_PATH = ROOT_DIR / "data" / "settings.json"
+SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", ROOT_DIR / "data" / "settings.json"))
 
 
 def load_settings() -> ScannerSettings:

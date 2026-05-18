@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.tmp/
+test-results/
+playwright-report/
 uvicorn*.log
 data/fundamentals_import.csv
 data/backtest_history.csv
@@ -18,3 +21,4 @@ cloudflare/python_modules/
 cloudflare/__pycache__/
 .wrangler/
 node_modules/
+.claude/

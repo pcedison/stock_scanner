@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import hmac
@@ -18,8 +19,19 @@ SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
-USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{2,79}$")
+USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
+SUPER_USER_USERNAME = "pcedison@gmail.com"
+_LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
+LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
+AUTH_FAILURE_LIMIT = 5
+AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
+AUTH_LOCK_SECONDS = 15 * 60
+REVENUE_GROWTH_MODES = frozenset({"cumulative_ytd", "monthly", "trailing_3m_avg"})
+CSRF_HEADER_NAME = "x-stock-scanner-csrf"
+CSRF_HEADER_VALUE = "1"
+UNSAFE_API_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,
@@ -31,6 +43,48 @@ DEFAULT_SETTINGS = {
     "spring_festival_guard": True,
     "revenue_growth_mode": "cumulative_ytd",
 }
+MIN_CACHE_COMPANIES = 1000
+MIN_CACHE_ANALYSIS = 1000
+HOLDING_EXIT_CODES = ("X1", "X2", "X3", "X4", "X5")
+
+SECURITY_HEADERS = {
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "content-security-policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "upgrade-insecure-requests"
+    ),
+    "x-frame-options": "DENY",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
+
+
+class ForbiddenError(Exception):
+    pass
+
+
+class BadRequestError(Exception):
+    pass
+
+
+class ValidationError(Exception):
+    pass
+
+
+class RateLimitError(Exception):
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("登入嘗試過多，請稍後再試。")
 
 
 def utc_now() -> str:
@@ -44,6 +98,48 @@ def parse_time(value):
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def env_value(env, name: str, default=None):
+    if env is None:
+        return default
+    if isinstance(env, dict):
+        value = env.get(name, default)
+    else:
+        value = getattr(env, name, default)
+    return js_to_py(value)
+
+
+def env_flag(env, name: str) -> bool:
+    return str(env_value(env, name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def csv_env_value(env, name: str) -> list[str]:
+    raw = env_value(env, name, "")
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def runtime_environment(env) -> str:
+    value = env_value(env, "APP_ENV", env_value(env, "ENVIRONMENT", "development"))
+    return str(value or "development").strip().lower() or "development"
+
+
+def is_production_environment(env) -> bool:
+    return runtime_environment(env) in {"prod", "production"}
+
+
+def origin_host(origin: str) -> str:
+    return (urlparse(str(origin or "")).hostname or "").lower()
+
+
+def is_local_cors_origin(origin: str) -> bool:
+    return origin_host(origin) in LOCAL_CORS_HOSTS
+
+
+def is_https_origin(origin: str) -> bool:
+    return urlparse(str(origin or "")).scheme.lower() == "https"
 
 
 def cache_key_from_manifest(manifest):
@@ -61,7 +157,11 @@ def cache_key_from_manifest(manifest):
 
 
 def json_response(payload, status=200, headers=None):
-    response_headers = {"content-type": "application/json; charset=utf-8", "cache-control": "no-store"}
+    response_headers = {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        **SECURITY_HEADERS,
+    }
     if headers:
         response_headers.update(headers)
     return Response.new(
@@ -71,20 +171,128 @@ def json_response(payload, status=200, headers=None):
 
 
 def text_response(content, status=200, media_type="text/plain; charset=utf-8", headers=None):
-    response_headers = {"content-type": media_type, "cache-control": "no-store"}
+    response_headers = {"content-type": media_type, "cache-control": "no-store", **SECURITY_HEADERS}
     if headers:
         response_headers.update(headers)
     return Response.new(content, to_js({"status": status, "headers": response_headers}, dict_converter=Object.fromEntries))
 
 
-def error_response(detail, status=400):
-    return json_response({"detail": detail}, status=status)
+def error_response(detail, status=400, headers=None):
+    return json_response({"detail": detail}, status=status, headers=headers)
+
+
+def manifest_quality(manifest):
+    counts = manifest.get("counts") if isinstance(manifest, dict) else {}
+    counts = counts if isinstance(counts, dict) else {}
+    companies = int(counts.get("companies") or 0)
+    analysis = int(counts.get("analysis") or 0)
+    universe = sum(int(counts.get(key) or 0) for key in ("entry", "watch", "excluded"))
+    problems = []
+    if companies < MIN_CACHE_COMPANIES:
+        problems.append(f"companies below {MIN_CACHE_COMPANIES}")
+    if analysis < MIN_CACHE_ANALYSIS:
+        problems.append(f"analysis below {MIN_CACHE_ANALYSIS}")
+    if universe < MIN_CACHE_ANALYSIS:
+        problems.append(f"universe below {MIN_CACHE_ANALYSIS}")
+    return {
+        "ok": not problems,
+        "problems": problems,
+        "counts": {"companies": companies, "analysis": analysis, "universe": universe},
+        "minimums": {"companies": MIN_CACHE_COMPANIES, "analysis": MIN_CACHE_ANALYSIS, "universe": MIN_CACHE_ANALYSIS},
+    }
+
+
+def empty_backtest_status():
+    return {
+        "status": "NO_DATA",
+        "sourcePath": "cloudflare-cache",
+        "trades": [],
+        "metrics": {"tradeCount": 0, "winRate": None, "totalReturn": None, "maxDrawdown": None},
+        "note": "Backtest history is not bundled with the Cloudflare deployment.",
+    }
+
+
+def holding_note(holding: dict) -> dict:
+    average_cost = holding.get("averageCost")
+    cost_text = average_cost if average_cost is not None else "未填"
+    return {
+        "code": "HOLDING",
+        "title": "目前持股",
+        "passed": True,
+        "severity": "INFO",
+        "message": f"Cloudflare D1 / 本機同步持股 {holding.get('shares', 0)} 股，平均成本 {cost_text}。",
+    }
+
+
+def missing_exit_rule(code: str) -> dict:
+    titles = {
+        "X1": "月營收年增率不可低於 30%",
+        "X2": "月營收年增率不可突然降溫超過 20 個百分點",
+        "X3": "EPS 不可衰退",
+        "X4": "季度 EPS 不可減少超過 10%",
+        "X5": "淨利不可衰退",
+    }
+    return {
+        "code": code,
+        "title": titles[code],
+        "passed": False,
+        "severity": "INSUFFICIENT_DATA",
+        "message": "Cloudflare 快取尚未包含此持股出場規則，等待下一次官方種子刷新。",
+    }
+
+
+def has_holding_exit_rules(result: dict) -> bool:
+    reasons = result.get("reasons") if isinstance(result, dict) else None
+    if not isinstance(reasons, list):
+        return False
+    codes = {str(reason.get("code", "")).upper() for reason in reasons if isinstance(reason, dict)}
+    return any(code in codes for code in HOLDING_EXIT_CODES)
+
+
+def prepare_holding_result(result: dict, holding: dict) -> dict:
+    copied = dict(result)
+    reasons = [
+        reason
+        for reason in copied.get("reasons", [])
+        if isinstance(reason, dict) and str(reason.get("code", "")).upper() != "HOLDING"
+    ]
+    if not has_holding_exit_rules(copied):
+        copied["status"] = "INSUFFICIENT_DATA"
+        copied["summary"] = "Cloudflare 快取尚未包含 X1-X5 持股出場分析，等待下一次官方種子刷新。"
+        reasons = [*reasons, *[missing_exit_rule(code) for code in HOLDING_EXIT_CODES]]
+    copied["reasons"] = [*reasons, holding_note(holding)]
+    return copied
+
+
+def settings_from_payload(payload, strict=False):
+    if not isinstance(payload, dict):
+        if strict:
+            raise ValidationError("設定內容需為物件")
+        payload = {}
+    settings = {}
+    for key, default in DEFAULT_SETTINGS.items():
+        value = payload.get(key, default)
+        if key == "revenue_growth_mode":
+            if value in REVENUE_GROWTH_MODES:
+                settings[key] = value
+            elif strict:
+                raise ValidationError("revenue_growth_mode 值不正確")
+            else:
+                settings[key] = default
+            continue
+        if isinstance(value, bool):
+            settings[key] = value
+        elif strict:
+            raise ValidationError(f"{key} 必須為布林值")
+        else:
+            settings[key] = default
+    return settings
 
 
 def normalize_username(username: str) -> str:
     normalized = str(username or "").strip().lower()
     if not USERNAME_PATTERN.fullmatch(normalized):
-        raise ValueError("帳號需為 3-80 字元，且只能使用英數字與 . @ + - _")
+        raise ValueError("帳號需為 3-80 字元，且不可包含空白或 < > \" ' ` ;")
     return normalized
 
 
@@ -145,6 +353,8 @@ def clear_session_cookie() -> str:
 def js_to_py(value):
     if value is None:
         return None
+    if type(value).__name__ in {"JsNull", "JsUndefined"}:
+        return None
     if hasattr(value, "to_py"):
         return value.to_py()
     if isinstance(value, list):
@@ -161,6 +371,7 @@ def public_user(row):
         "id": row["id"],
         "username": row["username"],
         "displayName": row.get("display_name") or row["username"],
+        "isSuperUser": str(row["username"]).lower() == SUPER_USER_USERNAME,
     }
 
 
@@ -184,40 +395,105 @@ async def on_fetch(request, env):
     return await Api(env).fetch(request)
 
 
+def set_response_header(response, key: str, value: str) -> None:
+    headers = getattr(response, "headers", None)
+    if hasattr(headers, "set"):
+        headers.set(key, value)
+    elif isinstance(headers, dict):
+        headers[key] = value
+
+
 class Api:
     def __init__(self, env):
         self.env = env
+        self._r2_cache: dict = {}
 
     async def fetch(self, request):
         if request.method == "OPTIONS":
-            return Response.new("", to_js({"status": 204, "headers": self.cors_headers()}, dict_converter=Object.fromEntries))
+            return Response.new(
+                "",
+                to_js({"status": 204, "headers": {**SECURITY_HEADERS, **self.cors_headers(request)}}, dict_converter=Object.fromEntries),
+            )
 
         parsed = urlparse(request.url)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
 
         try:
-            response = await self.route(request, path, query)
+            if self.requires_csrf_header(request, path) and not self.has_valid_csrf_header(request):
+                response = error_response("CSRF header required", status=403)
+            else:
+                response = await self.route(request, path, query)
+        except BadRequestError as exc:
+            response = error_response(str(exc), status=400)
+        except ValidationError as exc:
+            response = error_response(str(exc), status=422)
         except PermissionError as exc:
             response = error_response(str(exc), status=401)
+        except ForbiddenError as exc:
+            response = error_response(str(exc), status=403)
+        except RateLimitError as exc:
+            response = error_response(str(exc), status=429, headers={"retry-after": str(exc.retry_after_seconds)})
         except Exception as exc:
-            response = error_response(f"Cloudflare Worker API error: {exc}", status=500)
+            print(f"Cloudflare Worker API error: {exc}")
+            response = error_response("伺服器暫時無法處理請求，請稍後再試。", status=500)
 
-        for key, value in self.cors_headers().items():
-            response.headers.set(key, value)
+        for key, value in {**SECURITY_HEADERS, **self.cors_headers(request)}.items():
+            set_response_header(response, key, value)
         return response
 
-    def cors_headers(self):
+    def requires_csrf_header(self, request, path: str) -> bool:
+        return (
+            is_production_environment(self.env)
+            and str(getattr(request, "method", "")).upper() in UNSAFE_API_METHODS
+            and path.startswith("/api/")
+        )
+
+    def has_valid_csrf_header(self, request) -> bool:
+        return str(request.headers.get(CSRF_HEADER_NAME) or "") == CSRF_HEADER_VALUE
+
+    def cors_allowed_origins(self):
+        configured = (
+            csv_env_value(self.env, "APP_CORS_ALLOW_ORIGINS")
+            or csv_env_value(self.env, "WORKER_CORS_ALLOW_ORIGINS")
+        )
+        production = is_production_environment(self.env)
+        allowed = list(dict.fromkeys(configured))
+        if not production:
+            allowed.extend(origin for origin in DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS if origin not in allowed)
+
+        if production and not env_flag(self.env, "APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
+            allowed = [origin for origin in allowed if not is_local_cors_origin(origin)]
+        if production and not env_flag(self.env, "APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
+            allowed = [origin for origin in allowed if is_https_origin(origin)]
+        return tuple(allowed)
+
+    def cors_headers(self, request=None):
+        allowed_origins = self.cors_allowed_origins()
+        origin = allowed_origins[0] if allowed_origins else "null"
+        if request is not None:
+            req_origin = str(request.headers.get("origin") or "")
+            if req_origin in allowed_origins or (not is_production_environment(self.env) and _LOCALHOST_ORIGIN_RE.match(req_origin)):
+                origin = req_origin
         return {
-            "access-control-allow-origin": "*",
+            "access-control-allow-origin": origin,
             "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
             "access-control-allow-headers": "content-type,cookie",
+            "access-control-allow-credentials": "true",
+            "vary": "Origin",
         }
 
     async def route(self, request, path: str, query: dict[str, list[str]]):
         if path == "/api/health" and request.method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
-            return json_response({"status": "ok", "runtime": "cloudflare-python-worker", "time": utc_now(), "cache": manifest})
+            quality = manifest_quality(manifest)
+            return json_response({
+                "status": "ok" if quality["ok"] else "degraded",
+                "runtime": "cloudflare-python-worker",
+                "time": utc_now(),
+                "cache": manifest,
+                "cacheQuality": quality,
+            })
 
         if path == "/api/cache/status" and request.method == "GET":
             return json_response(await self.cache_status())
@@ -229,8 +505,21 @@ class Api:
         if path == "/api/data-sources/status" and request.method == "GET":
             return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}))
 
+        if path == "/api/app-status" and request.method == "GET":
+            data_source, settings = await asyncio.gather(
+                self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}),
+                self.get_settings(),
+            )
+            return json_response({
+                "dataSourceStatus": data_source,
+                "schedulerStatus": {"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."},
+                "schedulerAutoScan": {"action": "ready", "autoScanEnabled": settings.get("auto_scan_full_market", True), "manualScanEnabled": settings.get("manual_scan_enabled", True), "scan": None},
+                "integrationStatus": {"line": False, "telegram": False, "email": False, "broker": False},
+                "backtestStatus": empty_backtest_status(),
+            })
+
         if path == "/api/companies" and request.method == "GET":
-            return json_response(await self.r2_json("public/companies.json", {"items": []}))
+            return await self.list_companies(query)
 
         if path == "/api/companies/search" and request.method == "GET":
             return await self.search_companies(query)
@@ -239,6 +528,7 @@ class Api:
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_latest.json", self.empty_market_scan())
             refresh_status = await self.ensure_refresh_job(manifest)
+            scan = self.compact_market_scan(scan)
             scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
             return json_response(scan)
 
@@ -259,6 +549,7 @@ class Api:
             return json_response(await self.get_settings())
 
         if path == "/api/settings" and request.method == "PUT":
+            await self.require_super_user(request)
             payload = await self.request_json(request)
             return json_response(await self.put_settings(payload))
 
@@ -276,7 +567,17 @@ class Api:
 
         if path == "/api/auth/me" and request.method == "GET":
             user = await self.current_user(request)
-            return json_response({"authenticated": bool(user), "user": public_user(user)})
+            holdings = await self.list_holdings(user["id"]) if user else []
+            return json_response({"authenticated": bool(user), "user": public_user(user), "holdings": holdings})
+
+        if path == "/api/admin/users" and request.method == "GET":
+            await self.require_super_user(request)
+            return json_response(await self.admin_users_payload())
+
+        if path.startswith("/api/admin/users/") and request.method == "DELETE":
+            await self.require_super_user(request)
+            user_id = int(path.rsplit("/", 1)[-1])
+            return json_response(await self.delete_admin_user(user_id))
 
         if path == "/api/me/holdings" and request.method == "GET":
             user = await self.require_user(request)
@@ -313,7 +614,13 @@ class Api:
             return json_response({"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."})
 
         if path == "/api/scheduler/auto-scan" and request.method == "GET":
-            return json_response({"action": "ready", "autoScanEnabled": True, "manualScanEnabled": True, "scan": None})
+            settings = await self.get_settings()
+            return json_response({
+                "action": "ready",
+                "autoScanEnabled": settings.get("auto_scan_full_market", True),
+                "manualScanEnabled": settings.get("manual_scan_enabled", True),
+                "scan": None,
+            })
 
         if path.startswith("/api/calendar/") and request.method == "GET":
             year = path.rsplit("/", 1)[-1]
@@ -323,23 +630,29 @@ class Api:
             return json_response({"line": False, "telegram": False, "email": False, "broker": False})
 
         if path == "/api/backtest" and request.method == "GET":
-            return json_response({"status": "not_configured", "annualizedReturn": None})
+            return json_response(empty_backtest_status())
 
         return error_response("Not found", status=404)
 
     async def request_json(self, request):
+        text = await request.text()
+        if not str(text or "").strip():
+            return {}
         try:
-            return js_to_py(await request.json()) or {}
-        except Exception:
-            text = await request.text()
-            return json.loads(str(text) or "{}")
+            payload = json.loads(str(text))
+        except Exception as exc:
+            raise BadRequestError("JSON 格式錯誤") from exc
+        if not isinstance(payload, dict):
+            raise BadRequestError("JSON 內容需為物件")
+        return payload
 
     async def r2_json(self, key: str, fallback):
-        obj = await self.env.CACHE.get(key)
-        if obj is None:
-            return fallback
-        text = await obj.text()
-        return json.loads(text)
+        if key in self._r2_cache:
+            return self._r2_cache[key]
+        obj = js_to_py(await self.env.CACHE.get(key))
+        result = fallback if obj is None else json.loads(await obj.text())
+        self._r2_cache[key] = result
+        return result
 
     def cache_policy(self):
         now = datetime.now(TAIPEI_TZ)
@@ -377,6 +690,7 @@ class Api:
             "nextRefreshAfter": next_refresh,
             "latestRevenuePeriod": manifest.get("latestRevenuePeriod"),
             "latestFinancialPeriod": manifest.get("latestFinancialPeriod"),
+            "quality": manifest_quality(manifest),
         }
 
     async def ensure_refresh_job(self, manifest, force=False):
@@ -477,6 +791,64 @@ class Api:
             raise PermissionError("請先登入")
         return user
 
+    async def require_super_user(self, request):
+        user = await self.require_user(request)
+        if str(user.get("username", "")).lower() != SUPER_USER_USERNAME:
+            raise ForbiddenError("Only the super user can manage users")
+        return user
+
+    async def admin_users_payload(self):
+        rows = await self.db_all(
+            """
+            SELECT
+                users.id,
+                users.username,
+                users.display_name,
+                users.created_at,
+                COUNT(DISTINCT holdings.stock_code) AS holdings_count,
+                COUNT(DISTINCT sessions.token_hash) AS active_session_count
+            FROM users
+            LEFT JOIN holdings ON holdings.user_id = users.id
+            LEFT JOIN sessions ON sessions.user_id = users.id AND sessions.expires_at > ?
+            GROUP BY users.id, users.username, users.display_name, users.created_at
+            ORDER BY
+                CASE WHEN users.username = ? THEN 0 ELSE 1 END,
+                users.created_at DESC,
+                users.username ASC
+            """,
+            utc_now(),
+            SUPER_USER_USERNAME,
+        )
+        return {
+            "superUser": SUPER_USER_USERNAME,
+            "users": [
+                {
+                    "id": row["id"],
+                    "username": row["username"],
+                    "displayName": row.get("display_name") or row["username"],
+                    "createdAt": row.get("created_at"),
+                    "holdingsCount": row.get("holdings_count") or 0,
+                    "activeSessionCount": row.get("active_session_count") or 0,
+                    "isSuperUser": str(row["username"]).lower() == SUPER_USER_USERNAME,
+                    "canDelete": str(row["username"]).lower() != SUPER_USER_USERNAME,
+                }
+                for row in rows
+            ],
+        }
+
+    async def delete_admin_user(self, user_id: int):
+        target = await self.db_first("SELECT id, username FROM users WHERE id = ?", user_id)
+        if not target:
+            return {"superUser": SUPER_USER_USERNAME, "users": [], "deleted": False, "message": "User not found"}
+        if str(target["username"]).lower() == SUPER_USER_USERNAME:
+            raise BadRequestError("super user cannot be deleted")
+        await self.db_run("DELETE FROM sessions WHERE user_id = ?", user_id)
+        await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
+        await self.db_run("DELETE FROM users WHERE id = ?", user_id)
+        payload = await self.admin_users_payload()
+        payload["deleted"] = True
+        return payload
+
     async def create_session(self, user_id: int):
         token = secrets.token_urlsafe(32)
         now = utc_now()
@@ -490,6 +862,70 @@ class Api:
         )
         return token
 
+    def auth_source(self, request):
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+        return (
+            forwarded_for
+            or str(request.headers.get("cf-connecting-ip") or "").strip()
+            or str(request.headers.get("x-real-ip") or "").strip()
+            or "unknown"
+        )
+
+    def auth_attempt_identifier(self, username: str, request):
+        source = self.auth_source(request).lower()
+        normalized = str(username or "").strip().lower()
+        return hashlib.sha256(f"{source}|{normalized}".encode("utf-8")).hexdigest()
+
+    async def require_auth_attempt_allowed(self, username: str, request):
+        identifier = self.auth_attempt_identifier(username, request)
+        now = datetime.now(timezone.utc)
+        stale_before = (now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS)).isoformat()
+        await self.db_run(
+            "DELETE FROM auth_attempts WHERE locked_until IS NULL AND first_failed_at <= ?",
+            stale_before,
+        )
+        row = await self.db_first("SELECT locked_until FROM auth_attempts WHERE identifier = ?", identifier)
+        locked_until = parse_time(row.get("locked_until")) if row else None
+        if locked_until and locked_until > now:
+            retry_after = max(1, int((locked_until - now).total_seconds()))
+            raise RateLimitError(retry_after)
+        if locked_until:
+            await self.db_run("DELETE FROM auth_attempts WHERE identifier = ?", identifier)
+
+    async def record_auth_failure(self, username: str, request):
+        identifier = self.auth_attempt_identifier(username, request)
+        now = datetime.now(timezone.utc)
+        row = await self.db_first(
+            "SELECT failure_count, first_failed_at FROM auth_attempts WHERE identifier = ?",
+            identifier,
+        )
+        first_failed_at = parse_time(row.get("first_failed_at")) if row else None
+        if not first_failed_at or first_failed_at <= now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS):
+            failure_count = 1
+            first_failed_at = now
+        else:
+            failure_count = int(row.get("failure_count") or 0) + 1
+        locked_until = (now + timedelta(seconds=AUTH_LOCK_SECONDS)).isoformat() if failure_count >= AUTH_FAILURE_LIMIT else None
+        await self.db_run(
+            """
+            INSERT INTO auth_attempts (identifier, failure_count, first_failed_at, last_failed_at, locked_until)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(identifier) DO UPDATE SET
+                failure_count = excluded.failure_count,
+                first_failed_at = excluded.first_failed_at,
+                last_failed_at = excluded.last_failed_at,
+                locked_until = excluded.locked_until
+            """,
+            identifier,
+            failure_count,
+            first_failed_at.isoformat(),
+            now.isoformat(),
+            locked_until,
+        )
+
+    async def clear_auth_failures(self, username: str, request):
+        await self.db_run("DELETE FROM auth_attempts WHERE identifier = ?", self.auth_attempt_identifier(username, request))
+
     async def register(self, request):
         payload = await self.request_json(request)
         try:
@@ -498,8 +934,10 @@ class Api:
             validate_password(password)
         except ValueError as exc:
             return error_response(str(exc), status=400)
+        await self.require_auth_attempt_allowed(username, request)
         existing = await self.db_first("SELECT id FROM users WHERE username = ?", username)
         if existing:
+            await self.record_auth_failure(username, request)
             return error_response("帳號已存在", status=400)
         now = utc_now()
         await self.db_run(
@@ -510,18 +948,27 @@ class Api:
             now,
         )
         user = await self.db_first("SELECT id, username, display_name FROM users WHERE username = ?", username)
+        await self.clear_auth_failures(username, request)
         token = await self.create_session(user["id"])
-        return json_response({"authenticated": True, "user": public_user(user)}, headers={"set-cookie": session_cookie(token)})
+        holdings = await self.list_holdings(user["id"])
+        return json_response({"authenticated": True, "user": public_user(user), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def login(self, request):
         payload = await self.request_json(request)
-        username = normalize_username(payload.get("username"))
+        try:
+            username = normalize_username(payload.get("username"))
+        except ValueError:
+            return error_response("帳號或密碼錯誤", status=401)
         password = str(payload.get("password") or "")
+        await self.require_auth_attempt_allowed(username, request)
         row = await self.db_first("SELECT id, username, display_name, password_hash FROM users WHERE username = ?", username)
         if not row or not verify_password(password, row["password_hash"]):
+            await self.record_auth_failure(username, request)
             return error_response("帳號或密碼錯誤", status=401)
+        await self.clear_auth_failures(username, request)
         token = await self.create_session(row["id"])
-        return json_response({"authenticated": True, "user": public_user(row)}, headers={"set-cookie": session_cookie(token)})
+        holdings = await self.list_holdings(row["id"])
+        return json_response({"authenticated": True, "user": public_user(row), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def list_holdings(self, user_id: int):
         rows = await self.db_all(
@@ -559,15 +1006,35 @@ class Api:
             holding["stockCode"],
             holding.get("name") or "",
             holding.get("shares", 0),
-            holding.get("averageCost") if holding.get("averageCost") is not None else 0,
+            holding.get("averageCost"),
             now,
             now,
         )
 
     async def replace_holdings(self, user_id: int, holdings: list[dict]):
-        await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
-        for holding in holdings:
-            await self.upsert_holding(user_id, holding)
+        now = utc_now()
+        stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
+        for h in holdings:
+            stmts.append(
+                self.env.DB.prepare(
+                    """INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, stock_code) DO UPDATE SET
+                        name = excluded.name,
+                        shares = excluded.shares,
+                        average_cost = excluded.average_cost,
+                        updated_at = excluded.updated_at"""
+                ).bind(
+                    user_id,
+                    h["stockCode"],
+                    h.get("name") or "",
+                    h.get("shares", 0),
+                    h.get("averageCost"),
+                    now,
+                    now,
+                )
+            )
+        await self.env.DB.batch(to_js(stmts))
         return await self.list_holdings(user_id)
 
     async def get_settings(self):
@@ -575,12 +1042,12 @@ class Api:
         if not row:
             return DEFAULT_SETTINGS
         try:
-            return {**DEFAULT_SETTINGS, **json.loads(row["value"])}
+            return settings_from_payload({**DEFAULT_SETTINGS, **json.loads(row["value"])})
         except Exception:
             return DEFAULT_SETTINGS
 
     async def put_settings(self, payload):
-        settings = {**DEFAULT_SETTINGS, **{key: payload.get(key, value) for key, value in DEFAULT_SETTINGS.items()}}
+        settings = settings_from_payload(payload, strict=True)
         await self.db_run(
             """
             INSERT INTO app_kv (key, value, updated_at)
@@ -608,9 +1075,28 @@ class Api:
         ][:limit]
         return json_response({"items": items})
 
+    async def list_companies(self, query):
+        companies = (await self.r2_json("public/companies.json", {"items": []})).get("items", [])
+        try:
+            page = max(int((query.get("page") or ["1"])[0]), 1)
+            limit = min(max(int((query.get("limit") or ["100"])[0]), 1), 500)
+        except Exception as exc:
+            raise BadRequestError("page 與 limit 需為正整數") from exc
+        total = len(companies)
+        start = (page - 1) * limit
+        end = start + limit
+        return json_response(
+            {
+                "items": companies[start:end],
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "hasMore": end < total,
+            }
+        )
+
     async def analyze_stock(self, stock_code: str):
-        analysis = await self.r2_json("public/analysis_by_code.json", {})
-        result = analysis.get(stock_code)
+        result = await self.analysis_for_stock(stock_code)
         if not result:
             return error_response("查無此股票快取", status=404)
         return json_response(result)
@@ -621,27 +1107,31 @@ class Api:
 
     async def holdings_scan_payload(self, payload):
         holdings = [normalize_holding(item) for item in payload.get("holdings", [])]
-        analysis = await self.r2_json("public/analysis_by_code.json", {})
+        analyses = await asyncio.gather(*[self.holding_analysis_for_stock(h["stockCode"]) for h in holdings])
         results = []
         missing = []
-        for holding in holdings:
-            result = analysis.get(holding["stockCode"])
+        for holding, result in zip(holdings, analyses):
+            if not result:
+                result = await self.analysis_for_stock(holding["stockCode"])
             if not result:
                 missing.append({"stockCode": holding["stockCode"], "name": holding.get("name"), "reason": "Cloudflare 快取中查無此股票"})
                 continue
-            copied = json.loads(json.dumps(result, ensure_ascii=False))
-            copied.setdefault("reasons", []).insert(
-                0,
-                {
-                    "code": "HOLDING",
-                    "title": "目前持股",
-                    "passed": True,
-                    "severity": "INFO",
-                    "message": f"Cloudflare D1 / 本機同步持股 {holding['shares']} 股。",
-                },
-            )
-            results.append(copied)
+            results.append(prepare_holding_result(result, holding))
         return {"generatedAt": utc_now(), "dataSource": "cloudflare_r2_seed", "results": results, "missing": missing}
+
+    async def holding_analysis_for_stock(self, stock_code: str):
+        normalized = str(stock_code or "").strip()
+        if not re.fullmatch(r"\d{4,6}", normalized):
+            return None
+        shard = await self.r2_json(f"public/holding_analysis_shards/{normalized[:2]}.json", {})
+        return shard.get(normalized) if isinstance(shard, dict) else None
+
+    async def analysis_for_stock(self, stock_code: str):
+        normalized = str(stock_code or "").strip()
+        if not re.fullmatch(r"\d{4,6}", normalized):
+            return None
+        shard = await self.r2_json(f"public/analysis_shards/{normalized[:2]}.json", {})
+        return shard.get(normalized) if isinstance(shard, dict) else None
 
     def empty_market_scan(self):
         return {
@@ -653,6 +1143,41 @@ class Api:
             "watch": [],
             "excluded": [],
         }
+
+    def compact_market_scan(self, scan):
+        if not isinstance(scan, dict):
+            return self.empty_market_scan()
+        compact = dict(scan)
+        for category in ("entry", "watch", "excluded", "results"):
+            items = compact.get(category)
+            if isinstance(items, list):
+                compact[category] = [self.compact_scan_result(item) for item in items]
+        compact["detailMode"] = "summary"
+        return compact
+
+    def compact_scan_result(self, result):
+        if not isinstance(result, dict):
+            return {}
+        compact = {}
+        for key in ("stockCode", "companyName", "status", "summary", "company"):
+            if key in result:
+                compact[key] = result.get(key)
+        reasons = result.get("reasons")
+        if isinstance(reasons, list):
+            compact["reasons"] = []
+            for reason in reasons:
+                if not isinstance(reason, dict):
+                    continue
+                compact["reasons"].append(
+                    {
+                        key: reason.get(key)
+                        for key in ("code", "title", "passed", "severity", "message")
+                        if key in reason
+                    }
+                )
+        compact["detailsAvailable"] = True
+        compact["hasFullDetails"] = False
+        return compact
 
     async def market_report(self, query):
         report_format = (query.get("report_format") or ["markdown"])[0]

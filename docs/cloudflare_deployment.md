@@ -1,50 +1,103 @@
-# Cloudflare 部署須知
+# Cloudflare Deployment Runbook
 
-Beta 0.0.5 目前採用 Cloudflare Pages + Python Workers + D1 + R2。
+Current target: Cloudflare Pages + Python Worker + D1 + R2.
 
-## 已建立的 Cloudflare 資源
+## Resources
 
-- Pages：`stock-scanner-beta`
-- Production URL：`https://stock-scanner-beta.pages.dev`
-- Worker API：`stock-scanner-beta-api`
-- Worker URL：`https://stock-scanner-beta-api.pcedison.workers.dev`
-- D1：`stock-scanner-beta-db`
-- R2：`stock-scanner-beta-cache`
+- Pages project: `stock-scanner-beta`
+- Production URL: `https://stock-scanner-beta.pages.dev`
+- Worker name: `stock-scanner-beta-api`
+- Worker URL: `https://stock-scanner-beta-api.pcedison.workers.dev`
+- D1 database: `stock-scanner-beta-db`
+- R2 bucket: `stock-scanner-beta-cache`
 
-Pages 透過 `frontend/functions/api/[[path]].js` 將 `/api/*` 代理到 Worker。前端仍使用同源 `/api`，所以本機 FastAPI 與 Cloudflare Worker 可以並存。
+Pages proxies `/api/*` through `frontend/functions/api/[[path]].js`. The frontend still calls same-origin `/api`, so local FastAPI and the Cloudflare Worker share the same browser flows.
 
-## 快取策略
+## Required Settings
 
-- R2 保存 `public/market_scan_latest.json`、`public/analysis_by_code.json`、公司清單與資料來源狀態。
-- R2 也保存 `official/official_fundamentals_history.json`、`official/official_history_backfill_progress.json` 與壓縮種子檔。
-- Git repo 只提交壓縮後的 `data/official_cache_seed_2026-05-14.zip` 與 sha256，不提交大型展開 JSON。
-- GitHub Actions 會從壓縮快取重建 Cloudflare seed，不會每次 push 都重新全量爬官方網站。
-- 掃描採用 stale-while-revalidate：使用者按搜尋時先讀 R2 或本地 JSON 快取立即回傳；若 manifest 已超過更新窗口，系統只建立一筆 refresh job，避免多人同時觸發重複抓取。
-- 本機 FastAPI 會用單一背景 worker 做增量刷新並寫入 `data/market_scan_cache.json`；Cloudflare 版會在 D1 `refresh_jobs` 記錄待刷新工作，由排程 GitHub Actions 低頻重建 seed 並標記完成。
-- 公告窗口會縮短更新間隔：財報期限前後約 2 小時檢查一次，月營收窗口約 3 小時一次，平時約 12 小時一次。
+GitHub Actions secrets:
 
-## 一次性人工介入
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
 
-GitHub Actions 需要兩個 repository secrets：
+GitHub Actions repository variables:
 
-- `CLOUDFLARE_ACCOUNT_ID`：`34d97898ae94d67b3ba74d3e09b82cc5`
-- `CLOUDFLARE_API_TOKEN`：Cloudflare API Token，需具備 Workers Scripts、Workers Tail、Pages、D1、R2 的編輯權限。
+- `CF_WORKER_HEALTH_URL`: deployed Worker HTTPS `/api/health` URL.
 
-目前這個 repo 已先設定 `CLOUDFLARE_ACCOUNT_ID`；仍需人工建立並新增 `CLOUDFLARE_API_TOKEN`。建議在 Cloudflare 建立一個專用 Token，只給這個帳號與這個專案需要的最小權限。Token 建立後到 GitHub repo 的 Settings -> Secrets and variables -> Actions 新增上述 secret。
+GitHub environment:
 
-## 後續更新流程
+- Create a `production` environment.
+- Add required reviewers or equivalent approval protection.
 
-1. 本機開發並測試。
-2. commit/push 到 `main`、`master` 或 `codex/lightweight-auth-evidence-ui`。
-3. GitHub Actions 重新上傳 seed、套用 D1 schema、部署 Worker、部署 Pages。
-4. 線上可用 `https://stock-scanner-beta.pages.dev/api/health` 檢查狀態。
+Worker production CORS lives in `cloudflare/wrangler.toml`:
 
-## 部署時不做的事
+- `APP_ENV = "production"`
+- `APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"`
 
-- 不在每次 deploy 時重新全量抓五年官方資料。
-- 不把 D1 使用者、session、持股資料清空。
-- 不把 R2 快取清空。
+Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically.
 
-## 需要再確認的設定
+## Deploy Flow
 
-當正式分支改成 `main` 後，請到 Cloudflare Pages 專案確認 Production branch 是否改為 `main`。目前 CLI 直接部署已可使用；若改採 Cloudflare Dashboard 的 Git integration，這個分支設定會影響哪個 branch 成為 production。
+`.github/workflows/cloudflare-deploy.yml` deploys only from `main`, `master`, schedule, or manual dispatch. Feature branches validate only.
+
+1. Install Python and Node dependencies.
+2. Run pytest, frontend hygiene, operational readiness, pip check, and npm audit.
+3. Run deployment preflight for CORS, production environment, concurrency, D1 migration, health, remote smoke, and rollback guardrails.
+4. Run Playwright browser smoke.
+5. Validate committed seed zip, enforce freshness, and write Markdown/JSON seed quality summaries.
+6. Rebuild `cloudflare/seed/*` from the committed offline zip.
+7. Run Worker dry-run to validate the Cloudflare Python Worker bundle boundary.
+8. Upload seed payloads to R2.
+9. Export a D1 backup artifact before migrations.
+10. Apply pending D1 migrations from `cloudflare/migrations/`.
+11. Deploy Worker and Pages.
+12. Verify deployed `/api/health` and manifest counts.
+13. Run deployed public smoke against `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
+14. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
+
+D1 restore remains an operator-reviewed recovery action. Generate a non-destructive plan with:
+
+```powershell
+python scripts\plan_cloudflare_recovery.py --output .tmp\cloudflare-recovery.md
+```
+
+If a deploy exported a D1 artifact, pass it explicitly:
+
+```powershell
+python scripts\plan_cloudflare_recovery.py --d1-backup .tmp\d1-backups\pre-deploy-123.sql --output .tmp\cloudflare-recovery.md
+```
+
+## Seed Refresh
+
+`.github/workflows/refresh-cloudflare-seed.yml` runs weekly and can also be dispatched manually.
+
+1. Rebuild seed from official sources in online mode.
+2. Repack `data/official_cache_seed_2026-05-14.zip` and its `.sha256`.
+3. Regenerate missing-company reports.
+4. Validate quality gates and freshness.
+5. Open or update a refresh PR when seed artifacts changed.
+
+This keeps production deploys deterministic while preventing the committed seed from silently going stale.
+
+## Monitoring
+
+`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 30 minutes. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
+
+## Local Verification
+
+```powershell
+python -m pytest -q
+python scripts\check_frontend_hygiene.py
+python scripts\check_operational_readiness.py
+python scripts\check_deployment_preflight.py
+npx wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir .tmp\worker-dry-run
+python scripts\run_wrangler_dev_smoke.py
+npm run test:e2e
+```
+
+Remote production smoke:
+
+```powershell
+$env:CF_WORKER_HEALTH_URL='https://stock-scanner-beta-api.<account>.workers.dev/api/health'
+python scripts\run_remote_smoke.py --health-url $env:CF_WORKER_HEALTH_URL --manifest cloudflare\seed\manifest.json
+```
