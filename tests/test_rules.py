@@ -69,6 +69,20 @@ def test_holding_with_x4_and_x5_returns_exit():
     assert any(reason.code == "X5" and not reason.passed for reason in result.reasons)
 
 
+def test_holding_exit_rules_still_run_when_entry_data_is_incomplete():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("3008")
+    snapshot = base_snapshot.model_copy(update={"annualFinancials": []})
+    holding = Holding(stockCode="3008", name="大立光", shares=1000, averageCost=2000)
+
+    result = RuleEngine().evaluate_holding(snapshot, holding, ScannerSettings())
+
+    assert result.status == "EXIT"
+    assert any(reason.code == "E1" and reason.severity == "INSUFFICIENT_DATA" for reason in result.reasons)
+    assert {reason.code for reason in result.reasons} >= {"X1", "X2", "X3", "X4", "X5"}
+    assert any(reason.code == "X4" and not reason.passed and reason.severity == "EXIT" for reason in result.reasons)
+
+
 def test_holding_add_watch_requires_a1_to_a7():
     provider = MockDataProvider()
     holding = Holding(stockCode="2357", name="華碩", shares=1000, averageCost=300)

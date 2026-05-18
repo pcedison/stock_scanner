@@ -821,6 +821,79 @@ textarea {
   margin-top: 14px;
 }
 
+.holding-signal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.holding-signal > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.holding-exit-alerts {
+  margin: 14px 0;
+}
+
+.holding-exit-alert-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr) auto;
+  gap: 16px;
+  align-items: center;
+  border: 2px solid var(--amber);
+  border-radius: 8px;
+  background: var(--amber-bg);
+  padding: 16px;
+}
+
+.holding-exit-alert-banner.critical {
+  border-color: var(--red);
+  background: var(--red-bg);
+}
+
+.holding-exit-alert-banner h3 {
+  margin: 2px 0 6px;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.holding-exit-alert-banner p {
+  margin: 0;
+}
+
+.holding-exit-alert-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.holding-exit-alert-list li {
+  display: grid;
+  grid-template-columns: minmax(86px, 0.75fr) auto minmax(0, 1.4fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.holding-exit-alert-list span:last-child {
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.holding-exit-alert-more {
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .button-row {
   margin-top: 12px;
 }
@@ -1920,6 +1993,11 @@ textarea {
   .strategy-rule-grid,
   .checklist-grid,
   .draft-item {
+    grid-template-columns: 1fr;
+  }
+
+  .holding-exit-alert-banner,
+  .holding-exit-alert-list li {
     grid-template-columns: 1fr;
   }
 

@@ -155,7 +155,9 @@
                   <h2 id="holdings-title">我的持股</h2>
                   <p id="holdings-storage-note" class="section-subtitle">目前使用本機持股；登入後可同步到伺服器，換瀏覽器或重新登入仍可讀回。</p>
                 </div>
+                <button id="scan-stored-holdings-btn" class="secondary-btn" type="button">套用 X1-X5</button>
               </div>
+              <div id="holding-exit-alerts" class="holding-exit-alerts hidden" aria-live="polite"></div>
               <form id="manual-add-form" class="holding-form">
                 <div class="field">
                   <label for="manual-stock-input">股票代碼或公司名稱</label>
@@ -335,6 +337,7 @@
     </div>
 
     <script src="/dom.js?v=20260518-dom-helpers" defer></script>
+    <script src="/holding_signals.js?v=20260518-holding-signals" defer></script>
     <script src="/app.js?v=20260518-dom-helpers" defer></script>
   </body>
 </html>

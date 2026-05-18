@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "cloudflare" / "seed"
 ANALYSIS_SHARD_DIR = OUT_DIR / "analysis_shards"
+HOLDING_ANALYSIS_SHARD_DIR = OUT_DIR / "holding_analysis_shards"
 SEED_CACHE_ZIP = ROOT_DIR / "data" / "official_cache_seed_2026-05-14.zip"
 OFFLINE_SEED_PREFIX = "cloudflare_seed/"
 OFFLINE_SEED_REQUIRED_FILES = {
@@ -28,6 +29,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from backend.main import data_sources_status, engine, official_provider, _scan_market_payload  # noqa: E402
 from backend.models.company import Company  # noqa: E402
 from backend.models.financial import FundamentalSnapshot  # noqa: E402
+from backend.models.holding import Holding  # noqa: E402
 from backend.services.official_data_provider import _is_financial_company  # noqa: E402
 from backend.services.settings_service import load_settings  # noqa: E402
 
@@ -42,10 +44,11 @@ def write_json(path: Path, payload: object) -> None:
 
 
 def clear_generated_analysis_shards() -> None:
-    if not ANALYSIS_SHARD_DIR.exists():
-        return
-    for path in ANALYSIS_SHARD_DIR.glob("*.json"):
-        path.unlink()
+    for directory in (ANALYSIS_SHARD_DIR, HOLDING_ANALYSIS_SHARD_DIR):
+        if not directory.exists():
+            continue
+        for path in directory.glob("*.json"):
+            path.unlink()
 
 
 def clear_seed_output() -> None:
@@ -312,6 +315,8 @@ def main() -> None:
     companies = official_provider.list_companies()
     analysis_by_code = {}
     analysis_shards: dict[str, dict[str, dict]] = {}
+    holding_analysis_by_code = {}
+    holding_analysis_shards: dict[str, dict[str, dict]] = {}
     analysis_results = []
     fallback_source = None
     for snapshot in official_provider.iter_snapshots(settings):
@@ -320,6 +325,11 @@ def main() -> None:
         analysis_by_code[result.stockCode] = encoded
         analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = encoded
         analysis_results.append(encoded)
+        holding = Holding(stockCode=result.stockCode, name=result.companyName, shares=0, averageCost=None)
+        holding_result = engine.evaluate_holding(snapshot, holding, settings)
+        holding_encoded = jsonable_encoder(holding_result)
+        holding_analysis_by_code[result.stockCode] = holding_encoded
+        holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
 
     if not analysis_results:
         history_snapshots = history_seed_snapshots(settings)
@@ -332,6 +342,11 @@ def main() -> None:
                 analysis_by_code[result.stockCode] = encoded
                 analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = encoded
                 analysis_results.append(encoded)
+                holding = Holding(stockCode=result.stockCode, name=result.companyName, shares=0, averageCost=None)
+                holding_result = engine.evaluate_holding(snapshot, holding, settings)
+                holding_encoded = jsonable_encoder(holding_result)
+                holding_analysis_by_code[result.stockCode] = holding_encoded
+                holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
 
     if not scan_payload.get("universeSize") and analysis_results:
         scan_payload = rebuild_scan_from_analysis(scan_payload, analysis_results)
@@ -341,8 +356,11 @@ def main() -> None:
     write_json(OUT_DIR / "market_scan_latest.json", scan_payload)
     write_json(OUT_DIR / "companies.json", {"items": companies})
     write_json(OUT_DIR / "analysis_by_code.json", analysis_by_code)
+    write_json(OUT_DIR / "holding_analysis_by_code.json", holding_analysis_by_code)
     for shard_key, shard_payload in analysis_shards.items():
         write_json(ANALYSIS_SHARD_DIR / f"{shard_key}.json", shard_payload)
+    for shard_key, shard_payload in holding_analysis_shards.items():
+        write_json(HOLDING_ANALYSIS_SHARD_DIR / f"{shard_key}.json", shard_payload)
     write_json(OUT_DIR / "data_sources_status.json", data_sources_status(check_network=False))
 
     manifest = {
@@ -357,6 +375,8 @@ def main() -> None:
             "companies.json",
             "analysis_by_code.json",
             "analysis_shards/*.json",
+            "holding_analysis_by_code.json",
+            "holding_analysis_shards/*.json",
             "data_sources_status.json",
             "official_fundamentals_history.json",
             "official_history_backfill_progress.json",
@@ -369,6 +389,8 @@ def main() -> None:
             "excluded": len(scan_payload.get("excluded", [])),
             "analysis": len(analysis_by_code),
             "analysisShards": len(analysis_shards),
+            "holdingAnalysis": len(holding_analysis_by_code),
+            "holdingAnalysisShards": len(holding_analysis_shards),
         },
         "qualityGates": {
             "minimumUniverseSize": MIN_SEED_UNIVERSE_SIZE,

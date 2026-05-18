@@ -84,6 +84,25 @@ test("holdings and mobile navigation render without layout blockers", async ({ p
   await expect(page.locator("#data-source-status")).toBeVisible();
 });
 
+test("saved holdings surface X1-X5 exit alerts", async ({ page, isMobile }) => {
+  await page.goto("/");
+  await closeBlockingModals(page);
+
+  await showView(page, isMobile, "holdings");
+  await page.locator("#manual-stock-input").fill("3008 100 2000");
+  await page.locator("#manual-add-form").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+  const alerts = page.locator("#holding-exit-alerts");
+  await expect(alerts).toBeVisible({ timeout: 10_000 });
+  await expect(alerts).toContainText("3008");
+  await expect(alerts).toContainText(/X4|X5|出場/);
+
+  await page.locator("[data-open-holding-alert-details]").click();
+  await expect(page.locator("#holding-results")).toBeVisible();
+  await expect(page.locator("#holding-results")).toContainText("3008");
+  await expect(page.locator("#holding-results")).toContainText(/X4|X5|出場/);
+});
+
 test("super user can save settings and cache status is visible", async ({ page, isMobile }) => {
   await page.goto("/");
   await closeBlockingModals(page);

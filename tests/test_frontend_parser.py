@@ -43,7 +43,7 @@ console.log(JSON.stringify({
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -170,6 +170,24 @@ const orderedHtml = renderAnalysisCard({
     { code: "A1", title: "原進場條件仍符合", passed: true, severity: "INFO", message: "A1" },
   ],
 });
+const exitHoldingResult = {
+  stockCode: "3008",
+  companyName: "大立光",
+  status: "EXIT",
+  summary: "已觸發高優先出場條件，建議出清或至少大幅降低部位。",
+  reasons: [
+    { code: "X1", title: "月營收年增率不可低於 30%", passed: false, severity: "WARNING", message: "X1" },
+    { code: "X4", title: "季度 EPS 不可減少超過 10%", passed: false, severity: "EXIT", message: "X4" },
+    { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "目前 1000 股" },
+  ],
+};
+const exitCodes = holdingExitCodes(exitHoldingResult);
+const exitSignal = holdingSignal(exitHoldingResult);
+const exitSignalHtml = renderHoldingSignal(exitHoldingResult);
+state.holdings = [{ stockCode: "3008", name: "Largan", shares: 100, averageCost: 2000 }];
+const exitAlerts = holdingExitAlerts({ results: [exitHoldingResult], missing: [] });
+const exitAlertBanner = renderHoldingExitAlertBanner(exitAlerts);
+state.holdings = [];
 const pcedisonFromUsername = normalizeAuthUser({ username: " PCEDISON@GMAIL.COM ", displayName: "", isSuperUser: false });
 const pcedisonMissingFlag = normalizeAuthUser({ username: "pcedison@gmail.com" });
 const normalWithFlag = normalizeAuthUser({ username: "normal@example.com", isSuperUser: true });
@@ -196,7 +214,7 @@ const adminErrors = {
   notFound: adminUsersErrorMessage("Not found"),
   normal: adminUsersErrorMessage("請先登入"),
 };
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { superUserUsername: SUPER_USER_USERNAME, normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { superUserUsername: SUPER_USER_USERNAME, normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, exitCodes, exitSignal, exitSignalHtml, exitAlerts, exitAlertBanner, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -284,6 +302,17 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["orderedHtml"].find("E1 通過") < payload["orderedHtml"].find("OFFICIAL_Q 通過")
     assert payload["orderedHtml"].find("OFFICIAL_VALUATION 通過") < payload["orderedHtml"].find("X1 通過")
     assert payload["orderedHtml"].find("T3 通過") < payload["orderedHtml"].find("A1 通過")
+    assert payload["exitCodes"] == ["X1", "X4"]
+    assert payload["exitSignal"]["status"] == "EXIT"
+    assert payload["exitSignal"]["label"] == "出場 X1、X4"
+    assert "holding-signal" in payload["exitSignalHtml"]
+    assert payload["exitAlerts"][0]["status"] == "EXIT"
+    assert payload["exitAlerts"][0]["stockCode"] == "3008"
+    assert payload["exitAlerts"][0]["exitCodes"] == ["X1", "X4"]
+    assert "holding-exit-alert-banner" in payload["exitAlertBanner"]
+    assert "3008" in payload["exitAlertBanner"]
+    assert "data-open-holding-alert-details" in payload["exitAlertBanner"]
+    assert "出場 X1、X4" in payload["exitSignalHtml"]
     assert payload["strategyDetailLabels"] == ["進場 E1-E6", "加碼 A1-A7", "出場 X1-X5", "T 系列追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
     assert "strategy-rule-card" in payload["strategyCardsHtml"]
     assert "營收 YoY &gt;= 50%" in payload["strategyCardsHtml"]

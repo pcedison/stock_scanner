@@ -45,6 +45,7 @@ DEFAULT_SETTINGS = {
 }
 MIN_CACHE_COMPANIES = 1000
 MIN_CACHE_ANALYSIS = 1000
+HOLDING_EXIT_CODES = ("X1", "X2", "X3", "X4", "X5")
 
 SECURITY_HEADERS = {
     "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
@@ -209,6 +210,58 @@ def empty_backtest_status():
         "metrics": {"tradeCount": 0, "winRate": None, "totalReturn": None, "maxDrawdown": None},
         "note": "Backtest history is not bundled with the Cloudflare deployment.",
     }
+
+
+def holding_note(holding: dict) -> dict:
+    average_cost = holding.get("averageCost")
+    cost_text = average_cost if average_cost is not None else "未填"
+    return {
+        "code": "HOLDING",
+        "title": "目前持股",
+        "passed": True,
+        "severity": "INFO",
+        "message": f"Cloudflare D1 / 本機同步持股 {holding.get('shares', 0)} 股，平均成本 {cost_text}。",
+    }
+
+
+def missing_exit_rule(code: str) -> dict:
+    titles = {
+        "X1": "月營收年增率不可低於 30%",
+        "X2": "月營收年增率不可突然降溫超過 20 個百分點",
+        "X3": "EPS 不可衰退",
+        "X4": "季度 EPS 不可減少超過 10%",
+        "X5": "淨利不可衰退",
+    }
+    return {
+        "code": code,
+        "title": titles[code],
+        "passed": False,
+        "severity": "INSUFFICIENT_DATA",
+        "message": "Cloudflare 快取尚未包含此持股出場規則，等待下一次官方種子刷新。",
+    }
+
+
+def has_holding_exit_rules(result: dict) -> bool:
+    reasons = result.get("reasons") if isinstance(result, dict) else None
+    if not isinstance(reasons, list):
+        return False
+    codes = {str(reason.get("code", "")).upper() for reason in reasons if isinstance(reason, dict)}
+    return any(code in codes for code in HOLDING_EXIT_CODES)
+
+
+def prepare_holding_result(result: dict, holding: dict) -> dict:
+    copied = dict(result)
+    reasons = [
+        reason
+        for reason in copied.get("reasons", [])
+        if isinstance(reason, dict) and str(reason.get("code", "")).upper() != "HOLDING"
+    ]
+    if not has_holding_exit_rules(copied):
+        copied["status"] = "INSUFFICIENT_DATA"
+        copied["summary"] = "Cloudflare 快取尚未包含 X1-X5 持股出場分析，等待下一次官方種子刷新。"
+        reasons = [*reasons, *[missing_exit_rule(code) for code in HOLDING_EXIT_CODES]]
+    copied["reasons"] = [*reasons, holding_note(holding)]
+    return copied
 
 
 def settings_from_payload(payload, strict=False):
@@ -1054,26 +1107,24 @@ class Api:
 
     async def holdings_scan_payload(self, payload):
         holdings = [normalize_holding(item) for item in payload.get("holdings", [])]
-        analyses = await asyncio.gather(*[self.analysis_for_stock(h["stockCode"]) for h in holdings])
+        analyses = await asyncio.gather(*[self.holding_analysis_for_stock(h["stockCode"]) for h in holdings])
         results = []
         missing = []
         for holding, result in zip(holdings, analyses):
             if not result:
+                result = await self.analysis_for_stock(holding["stockCode"])
+            if not result:
                 missing.append({"stockCode": holding["stockCode"], "name": holding.get("name"), "reason": "Cloudflare 快取中查無此股票"})
                 continue
-            copied = dict(result)
-            copied["reasons"] = [
-                {
-                    "code": "HOLDING",
-                    "title": "目前持股",
-                    "passed": True,
-                    "severity": "INFO",
-                    "message": f"Cloudflare D1 / 本機同步持股 {holding['shares']} 股。",
-                },
-                *(result.get("reasons") or []),
-            ]
-            results.append(copied)
+            results.append(prepare_holding_result(result, holding))
         return {"generatedAt": utc_now(), "dataSource": "cloudflare_r2_seed", "results": results, "missing": missing}
+
+    async def holding_analysis_for_stock(self, stock_code: str):
+        normalized = str(stock_code or "").strip()
+        if not re.fullmatch(r"\d{4,6}", normalized):
+            return None
+        shard = await self.r2_json(f"public/holding_analysis_shards/{normalized[:2]}.json", {})
+        return shard.get(normalized) if isinstance(shard, dict) else None
 
     async def analysis_for_stock(self, stock_code: str):
         normalized = str(stock_code or "").strip()

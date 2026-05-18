@@ -7,6 +7,10 @@ const DOM_HELPERS =
   typeof require === "function" && typeof module !== "undefined" && module.exports
     ? require("./dom.js")
     : globalThis.StockScannerDom;
+const HOLDING_SIGNAL_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./holding_signals.js")
+    : globalThis.StockScannerHoldingSignals;
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
 
@@ -45,6 +49,7 @@ const state = {
   schedulerAutoScan: null,
   integrationStatus: null,
   backtestStatus: null,
+  isScanningHoldings: false,
   activeMarketDisclosureTab: "announced",
   activeMarketColumn: "entry",
   marketListPages: {
@@ -186,6 +191,7 @@ const STRATEGY_RULE_THRESHOLDS = {
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const MOBILE_NAV_BREAKPOINT = 680;
+let holdingsScanRefreshTimer = null;
 
 function syncAccountPanelPlacement() {
   if (typeof document === "undefined") return;
@@ -428,10 +434,12 @@ function saveHoldings(holdings = state.holdings, storage = localStorage) {
   const normalized = normalizeHoldingRecords(holdings, state.companies);
   state.holdings = normalized;
   saveHoldingsLocalOnly(normalized, storage);
-  if (storage === localStorage && state.auth?.authenticated) {
+  const isBrowserLocalStorage = typeof localStorage !== "undefined" && storage === localStorage;
+  if (isBrowserLocalStorage && state.auth?.authenticated) {
     state.pendingHoldingsSync = true;
     syncHoldingsToServer(normalized);
   }
+  if (isBrowserLocalStorage) requestHoldingsScanRefresh();
 }
 
 async function syncHoldingsToServer(holdings = state.holdings) {
@@ -475,8 +483,118 @@ function isHoldingTracked(stockCode) {
   return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
 }
 
+function holdingScanResultByCode(stockCode, scan = state.holdingsScan) {
+  const normalized = safeText(stockCode);
+  if (!normalized || !scan || !Array.isArray(scan.results)) return null;
+  return scan.results.find((result) => safeText(result?.stockCode) === normalized) || null;
+}
+
+function holdingScanMissingByCode(stockCode, scan = state.holdingsScan) {
+  const normalized = safeText(stockCode);
+  if (!normalized || !scan || !Array.isArray(scan.missing)) return null;
+  return scan.missing.find((item) => safeText(item?.stockCode) === normalized) || null;
+}
+
+function holdingExitCodes(result = {}) {
+  return HOLDING_SIGNAL_HELPERS.holdingExitCodes(result);
+}
+
+function holdingSignal(result = null, missing = null) {
+  const display = result ? displayResultStatus(result, "holding") : null;
+  return HOLDING_SIGNAL_HELPERS.holdingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
+    isScanning: state.isScanningHoldings,
+  });
+}
+
+function renderHoldingSignal(result = null, missing = null) {
+  const display = result ? displayResultStatus(result, "holding") : null;
+  return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
+    isScanning: state.isScanningHoldings,
+  });
+}
+
+function holdingExitAlerts(scan = state.holdingsScan) {
+  const results = Array.isArray(scan?.results) ? scan.results : [];
+  const savedHoldingCodes = new Set(state.holdings.map((holding) => String(holding.stockCode || "").trim()).filter(Boolean));
+  return results
+    .map((result) => {
+      const signal = holdingSignal(result);
+      if (!["EXIT", "WARNING"].includes(signal.status)) return null;
+      const stockCode = safeText(result?.stockCode, "未知代碼");
+      if (savedHoldingCodes.size && !savedHoldingCodes.has(stockCode)) return null;
+      return {
+        stockCode,
+        companyName: safeText(result?.companyName || safeCompanyName(result), "未知公司"),
+        status: signal.status,
+        label: signal.label,
+        summary: signal.summary,
+        exitCodes: holdingExitCodes(result),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left.status !== right.status) return left.status === "EXIT" ? -1 : 1;
+      return left.stockCode.localeCompare(right.stockCode);
+    });
+}
+
+function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
+  if (!alerts.length) return "";
+  const exitCount = alerts.filter((item) => item.status === "EXIT").length;
+  const warningCount = alerts.filter((item) => item.status === "WARNING").length;
+  const title = exitCount ? `${exitCount} 檔持股命中高優先出場條件` : `${warningCount} 檔持股進入出場警戒`;
+  const tone = exitCount ? "critical" : "warning";
+  const lead = exitCount
+    ? "X4/X5 高優先出場已匹配，建議立即檢視部位，避免已累積獲利明顯回吐。"
+    : "X1-X3 出場警戒已匹配，請提高追蹤頻率，必要時先降低持股曝險。";
+  const extraCount = Math.max(0, alerts.length - 4);
+  return `
+    <section class="holding-exit-alert-banner ${tone}" role="alert" aria-live="polite">
+      <div>
+        <p class="eyebrow">持股出場提醒</p>
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(lead)}</p>
+      </div>
+      <ul class="holding-exit-alert-list">
+        ${alerts
+          .slice(0, 4)
+          .map(
+            (item) => `
+              <li>
+                <strong>${escapeHtml(item.stockCode)} ${escapeHtml(item.companyName)}</strong>
+                <span class="status-pill ${statusClass(item.status)}">${escapeHtml(item.label)}</span>
+                <span>${escapeHtml(item.summary)}</span>
+              </li>
+            `,
+          )
+          .join("")}
+        ${extraCount ? `<li class="holding-exit-alert-more"><span>另有 ${escapeHtml(extraCount)} 檔需檢視</span></li>` : ""}
+      </ul>
+      <div class="button-row">
+        <button class="danger-btn" type="button" data-open-holding-alert-details>查看出場明細</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderHoldingExitAlerts() {
+  if (typeof document === "undefined") return;
+  const target = $("#holding-exit-alerts");
+  if (!target) return;
+  const html = renderHoldingExitAlertBanner();
+  if (!html) {
+    target.replaceChildren();
+    target.classList.add("hidden");
+    return;
+  }
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  target.replaceChildren(...Array.from(parsed.body.childNodes));
+  target.classList.remove("hidden");
+}
+
 function refreshHoldingsDependentViews() {
   renderHoldings();
+  if (state.holdingsScan) renderHoldingResults();
   if (state.marketScan) renderMarketResults();
 }
 
@@ -526,6 +644,66 @@ function clearHolding(stockCode) {
   if (state.editingHoldingCode === stockCode) state.editingHoldingCode = null;
   saveHoldings();
   refreshHoldingsDependentViews();
+}
+
+function holdingResultsVisible() {
+  if (typeof document === "undefined") return false;
+  const target = $("#holding-results");
+  return Boolean(target && !target.classList.contains("hidden"));
+}
+
+function requestHoldingsScanRefresh() {
+  if (typeof window === "undefined") return;
+  window.clearTimeout(holdingsScanRefreshTimer);
+  if (!state.holdings.length) {
+    state.holdingsScan = { generatedAt: new Date().toISOString(), dataSource: "local", results: [], missing: [] };
+    refreshHoldingsDependentViews();
+    return;
+  }
+  if (!state.settings.manual_scan_enabled) {
+    state.holdingsScan = null;
+    refreshHoldingsDependentViews();
+    return;
+  }
+  holdingsScanRefreshTimer = window.setTimeout(() => {
+    refreshStoredHoldingAnalysis({ renderResults: holdingResultsVisible(), quiet: true });
+  }, 250);
+}
+
+async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = false } = {}) {
+  const target = typeof document !== "undefined" ? $("#holding-results") : null;
+  if (!state.holdings.length) {
+    state.holdingsScan = { generatedAt: new Date().toISOString(), dataSource: "local", results: [], missing: [] };
+    refreshHoldingsDependentViews();
+    if (renderResults) renderHoldingResults();
+    return true;
+  }
+  if (!state.settings.manual_scan_enabled) {
+    state.holdingsScan = null;
+    refreshHoldingsDependentViews();
+    if (renderResults && target) setEmptyState(target, "手動掃描已停用");
+    return false;
+  }
+
+  state.isScanningHoldings = true;
+  renderHoldings();
+  if (renderResults && target && !quiet) setEmptyState(target, "正在套用 X1-X5 出場規則");
+  try {
+    state.holdingsScan = await apiJson("/api/scan/holdings", {
+      method: "POST",
+      body: JSON.stringify({ holdings: state.holdings, settings: state.settings }),
+    });
+  } catch (error) {
+    if (renderResults && target) {
+      target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "持股掃描失敗")}</p>`;
+    }
+    return false;
+  } finally {
+    state.isScanningHoldings = false;
+    renderHoldings();
+  }
+  if (renderResults) renderHoldingResults();
+  return true;
 }
 
 async function apiJson(url, options = {}) {
@@ -749,6 +927,7 @@ async function authenticateFromForm(mode, source = "header") {
     }
     passwordInput.value = "";
     renderHoldings();
+    requestHoldingsScanRefresh();
     if (isModal) {
       $("#auth-username").value = username;
       closeAuthGate();
@@ -793,6 +972,7 @@ async function importLocalHoldingsToAccount() {
   const ok = await syncHoldingsToServer(merged);
   state.auth.message = ok ? "已將本機持股合併同步到帳號。" : state.auth.message;
   renderHoldings();
+  requestHoldingsScanRefresh();
   renderAccountPanel();
 }
 
@@ -1109,6 +1289,7 @@ function renderSelectedCompany() {
 }
 
 function renderHoldings() {
+  renderHoldingExitAlerts();
   const target = $("#holdings-list");
   if (!state.holdings.length) {
     setEmptyState(target, "目前沒有持股");
@@ -1122,12 +1303,15 @@ function renderHoldings() {
       const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
       const averageCost = optionalNumber(holding.averageCost);
       const isEditing = state.editingHoldingCode === stockCode;
+      const analysis = holdingScanResultByCode(stockCode);
+      const missing = holdingScanMissingByCode(stockCode);
       return `
         <article class="card" data-holding-code="${escapeHtml(stockCode)}">
           <div class="card-head">
             <div>
               <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(name)}</h3>
               <p class="muted">目前 ${escapeHtml(shares)} 股，平均成本 ${escapeHtml(averageCost ?? "未填")}</p>
+              ${renderHoldingSignal(analysis, missing)}
             </div>
             <div class="button-row compact-actions">
               ${
@@ -1854,6 +2038,7 @@ async function saveSettings() {
   }
   renderSelectedCompany();
   renderHoldings();
+  requestHoldingsScanRefresh();
   renderSettings();
 }
 
@@ -1934,19 +2119,10 @@ async function scanMarket() {
 
 async function scanHoldings() {
   const target = $("#holding-results");
-  setEmptyState(target, "掃描中");
   showView("scan");
   showTab("holdings");
-  try {
-    state.holdingsScan = await apiJson("/api/scan/holdings", {
-      method: "POST",
-      body: JSON.stringify({ holdings: state.holdings, settings: state.settings }),
-    });
-  } catch (error) {
-    target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "掃描失敗")}</p>`;
-    return;
-  }
-  renderHoldingResults();
+  setEmptyState(target, "正在套用 X1-X5 出場規則");
+  await refreshStoredHoldingAnalysis({ renderResults: true });
 }
 
 async function exportReport(kind, reportFormat) {
@@ -2168,6 +2344,23 @@ function bindEvents() {
     if (result.ok) event.target.reset();
   });
 
+  const scanStoredHoldingsButton = $("#scan-stored-holdings-btn");
+  if (scanStoredHoldingsButton) {
+    scanStoredHoldingsButton.addEventListener("click", () => {
+      refreshStoredHoldingAnalysis({ renderResults: false });
+    });
+  }
+
+  const holdingExitAlertsTarget = $("#holding-exit-alerts");
+  if (holdingExitAlertsTarget) {
+    holdingExitAlertsTarget.addEventListener("click", (event) => {
+      if (!event.target.closest("[data-open-holding-alert-details]")) return;
+      showView("scan");
+      showTab("holdings");
+      renderHoldingResults();
+    });
+  }
+
   $("#holdings-list").addEventListener("click", (event) => {
     const card = event.target.closest("[data-holding-code]");
     const action = event.target.dataset.action;
@@ -2357,6 +2550,7 @@ async function init() {
   renderMarketResults();
   renderHoldingResults();
   showView("overview");
+  requestHoldingsScanRefresh();
   maybeStartFirstRunFlow();
 }
 
@@ -2392,6 +2586,13 @@ if (typeof module !== "undefined") {
     renderRuleEvidence,
     applyEvidenceBarWidths,
     renderRule,
+    holdingScanResultByCode,
+    holdingScanMissingByCode,
+    holdingExitCodes,
+    holdingSignal,
+    renderHoldingSignal,
+    holdingExitAlerts,
+    renderHoldingExitAlertBanner,
     renderStrategyRuleCards,
     ruleDisplayOrder,
     sortRulesForDisplay,

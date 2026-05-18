@@ -398,6 +398,73 @@ def test_worker_r2_json_treats_pyodide_js_null_as_missing(monkeypatch):
     assert payload_without_to_py == {"ok": "fallback"}
 
 
+def test_worker_holdings_scan_prefers_holding_exit_analysis(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+
+    async def fake_r2_json(key, fallback):
+        if key == "public/holding_analysis_shards/30.json":
+            return {
+                "3008": {
+                    "stockCode": "3008",
+                    "companyName": "大立光",
+                    "status": "EXIT",
+                    "summary": "已觸發高優先出場條件。",
+                    "reasons": [
+                        {"code": "X4", "title": "季度 EPS 不可減少超過 10%", "passed": False, "severity": "EXIT", "message": "X4"},
+                        {"code": "HOLDING", "title": "目前持股", "passed": True, "severity": "INFO", "message": "seed note"},
+                    ],
+                }
+            }
+        return fallback
+
+    api.r2_json = fake_r2_json
+
+    payload = asyncio.run(
+        api.holdings_scan_payload(
+            {"holdings": [{"stockCode": "3008", "name": "大立光", "shares": 1000, "averageCost": 2000}]}
+        )
+    )
+
+    result = payload["results"][0]
+    assert result["status"] == "EXIT"
+    assert any(reason["code"] == "X4" and reason["severity"] == "EXIT" for reason in result["reasons"])
+    assert sum(1 for reason in result["reasons"] if reason["code"] == "HOLDING") == 1
+    assert "平均成本 2000" in next(reason["message"] for reason in result["reasons"] if reason["code"] == "HOLDING")
+
+
+def test_worker_holdings_scan_marks_x_rules_missing_for_old_entry_cache(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=None)
+
+    async def fake_r2_json(key, fallback):
+        if key == "public/analysis_shards/23.json":
+            return {
+                "2357": {
+                    "stockCode": "2357",
+                    "companyName": "華碩",
+                    "status": "ENTRY",
+                    "summary": "進場快取",
+                    "reasons": [{"code": "E1", "title": "近 5 年沒有虧損", "passed": True, "severity": "INFO", "message": "E1"}],
+                }
+            }
+        return fallback
+
+    api.r2_json = fake_r2_json
+
+    payload = asyncio.run(
+        api.holdings_scan_payload(
+            {"holdings": [{"stockCode": "2357", "name": "華碩", "shares": 100, "averageCost": None}]}
+        )
+    )
+
+    result = payload["results"][0]
+    x_rules = [reason for reason in result["reasons"] if reason["code"].startswith("X")]
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert [reason["code"] for reason in x_rules] == ["X1", "X2", "X3", "X4", "X5"]
+    assert all(reason["severity"] == "INSUFFICIENT_DATA" for reason in x_rules)
+
+
 def test_worker_replace_holdings_uses_single_d1_batch_and_preserves_null_average_cost(monkeypatch):
     worker = load_worker_module(monkeypatch)
     fake_db = FakeD1()
