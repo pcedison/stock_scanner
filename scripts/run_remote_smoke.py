@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any
@@ -82,17 +83,28 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     }
 
 
-def run_public_smoke(health_url: str, manifest: Path | None, timeout: int) -> dict[str, Any]:
+def run_public_smoke(health_url: str, manifest: Path | None, timeout: int, propagation_timeout: int = 90) -> dict[str, Any]:
     base_url = base_url_from_health_url(health_url)
     client = RemoteClient(base_url, timeout)
-    health = client.request_json("/api/health")
-    validate_health_payload(health, _load_json_file(manifest))
-    payloads = {
-        "health": health,
-        "appStatus": client.request_json("/api/app-status"),
-        "dataSources": client.request_json("/api/data-sources/status"),
-    }
-    return validate_public_smoke_payloads(payloads)
+    expected_manifest = _load_json_file(manifest)
+    deadline = time.monotonic() + propagation_timeout
+    last_error: RuntimeError | None = None
+
+    while True:
+        try:
+            health = client.request_json("/api/health")
+            validate_health_payload(health, expected_manifest)
+            payloads = {
+                "health": health,
+                "appStatus": client.request_json("/api/app-status"),
+                "dataSources": client.request_json("/api/data-sources/status"),
+            }
+            return validate_public_smoke_payloads(payloads)
+        except RuntimeError as exc:
+            last_error = exc
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(3)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,10 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-url", required=True)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--timeout", type=int, default=20)
+    parser.add_argument("--propagation-timeout", type=int, default=90)
     args = parser.parse_args(argv)
 
     try:
-        summary = run_public_smoke(args.health_url, args.manifest, args.timeout)
+        summary = run_public_smoke(args.health_url, args.manifest, args.timeout, args.propagation_timeout)
     except RuntimeError as exc:
         print(f"Remote smoke failed: {exc}", file=sys.stderr)
         return 1
