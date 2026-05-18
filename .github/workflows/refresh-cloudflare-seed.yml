@@ -1,0 +1,94 @@
+name: Refresh Cloudflare Seed Cache
+
+on:
+  schedule:
+    - cron: "35 20 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: cloudflare-seed-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+
+      - name: Rebuild seed from official sources
+        run: |
+          CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
+          python scripts/package_cloudflare_seed_cache.py
+          python scripts/generate_official_failed_report.py
+          python scripts/validate_cloudflare_seed_inputs.py \
+            --zip data/official_cache_seed_2026-05-14.zip \
+            --summary-md .tmp/seed-quality.md
+          cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop if seed did not change
+        id: changes
+        run: |
+          if git diff --quiet -- \
+            data/official_cache_seed_2026-05-14.zip \
+            data/official_cache_seed_2026-05-14.sha256 \
+            data/official_history_failed_companies_2026Q1.csv \
+            docs/official_history_failed_companies_2026Q1.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No seed changes detected." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open refresh pull request
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          branch="automation/cloudflare-seed-refresh-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add \
+            data/official_cache_seed_2026-05-14.zip \
+            data/official_cache_seed_2026-05-14.sha256 \
+            data/official_history_failed_companies_2026Q1.csv \
+            docs/official_history_failed_companies_2026Q1.md
+          git commit -m "Refresh Cloudflare seed cache"
+          git push --force-with-lease --set-upstream origin "$branch"
+          {
+            cat .tmp/seed-quality.md
+            echo
+            echo "Validation:"
+            echo "- Rebuilt seed from official sources"
+            echo "- Repacked committed seed zip"
+            echo "- Revalidated seed quality gates"
+          } > .tmp/seed-pr-body.md
+          existing_pr="$(gh pr list --head "$branch" --json url --jq '.[0].url')"
+          if [ -n "$existing_pr" ]; then
+            gh pr edit "$existing_pr" --body-file .tmp/seed-pr-body.md
+          else
+            gh pr create \
+              --title "Refresh Cloudflare seed cache $(date -u +%Y-%m-%d)" \
+              --body-file .tmp/seed-pr-body.md \
+              --base "${GITHUB_REF_NAME}" \
+              --head "$branch"
+          fi

@@ -38,8 +38,18 @@ jobs:
       - name: Run quality gates
         run: |
           python -m pytest -q
+          python scripts/check_frontend_hygiene.py
           python -m pip check
           npm audit --audit-level=low
+
+      - name: Check deployment preflight guardrails
+        run: python scripts/check_deployment_preflight.py
+
+      - name: Validate generated Worker bundle boundary
+        run: npx wrangler deploy --config cloudflare/wrangler.toml --dry-run --outdir .tmp/worker-dry-run
+
+      - name: Run local Worker runtime smoke
+        run: python scripts/run_wrangler_dev_smoke.py
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
@@ -48,7 +58,11 @@ jobs:
         run: npm run test:e2e
 
       - name: Validate committed Cloudflare seed cache
-        run: python scripts/validate_cloudflare_seed_inputs.py --zip data/official_cache_seed_2026-05-14.zip
+        run: |
+          python scripts/validate_cloudflare_seed_inputs.py \
+            --zip data/official_cache_seed_2026-05-14.zip \
+            --summary-md .tmp/seed-quality.md
+          cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rebuild Cloudflare seed dry run
         run: |

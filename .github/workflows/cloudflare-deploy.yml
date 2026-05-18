@@ -9,9 +9,17 @@ on:
     - cron: "20 1,5,9,13 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -19,6 +27,7 @@ jobs:
       CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
       CF_PAGES_PROJECT: stock-scanner-beta
+      CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
 
     steps:
       - name: Check out repository
@@ -44,8 +53,12 @@ jobs:
       - name: Run quality gates
         run: |
           python -m pytest -q
+          python scripts/check_frontend_hygiene.py
           python -m pip check
           npm audit --audit-level=low
+
+      - name: Check deployment preflight guardrails
+        run: python scripts/check_deployment_preflight.py --require-health-url
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
@@ -54,7 +67,12 @@ jobs:
         run: npm run test:e2e
 
       - name: Validate committed Cloudflare seed cache
-        run: python scripts/validate_cloudflare_seed_inputs.py --zip data/official_cache_seed_2026-05-14.zip
+        run: |
+          mkdir -p .tmp
+          python scripts/validate_cloudflare_seed_inputs.py \
+            --zip data/official_cache_seed_2026-05-14.zip \
+            --summary-md .tmp/seed-quality.md
+          cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rebuild Cloudflare seed from committed cache
         run: |
@@ -62,6 +80,9 @@ jobs:
             unzip -o data/official_cache_seed_2026-05-14.zip -d data
           fi
           CLOUDFLARE_SEED_MODE=offline python scripts/build_cloudflare_seed.py
+
+      - name: Validate generated Worker bundle boundary
+        run: npx wrangler deploy --config cloudflare/wrangler.toml --dry-run --outdir .tmp/worker-dry-run
 
       - name: Upload seed cache to R2
         run: |
@@ -78,15 +99,47 @@ jobs:
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_history_backfill_progress.json" --remote --file data/official_history_backfill_progress.json
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_cache_seed_2026-05-14.zip" --remote --file data/official_cache_seed_2026-05-14.zip
 
-      - name: Apply D1 schema
-        run: npx wrangler d1 execute "$CF_D1_DATABASE" --remote --file cloudflare/schema.sql
+      - name: Export D1 backup before migrations
+        run: |
+          mkdir -p .tmp/d1-backups
+          npx wrangler d1 export "$CF_D1_DATABASE" \
+            --remote \
+            --output ".tmp/d1-backups/pre-deploy-${GITHUB_RUN_ID}.sql" \
+            --skip-confirmation \
+            --config cloudflare/wrangler.toml
+
+      - name: Upload D1 pre-deploy backup artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: d1-pre-deploy-backup-${{ github.run_id }}
+          path: .tmp/d1-backups/*.sql
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml
 
       - name: Mark refresh jobs as completed
-        run: npx wrangler d1 execute "$CF_D1_DATABASE" --remote --command "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"
+        run: npx wrangler d1 execute "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml --command "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"
 
       - name: Deploy Python Worker API
-        run: npx wrangler deploy --config cloudflare/wrangler.toml
+        id: deploy-worker
+        run: npx wrangler deploy --config cloudflare/wrangler.toml --strict --message "GitHub Actions ${GITHUB_SHA}"
 
       - name: Deploy Cloudflare Pages frontend
         working-directory: frontend
         run: ../node_modules/.bin/wrangler pages deploy . --project-name "$CF_PAGES_PROJECT" --branch "${GITHUB_REF_NAME}"
+
+      - name: Verify deployed health and manifest counts
+        run: |
+          if [ -z "$CF_WORKER_HEALTH_URL" ]; then
+            echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
+            exit 1
+          fi
+          python scripts/check_cloudflare_health.py \
+            --url "$CF_WORKER_HEALTH_URL" \
+            --manifest cloudflare/seed/manifest.json
+
+      - name: Roll back Worker after failed post-deploy verification
+        if: failure() && steps.deploy-worker.outcome == 'success'
+        run: npx wrangler rollback --config cloudflare/wrangler.toml --yes --message "Rollback after failed GitHub Actions deployment ${GITHUB_RUN_ID}"

@@ -1,5 +1,12 @@
 # 台股財報事件驅動掃描器 — Spec
 
+> Current architecture notice, 2026-05-18:
+> This file is a historical MVP spec. The authoritative current state is
+> `docs/current_architecture.md`, where holdings/settings/session state are
+> server-backed through FastAPI locally and Cloudflare Worker + D1 in production.
+> Any localStorage sections below should be read as legacy MVP notes, not the
+> production storage contract.
+
 > 版本：v0.1
 > 狀態：給本地端 Codex 開發用的產品與技術規格草案
 > 語言：繁體中文

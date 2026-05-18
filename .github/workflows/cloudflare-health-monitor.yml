@@ -1,0 +1,43 @@
+name: Cloudflare Health Monitor
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-health-monitor
+  cancel-in-progress: true
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    env:
+      CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check deployed Worker health
+        run: |
+          if [ -z "$CF_WORKER_HEALTH_URL" ]; then
+            echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
+            exit 1
+          fi
+          python scripts/check_cloudflare_health.py --url "$CF_WORKER_HEALTH_URL" | tee .tmp-health.json
+          {
+            echo "## Cloudflare health"
+            echo
+            echo '```json'
+            cat .tmp-health.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

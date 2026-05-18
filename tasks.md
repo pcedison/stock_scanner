@@ -1,5 +1,11 @@
 # 台股財報事件驅動掃描器 — Tasks
 
+> Current task-state notice, 2026-05-18:
+> This file preserves the original MVP task ledger. The current delivery state
+> and remaining guardrails are summarized in `docs/current_architecture.md`.
+> localStorage tasks below are historical MVP milestones; current holdings,
+> settings, and session flows are API-backed with Cloudflare D1 in production.
+
 > 版本：v0.1
 > 用途：給本地端 Codex / 開發者依序執行的任務清單
 > 任務格式：`[ ]` 未完成、`[x]` 已完成、`[~]` 進行中

@@ -10,6 +10,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_frontend_dom_helpers_escape_empty_state_html():
+    script = r"""
+const { emptyStateHtml, escapeHtml } = require("./frontend/dom.js");
+console.log(JSON.stringify({
+  escaped: escapeHtml('<img src=x onerror="alert(1)">'),
+  empty: emptyStateHtml('<script>alert(1)</script>'),
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert "<img" not in payload["escaped"]
+    assert "&lt;img" in payload["escaped"]
+    assert "<script" not in payload["empty"].lower()
+    assert "&lt;script" in payload["empty"].lower()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
 const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage } = require("./frontend/app.js");

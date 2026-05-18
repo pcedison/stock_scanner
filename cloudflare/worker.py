@@ -23,7 +23,8 @@ USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
 SUPER_USER_USERNAME = "pcedison@gmail.com"
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
-ALLOWED_ORIGINS = frozenset({"https://stock-scanner-beta.pages.dev"})
+LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
 AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
@@ -72,6 +73,10 @@ class BadRequestError(Exception):
     pass
 
 
+class ValidationError(Exception):
+    pass
+
+
 class RateLimitError(Exception):
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds
@@ -89,6 +94,48 @@ def parse_time(value):
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def env_value(env, name: str, default=None):
+    if env is None:
+        return default
+    if isinstance(env, dict):
+        value = env.get(name, default)
+    else:
+        value = getattr(env, name, default)
+    return js_to_py(value)
+
+
+def env_flag(env, name: str) -> bool:
+    return str(env_value(env, name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def csv_env_value(env, name: str) -> list[str]:
+    raw = env_value(env, name, "")
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def runtime_environment(env) -> str:
+    value = env_value(env, "APP_ENV", env_value(env, "ENVIRONMENT", "development"))
+    return str(value or "development").strip().lower() or "development"
+
+
+def is_production_environment(env) -> bool:
+    return runtime_environment(env) in {"prod", "production"}
+
+
+def origin_host(origin: str) -> str:
+    return (urlparse(str(origin or "")).hostname or "").lower()
+
+
+def is_local_cors_origin(origin: str) -> bool:
+    return origin_host(origin) in LOCAL_CORS_HOSTS
+
+
+def is_https_origin(origin: str) -> bool:
+    return urlparse(str(origin or "")).scheme.lower() == "https"
 
 
 def cache_key_from_manifest(manifest):
@@ -164,7 +211,7 @@ def empty_backtest_status():
 def settings_from_payload(payload, strict=False):
     if not isinstance(payload, dict):
         if strict:
-            raise BadRequestError("設定內容需為物件")
+            raise ValidationError("設定內容需為物件")
         payload = {}
     settings = {}
     for key, default in DEFAULT_SETTINGS.items():
@@ -173,14 +220,14 @@ def settings_from_payload(payload, strict=False):
             if value in REVENUE_GROWTH_MODES:
                 settings[key] = value
             elif strict:
-                raise BadRequestError("revenue_growth_mode 值不正確")
+                raise ValidationError("revenue_growth_mode 值不正確")
             else:
                 settings[key] = default
             continue
         if isinstance(value, bool):
             settings[key] = value
         elif strict:
-            raise BadRequestError(f"{key} 必須為布林值")
+            raise ValidationError(f"{key} 必須為布林值")
         else:
             settings[key] = default
     return settings
@@ -250,6 +297,8 @@ def clear_session_cookie() -> str:
 def js_to_py(value):
     if value is None:
         return None
+    if type(value).__name__ in {"JsNull", "JsUndefined"}:
+        return None
     if hasattr(value, "to_py"):
         return value.to_py()
     if isinstance(value, list):
@@ -318,6 +367,8 @@ class Api:
             response = await self.route(request, path, query)
         except BadRequestError as exc:
             response = error_response(str(exc), status=400)
+        except ValidationError as exc:
+            response = error_response(str(exc), status=422)
         except PermissionError as exc:
             response = error_response(str(exc), status=401)
         except ForbiddenError as exc:
@@ -332,11 +383,28 @@ class Api:
             set_response_header(response, key, value)
         return response
 
+    def cors_allowed_origins(self):
+        configured = (
+            csv_env_value(self.env, "APP_CORS_ALLOW_ORIGINS")
+            or csv_env_value(self.env, "WORKER_CORS_ALLOW_ORIGINS")
+        )
+        production = is_production_environment(self.env)
+        allowed = list(dict.fromkeys(configured))
+        if not production:
+            allowed.extend(origin for origin in DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS if origin not in allowed)
+
+        if production and not env_flag(self.env, "APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
+            allowed = [origin for origin in allowed if not is_local_cors_origin(origin)]
+        if production and not env_flag(self.env, "APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
+            allowed = [origin for origin in allowed if is_https_origin(origin)]
+        return tuple(allowed)
+
     def cors_headers(self, request=None):
-        origin = next(iter(ALLOWED_ORIGINS))
+        allowed_origins = self.cors_allowed_origins()
+        origin = allowed_origins[0] if allowed_origins else "null"
         if request is not None:
             req_origin = str(request.headers.get("origin") or "")
-            if req_origin in ALLOWED_ORIGINS or _LOCALHOST_ORIGIN_RE.match(req_origin):
+            if req_origin in allowed_origins or (not is_production_environment(self.env) and _LOCALHOST_ORIGIN_RE.match(req_origin)):
                 origin = req_origin
         return {
             "access-control-allow-origin": origin,
@@ -512,7 +580,7 @@ class Api:
     async def r2_json(self, key: str, fallback):
         if key in self._r2_cache:
             return self._r2_cache[key]
-        obj = await self.env.CACHE.get(key)
+        obj = js_to_py(await self.env.CACHE.get(key))
         result = fallback if obj is None else json.loads(await obj.text())
         self._r2_cache[key] = result
         return result
@@ -704,7 +772,7 @@ class Api:
         if not target:
             return {"superUser": SUPER_USER_USERNAME, "users": [], "deleted": False, "message": "User not found"}
         if str(target["username"]).lower() == SUPER_USER_USERNAME:
-            raise ForbiddenError("super user cannot be deleted")
+            raise BadRequestError("super user cannot be deleted")
         await self.db_run("DELETE FROM sessions WHERE user_id = ?", user_id)
         await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
         await self.db_run("DELETE FROM users WHERE id = ?", user_id)

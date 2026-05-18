@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.validate_cloudflare_seed_inputs import validate_seed_zip
+from scripts.validate_cloudflare_seed_inputs import failed_company_summary, render_seed_summary, validate_seed_zip
 
 
 def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5) -> None:
@@ -79,3 +79,30 @@ def test_validate_seed_zip_rejects_missing_required_entry(tmp_path):
 
     with pytest.raises(ValueError, match="missing required entries"):
         validate_seed_zip(archive_path)
+
+
+def test_seed_quality_summary_includes_failed_reasons(tmp_path):
+    failed_csv = tmp_path / "failed.csv"
+    failed_csv.write_text(
+        "stock_code,initial_reason,manual_status\n"
+        "1234,missing 2026Q1,todo\n"
+        "5678,missing 2026Q1,patched\n",
+        encoding="utf-8",
+    )
+    summary = {
+        "zip": "seed.zip",
+        "companies": 1000,
+        "quarterlyRows": 5000,
+        "latestPeriod": "2026Q1",
+        "seedCompanies": 1000,
+        "seedAnalysis": 1000,
+        "seedUniverse": 1000,
+        "seedShards": 10,
+    }
+
+    failed = failed_company_summary(failed_csv)
+    markdown = render_seed_summary(summary, failed)
+
+    assert failed["failedCompanies"] == 2
+    assert failed["manualStatus"] == {"patched": 1, "todo": 1}
+    assert "missing 2026Q1: 2" in markdown

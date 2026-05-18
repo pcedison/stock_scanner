@@ -3,6 +3,10 @@ const ONBOARDING_KEY = "tw_stock_scanner.onboarding_done.v1";
 const SUPER_USER_USERNAME = "pcedison@gmail.com";
 const COMPANIES_PAGE_LIMIT = 500;
 const MAX_COMPANY_PAGES = 10;
+const DOM_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./dom.js")
+    : globalThis.StockScannerDom;
 
 const DEFAULT_COMPANIES = [
   { stockCode: "2330", name: "台積電", market: "TWSE", industryName: "半導體業", isFinancial: false },
@@ -293,12 +297,11 @@ function companySource(companies = state.companies) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return DOM_HELPERS.escapeHtml(value);
+}
+
+function emptyStateHtml(message) {
+  return DOM_HELPERS.emptyStateHtml(message);
 }
 
 function safeCompanyName(companyOrHolding) {
@@ -799,15 +802,15 @@ function renderAdminUsers() {
   }
   message.textContent = state.adminIsLoading ? "讀取使用者清單中..." : state.adminError || state.adminMessage || "";
   if (state.adminIsLoading) {
-    target.innerHTML = `<div class="empty-state">讀取中</div>`;
+    target.innerHTML = emptyStateHtml("讀取中");
     return;
   }
   if (state.adminError) {
-    target.innerHTML = `<div class="empty-state">${escapeHtml(state.adminError)}</div>`;
+    target.innerHTML = emptyStateHtml(state.adminError);
     return;
   }
   if (!state.adminUsers.length) {
-    target.innerHTML = `<div class="empty-state">目前沒有其他使用者</div>`;
+    target.innerHTML = emptyStateHtml("目前沒有其他使用者");
     return;
   }
   target.innerHTML = state.adminUsers
@@ -1102,7 +1105,7 @@ function renderSelectedCompany() {
 function renderHoldings() {
   const target = $("#holdings-list");
   if (!state.holdings.length) {
-    target.innerHTML = `<div class="empty-state">目前沒有持股</div>`;
+    target.innerHTML = emptyStateHtml("目前沒有持股");
     return;
   }
 
@@ -1606,7 +1609,7 @@ function renderScanCacheStatus(scan = {}) {
 function renderMarketResults() {
   const target = $("#market-results");
   if (!state.marketScan) {
-    target.innerHTML = `<div class="empty-state">尚未掃描市場</div>`;
+    target.innerHTML = emptyStateHtml("尚未掃描市場");
     updateMarketColumnNav();
     return;
   }
@@ -1660,7 +1663,7 @@ function renderDataAndScheduler() {
   const schedulerTarget = $("#scheduler-status");
   if (dataTarget) {
     if (!state.dataSourceStatus) {
-      dataTarget.innerHTML = `<div class="empty-state">尚未讀取資料來源狀態</div>`;
+      dataTarget.innerHTML = emptyStateHtml("尚未讀取資料來源狀態");
     } else {
       const status = state.dataSourceStatus;
       dataTarget.innerHTML = `
@@ -1710,7 +1713,7 @@ function renderDataAndScheduler() {
 function renderHoldingResults() {
   const target = $("#holding-results");
   if (!state.holdingsScan) {
-    target.innerHTML = `<div class="empty-state">尚未掃描持股</div>`;
+    target.innerHTML = emptyStateHtml("尚未掃描持股");
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.holdingsScan.generatedAt).toLocaleString()}`;
@@ -1892,7 +1895,7 @@ function renderSuggestions(items) {
 async function analyzeSelectedCompany() {
   if (!state.selectedCompany) return;
   const target = $("#single-analysis");
-  target.innerHTML = `<div class="empty-state">分析中</div>`;
+  target.innerHTML = emptyStateHtml("分析中");
   try {
     const result = await apiJson(`/api/analyze/${state.selectedCompany.stockCode}`, {
       method: "POST",
@@ -1907,7 +1910,7 @@ async function analyzeSelectedCompany() {
 
 async function scanMarket() {
   const target = $("#market-results");
-  target.innerHTML = `<div class="empty-state">掃描中</div>`;
+  target.innerHTML = emptyStateHtml("掃描中");
   showView("scan");
   showTab("market");
   try {
@@ -1925,7 +1928,7 @@ async function scanMarket() {
 
 async function scanHoldings() {
   const target = $("#holding-results");
-  target.innerHTML = `<div class="empty-state">掃描中</div>`;
+  target.innerHTML = emptyStateHtml("掃描中");
   showView("scan");
   showTab("holdings");
   try {
@@ -2399,5 +2402,7 @@ if (typeof module !== "undefined") {
     isPartialPublishedResult,
     settingsPermissionMessage,
     safeText,
+    escapeHtml,
+    emptyStateHtml,
   };
 }

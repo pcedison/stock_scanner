@@ -4,10 +4,15 @@ compatibility_date = "2026-05-14"
 compatibility_flags = ["python_workers", "disable_python_no_global_handlers", "disable_python_external_sdk"]
 workers_dev = true
 
+[vars]
+APP_ENV = "production"
+APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "stock-scanner-beta-db"
 database_id = "c29c7b4a-4a2d-4711-badd-1aaad43ce3b6"
+migrations_dir = "cloudflare/migrations"
 
 [[r2_buckets]]
 binding = "CACHE"

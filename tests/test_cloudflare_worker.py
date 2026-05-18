@@ -122,6 +122,14 @@ class FakeR2Cache:
         return self.objects.get(key)
 
 
+class FakeJsNull:
+    def to_py(self):
+        return None
+
+
+JsNullWithoutToPy = type("JsNull", (), {})
+
+
 def test_worker_request_json_reads_body_once(monkeypatch):
     worker = load_worker_module(monkeypatch)
     request = SingleReadRequest('{"username":"pcedison@gmail.com","password":"test-password-123"}')
@@ -163,7 +171,7 @@ def test_worker_security_headers_and_auth_pattern(monkeypatch):
         raise AssertionError("ValueError was not raised")
 
 
-def test_worker_cors_allows_pages_and_local_loopback(monkeypatch):
+def test_worker_cors_uses_env_allowlist_and_dev_loopback(monkeypatch):
     worker = load_worker_module(monkeypatch)
     api = worker.Api(env=None)
 
@@ -174,7 +182,21 @@ def test_worker_cors_allows_pages_and_local_loopback(monkeypatch):
     assert headers["access-control-allow-credentials"] == "true"
     assert api.cors_headers(types.SimpleNamespace(headers={"origin": "https://evil.example"}))[
         "access-control-allow-origin"
+    ] == "http://localhost:8000"
+
+    production_api = worker.Api(
+        env=types.SimpleNamespace(
+            APP_ENV="production",
+            APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev,http://localhost:8787,http://bad.example",
+        )
+    )
+    assert production_api.cors_headers(types.SimpleNamespace(headers={"origin": "https://stock-scanner-beta.pages.dev"}))[
+        "access-control-allow-origin"
     ] == "https://stock-scanner-beta.pages.dev"
+    assert production_api.cors_headers(types.SimpleNamespace(headers={"origin": "http://localhost:8787"}))[
+        "access-control-allow-origin"
+    ] == "https://stock-scanner-beta.pages.dev"
+    assert production_api.cors_allowed_origins() == ("https://stock-scanner-beta.pages.dev",)
 
 
 def test_worker_options_preflight_uses_cors_and_security_headers(monkeypatch):
@@ -234,9 +256,9 @@ def test_worker_settings_payload_validation(monkeypatch):
     assert settings["scan_tpex"] is False
     assert settings["revenue_growth_mode"] == "monthly"
 
-    with pytest.raises(worker.BadRequestError):
+    with pytest.raises(worker.ValidationError):
         worker.settings_from_payload({"manual_scan_enabled": "false"}, strict=True)
-    with pytest.raises(worker.BadRequestError):
+    with pytest.raises(worker.ValidationError):
         worker.settings_from_payload({"revenue_growth_mode": "bad-mode"}, strict=True)
     assert worker.settings_from_payload({"manual_scan_enabled": "false"})["manual_scan_enabled"] is True
 
@@ -335,6 +357,18 @@ def test_worker_r2_json_caches_misses_and_parses_json(monkeypatch):
     assert missing == {"items": []}
     assert cached_missing == {"items": []}
     assert cache.calls == ["public/ok.json", "public/missing.json"]
+
+
+def test_worker_r2_json_treats_pyodide_js_null_as_missing(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    cache = FakeR2Cache({"public/missing.json": FakeJsNull(), "public/also-missing.json": JsNullWithoutToPy()})
+    api = worker.Api(env=types.SimpleNamespace(CACHE=cache))
+
+    payload = asyncio.run(api.r2_json("public/missing.json", {"ok": False}))
+    payload_without_to_py = asyncio.run(api.r2_json("public/also-missing.json", {"ok": "fallback"}))
+
+    assert payload == {"ok": False}
+    assert payload_without_to_py == {"ok": "fallback"}
 
 
 def test_worker_replace_holdings_uses_single_d1_batch_and_preserves_null_average_cost(monkeypatch):

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_ZIP = Path("data/official_cache_seed_2026-05-14.zip")
+DEFAULT_FAILED_COMPANIES_CSV = Path("data/official_history_failed_companies_2026Q1.csv")
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
@@ -103,9 +106,66 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
     }
 
 
+def failed_company_summary(path: Path = DEFAULT_FAILED_COMPANIES_CSV) -> dict[str, Any]:
+    if not path.exists():
+        return {"path": str(path), "failedCompanies": 0, "manualStatus": {}, "reasons": {}}
+
+    reasons: Counter[str] = Counter()
+    manual_status: Counter[str] = Counter()
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            reasons[row.get("initial_reason") or "unspecified"] += 1
+            manual_status[row.get("manual_status") or row.get("subagent_status") or "todo"] += 1
+
+    return {
+        "path": str(path),
+        "failedCompanies": sum(reasons.values()),
+        "manualStatus": dict(sorted(manual_status.items())),
+        "reasons": dict(reasons.most_common()),
+    }
+
+
+def render_seed_summary(summary: dict[str, Any], failed_summary: dict[str, Any] | None = None) -> str:
+    failed_summary = failed_summary or failed_company_summary()
+    lines = [
+        "# Cloudflare seed quality",
+        "",
+        f"- zip: `{summary['zip']}`",
+        f"- official history companies: {summary['companies']}",
+        f"- official history quarterly rows: {summary['quarterlyRows']}",
+        f"- latest official period: {summary['latestPeriod']}",
+        f"- seed companies: {summary['seedCompanies']}",
+        f"- seed analysis rows: {summary['seedAnalysis']}",
+        f"- seed universe rows: {summary['seedUniverse']}",
+        f"- seed shards: {summary['seedShards']}",
+        f"- failed companies needing review: {failed_summary['failedCompanies']}",
+        "",
+        "## Manual follow-up status",
+        "",
+    ]
+    manual_status = failed_summary.get("manualStatus") or {}
+    if manual_status:
+        lines.extend(f"- {status}: {count}" for status, count in manual_status.items())
+    else:
+        lines.append("- none")
+
+    reasons = failed_summary.get("reasons") or {}
+    if reasons:
+        lines.extend(["", "## Missing-data reasons", ""])
+        lines.extend(f"- {reason}: {count}" for reason, count in reasons.items())
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the committed Cloudflare seed cache inputs.")
     parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP, help="Path to the committed seed zip")
+    parser.add_argument("--summary-md", type=Path, help="Optional Markdown quality summary output path")
+    parser.add_argument(
+        "--failed-companies-csv",
+        type=Path,
+        default=DEFAULT_FAILED_COMPANIES_CSV,
+        help="CSV used to summarize missing official history follow-up status",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -113,6 +173,13 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"Seed validation failed: {exc}", file=sys.stderr)
         return 1
+
+    if args.summary_md:
+        args.summary_md.parent.mkdir(parents=True, exist_ok=True)
+        args.summary_md.write_text(
+            render_seed_summary(summary, failed_company_summary(args.failed_companies_csv)),
+            encoding="utf-8",
+        )
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
