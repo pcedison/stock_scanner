@@ -22,6 +22,7 @@ OFFLINE_SEED_REQUIRED_FILES = {
     "data_sources_status.json",
     "market_scan_latest.json",
     "analysis_by_code.json",
+    "holding_analysis_by_code.json",
 }
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 sys.path.insert(0, str(ROOT_DIR))
@@ -247,10 +248,14 @@ def has_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> bool:
         return False
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
-    return all(f"{OFFLINE_SEED_PREFIX}{name}" in names for name in OFFLINE_SEED_REQUIRED_FILES) and any(
-        name.startswith(f"{OFFLINE_SEED_PREFIX}analysis_shards/") and name.endswith(".json")
-        for name in names
+    has_required_files = all(f"{OFFLINE_SEED_PREFIX}{name}" in names for name in OFFLINE_SEED_REQUIRED_FILES)
+    has_analysis_shards = any(
+        name.startswith(f"{OFFLINE_SEED_PREFIX}analysis_shards/") and name.endswith(".json") for name in names
     )
+    has_holding_analysis_shards = any(
+        name.startswith(f"{OFFLINE_SEED_PREFIX}holding_analysis_shards/") and name.endswith(".json") for name in names
+    )
+    return has_required_files and has_analysis_shards and has_holding_analysis_shards
 
 
 def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:

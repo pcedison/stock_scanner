@@ -21,6 +21,7 @@ REQUIRED_ENTRIES = {
     "cloudflare_seed/data_sources_status.json",
     "cloudflare_seed/market_scan_latest.json",
     "cloudflare_seed/analysis_by_code.json",
+    "cloudflare_seed/holding_analysis_by_code.json",
 }
 MIN_HISTORY_COMPANIES = 1000
 MIN_HISTORY_ROWS = 5000
@@ -54,8 +55,15 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         analysis_shards = sorted(
             name for name in names if name.startswith("cloudflare_seed/analysis_shards/") and name.endswith(".json")
         )
+        holding_analysis_shards = sorted(
+            name
+            for name in names
+            if name.startswith("cloudflare_seed/holding_analysis_shards/") and name.endswith(".json")
+        )
         if not analysis_shards:
             raise ValueError("Seed zip is missing cloudflare_seed/analysis_shards/*.json entries")
+        if not holding_analysis_shards:
+            raise ValueError("Seed zip is missing cloudflare_seed/holding_analysis_shards/*.json entries")
 
     if not isinstance(history, dict):
         raise ValueError("official_fundamentals_history.json must be a JSON object")
@@ -86,11 +94,16 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         raise ValueError("cloudflare_seed/manifest.json must contain a counts object")
     seed_companies = int(counts.get("companies") or 0)
     seed_analysis = int(counts.get("analysis") or 0)
+    seed_holding_analysis = int(counts.get("holdingAnalysis") or 0)
     seed_universe = sum(int(counts.get(key) or 0) for key in ("entry", "watch", "excluded"))
     if seed_companies < MIN_SEED_COMPANIES:
         raise ValueError(f"Cloudflare seed has only {seed_companies} companies; expected at least {MIN_SEED_COMPANIES}")
     if seed_analysis < MIN_SEED_ANALYSIS:
         raise ValueError(f"Cloudflare seed has only {seed_analysis} analysis rows; expected at least {MIN_SEED_ANALYSIS}")
+    if seed_holding_analysis < MIN_SEED_ANALYSIS:
+        raise ValueError(
+            f"Cloudflare seed has only {seed_holding_analysis} holding analysis rows; expected at least {MIN_SEED_ANALYSIS}"
+        )
     if seed_universe < MIN_SEED_ANALYSIS:
         raise ValueError(f"Cloudflare seed universe has only {seed_universe} rows; expected at least {MIN_SEED_ANALYSIS}")
 
@@ -101,8 +114,10 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         "latestPeriod": latest_period,
         "seedCompanies": seed_companies,
         "seedAnalysis": seed_analysis,
+        "seedHoldingAnalysis": seed_holding_analysis,
         "seedUniverse": seed_universe,
         "seedShards": len(analysis_shards),
+        "seedHoldingShards": len(holding_analysis_shards),
         "generatedAt": manifest.get("generatedAt"),
         "sourceLastCheckedAt": manifest.get("sourceLastCheckedAt"),
         "latestRevenuePeriod": manifest.get("latestRevenuePeriod"),
@@ -162,8 +177,10 @@ def render_seed_summary(summary: dict[str, Any], failed_summary: dict[str, Any] 
         f"- latest financial period: {summary.get('latestFinancialPeriod') or 'unknown'}",
         f"- seed companies: {summary['seedCompanies']}",
         f"- seed analysis rows: {summary['seedAnalysis']}",
+        f"- seed holding analysis rows: {summary['seedHoldingAnalysis']}",
         f"- seed universe rows: {summary['seedUniverse']}",
         f"- seed shards: {summary['seedShards']}",
+        f"- seed holding shards: {summary['seedHoldingShards']}",
         f"- failed companies needing review: {failed_summary['failedCompanies']}",
         "",
         "## Manual follow-up status",

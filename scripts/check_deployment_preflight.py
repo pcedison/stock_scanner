@@ -53,6 +53,7 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "D1 export": r"wrangler d1 export",
         "D1 migrations": r"wrangler d1 migrations apply",
         "Worker dry-run": r"wrangler deploy .*--dry-run",
+        "holding analysis R2 upload": r"holding_analysis_shards",
         "post-deploy health": r"scripts/check_cloudflare_health\.py",
         "post-deploy remote smoke": r"scripts/run_remote_smoke\.py",
         "rollback": r"wrangler rollback",

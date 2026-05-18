@@ -20,6 +20,7 @@ SEED_FILES = (
     "data_sources_status.json",
     "market_scan_latest.json",
     "analysis_by_code.json",
+    "holding_analysis_by_code.json",
 )
 
 
@@ -45,6 +46,12 @@ def package_seed_cache(zip_path: Path = DEFAULT_ZIP, sha_path: Path = DEFAULT_SH
             raise FileNotFoundError(f"Required analysis shards are missing: {shard_dir}")
         for shard_path in shard_paths:
             _add_file(archive, shard_path, f"cloudflare_seed/analysis_shards/{shard_path.name}")
+        holding_shard_dir = seed_dir / "holding_analysis_shards"
+        holding_shard_paths = sorted(holding_shard_dir.glob("*.json"))
+        if not holding_shard_paths:
+            raise FileNotFoundError(f"Required holding analysis shards are missing: {holding_shard_dir}")
+        for shard_path in holding_shard_paths:
+            _add_file(archive, shard_path, f"cloudflare_seed/holding_analysis_shards/{shard_path.name}")
 
     digest = hashlib.sha256(temp_path.read_bytes()).hexdigest().upper()
     temp_path.replace(zip_path)

@@ -40,6 +40,8 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
                         "excluded": 10,
                         "analysis": companies,
                         "analysisShards": 1,
+                        "holdingAnalysis": companies,
+                        "holdingAnalysisShards": 1,
                     }
                 }
             ),
@@ -48,7 +50,9 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
         archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
         archive.writestr("cloudflare_seed/market_scan_latest.json", "{}")
         archive.writestr("cloudflare_seed/analysis_by_code.json", "{}")
+        archive.writestr("cloudflare_seed/holding_analysis_by_code.json", "{}")
         archive.writestr("cloudflare_seed/analysis_shards/10.json", "{}")
+        archive.writestr("cloudflare_seed/holding_analysis_shards/10.json", "{}")
 
 
 def test_validate_seed_zip_accepts_populated_history(tmp_path):
@@ -62,7 +66,9 @@ def test_validate_seed_zip_accepts_populated_history(tmp_path):
     assert summary["latestPeriod"] == "2024Q4"
     assert summary["seedCompanies"] == 1000
     assert summary["seedAnalysis"] == 1000
+    assert summary["seedHoldingAnalysis"] == 1000
     assert summary["seedShards"] == 1
+    assert summary["seedHoldingShards"] == 1
     assert summary["generatedAt"] == "2026-05-17T00:00:00+00:00"
 
 
@@ -83,7 +89,9 @@ def test_validate_seed_zip_rejects_empty_history(tmp_path):
         archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
         archive.writestr("cloudflare_seed/market_scan_latest.json", "{}")
         archive.writestr("cloudflare_seed/analysis_by_code.json", "{}")
+        archive.writestr("cloudflare_seed/holding_analysis_by_code.json", "{}")
         archive.writestr("cloudflare_seed/analysis_shards/10.json", "{}")
+        archive.writestr("cloudflare_seed/holding_analysis_shards/10.json", "{}")
 
     with pytest.raises(ValueError, match="companies"):
         validate_seed_zip(archive_path)
@@ -113,8 +121,10 @@ def test_seed_quality_summary_includes_failed_reasons(tmp_path):
         "latestPeriod": "2026Q1",
         "seedCompanies": 1000,
         "seedAnalysis": 1000,
+        "seedHoldingAnalysis": 1000,
         "seedUniverse": 1000,
         "seedShards": 10,
+        "seedHoldingShards": 10,
     }
 
     failed = failed_company_summary(failed_csv)
