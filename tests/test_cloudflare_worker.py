@@ -398,6 +398,41 @@ def test_worker_r2_json_treats_pyodide_js_null_as_missing(monkeypatch):
     assert payload_without_to_py == {"ok": "fallback"}
 
 
+def test_worker_market_scan_uses_precomputed_summary(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    cache = FakeR2Cache(
+        {
+            "public/manifest.json": FakeR2Object('{"generatedAt":"2026-05-19T00:00:00+00:00"}'),
+            "public/market_scan_summary.json": FakeR2Object(
+                json.dumps(
+                    {
+                        "generatedAt": "2026-05-19T00:00:00+00:00",
+                        "dataSource": "cloudflare_r2_seed",
+                        "entry": [{"stockCode": "1234", "companyName": "Demo", "status": "ENTRY", "summary": "ok"}],
+                        "watch": [],
+                        "excluded": [],
+                    }
+                )
+            ),
+            "public/market_scan_latest.json": FakeR2Object('{"entry":[{"stockCode":"9999"}]}'),
+        }
+    )
+    api = worker.Api(env=types.SimpleNamespace(CACHE=cache))
+
+    async def fake_refresh_job(manifest, force=False):
+        return {"status": "fresh", "reason": "test"}
+
+    api.ensure_refresh_job = fake_refresh_job
+
+    response = asyncio.run(api.route(types.SimpleNamespace(method="POST"), "/api/scan/market", {}))
+    payload = json.loads(response.body)
+
+    assert payload["entry"][0]["stockCode"] == "1234"
+    assert payload["detailMode"] == "summary"
+    assert payload["cacheStatus"]["refreshStatus"] == "fresh"
+    assert "public/market_scan_latest.json" not in cache.calls
+
+
 def test_worker_holdings_scan_prefers_holding_exit_analysis(monkeypatch):
     worker = load_worker_module(monkeypatch)
     api = worker.Api(env=None)

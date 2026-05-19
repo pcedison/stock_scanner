@@ -41,3 +41,15 @@ jobs:
             cat .tmp-health.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check market scan smoke
+        run: |
+          python scripts/run_remote_smoke.py --health-url "$CF_WORKER_HEALTH_URL" --timeout 30 --propagation-timeout 1 | tee .tmp-smoke.json
+          {
+            echo
+            echo "## Public smoke"
+            echo
+            echo '```json'
+            cat .tmp-smoke.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

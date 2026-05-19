@@ -15,11 +15,18 @@ def test_validate_public_smoke_payloads_accepts_expected_shapes():
             "health": {"runtime": "cloudflare-python-worker", "status": "ok"},
             "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
             "dataSources": {"activeProvider": "CloudflareR2Seed"},
+            "marketScan": {
+                "entry": [{"stockCode": str(index)} for index in range(10)],
+                "watch": [{"stockCode": str(index)} for index in range(990)],
+                "excluded": [],
+                "cacheStatus": {"cacheHit": True},
+            },
         }
     )
 
     assert summary["runtime"] == "cloudflare-python-worker"
     assert summary["activeProvider"] == "CloudflareR2Seed"
+    assert summary["marketScanRows"] == 1000
 
 
 def test_validate_public_smoke_payloads_rejects_wrong_runtime():
@@ -29,5 +36,6 @@ def test_validate_public_smoke_payloads_rejects_wrong_runtime():
                 "health": {"runtime": "fastapi", "status": "ok"},
                 "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {}},
                 "dataSources": {"activeProvider": "CloudflareR2Seed"},
+                "marketScan": {"entry": [{"stockCode": str(index)} for index in range(1000)], "cacheStatus": {}},
             }
         )

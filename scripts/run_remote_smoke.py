@@ -64,6 +64,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     health = payloads.get("health") or {}
     app_status = payloads.get("appStatus") or {}
     data_sources = payloads.get("dataSources") or {}
+    market_scan = payloads.get("marketScan") or {}
 
     if health.get("runtime") != "cloudflare-python-worker":
         problems.append("health.runtime is not cloudflare-python-worker")
@@ -73,6 +74,11 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         problems.append("app-status is missing schedulerAutoScan")
     if not data_sources.get("activeProvider"):
         problems.append("data-sources status is missing activeProvider")
+    market_rows = sum(len(market_scan.get(category) or []) for category in ("entry", "watch", "excluded", "results"))
+    if market_rows < 1000:
+        problems.append(f"market scan returned only {market_rows} rows")
+    if not isinstance(market_scan.get("cacheStatus"), dict):
+        problems.append("market scan is missing cacheStatus")
     if problems:
         raise RuntimeError("; ".join(problems))
     return {
@@ -80,6 +86,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         "runtime": health.get("runtime"),
         "activeProvider": data_sources.get("activeProvider"),
         "schedulerAction": app_status.get("schedulerAutoScan", {}).get("action"),
+        "marketScanRows": market_rows,
     }
 
 
@@ -98,6 +105,21 @@ def run_public_smoke(health_url: str, manifest: Path | None, timeout: int, propa
                 "health": health,
                 "appStatus": client.request_json("/api/app-status"),
                 "dataSources": client.request_json("/api/data-sources/status"),
+                "marketScan": client.request_json(
+                    "/api/scan/market",
+                    method="POST",
+                    payload={
+                        "settings": {
+                            "manual_scan_enabled": True,
+                            "use_mock_data": False,
+                            "scan_twse": True,
+                            "scan_tpex": True,
+                            "exclude_financial_industry": True,
+                            "spring_festival_guard": True,
+                            "revenue_growth_mode": "cumulative_ytd",
+                        }
+                    },
+                ),
             }
             return validate_public_smoke_payloads(payloads)
         except RuntimeError as exc:

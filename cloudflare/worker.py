@@ -526,8 +526,10 @@ class Api:
 
         if path == "/api/scan/market" and request.method == "POST":
             manifest = await self.r2_json("public/manifest.json", {})
-            scan = await self.r2_json("public/market_scan_latest.json", self.empty_market_scan())
+            scan = await self.r2_json("public/market_scan_summary.json", None)
             refresh_status = await self.ensure_refresh_job(manifest)
+            if not isinstance(scan, dict):
+                scan = self.empty_market_scan()
             scan = self.compact_market_scan(scan)
             scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
             return json_response(scan)
@@ -1181,7 +1183,7 @@ class Api:
 
     async def market_report(self, query):
         report_format = (query.get("report_format") or ["markdown"])[0]
-        scan = await self.r2_json("public/market_scan_latest.json", self.empty_market_scan())
+        scan = await self.r2_json("public/market_scan_summary.json", self.empty_market_scan())
         return self.report_response(scan, report_format, "台股市場掃描報告", "market_scan")
 
     async def holdings_report(self, request, query):

@@ -94,6 +94,7 @@ jobs:
           npx wrangler r2 object put "$CF_R2_BUCKET/public/companies.json" --remote --file cloudflare/seed/companies.json
           npx wrangler r2 object put "$CF_R2_BUCKET/public/data_sources_status.json" --remote --file cloudflare/seed/data_sources_status.json
           npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_latest.json" --remote --file cloudflare/seed/market_scan_latest.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_summary.json" --remote --file cloudflare/seed/market_scan_summary.json
           npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_by_code.json" --remote --file cloudflare/seed/analysis_by_code.json
           npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_by_code.json" --remote --file cloudflare/seed/holding_analysis_by_code.json
           for file in cloudflare/seed/analysis_shards/*.json; do

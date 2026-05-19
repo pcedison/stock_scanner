@@ -37,6 +37,11 @@ from backend.services.settings_service import load_settings  # noqa: E402
 
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
 MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
+MARKET_SCAN_SUMMARY_FILE = "market_scan_summary.json"
+MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded", "results")
+SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
+SUMMARY_REASON_KEYS = ("code", "title", "passed", "severity", "message")
+SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION"}
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -61,6 +66,52 @@ def clear_seed_output() -> None:
 
 def analysis_shard_key(stock_code: str) -> str:
     return str(stock_code)[:2]
+
+
+def compact_scan_result(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    compact = {key: result.get(key) for key in SUMMARY_RESULT_KEYS if key in result}
+    reasons = result.get("reasons")
+    if isinstance(reasons, list):
+        compact["reasons"] = []
+        for reason in reasons:
+            if not isinstance(reason, dict):
+                continue
+            if str(reason.get("code") or "") not in SUMMARY_REASON_CODES:
+                continue
+            compact["reasons"].append({key: reason.get(key) for key in SUMMARY_REASON_KEYS if key in reason})
+    compact["detailsAvailable"] = True
+    compact["hasFullDetails"] = False
+    return compact
+
+
+def compact_market_scan_payload(scan_payload: dict) -> dict:
+    if not isinstance(scan_payload, dict):
+        return {}
+    compact = dict(scan_payload)
+    for category in MARKET_SCAN_CATEGORIES:
+        items = compact.get(category)
+        if isinstance(items, list):
+            compact[category] = [compact_scan_result(item) for item in items]
+    compact["detailMode"] = "summary"
+    return compact
+
+
+def add_market_scan_summary_to_manifest(manifest: dict) -> dict:
+    updated = dict(manifest)
+    files = list(updated.get("files") or [])
+    if MARKET_SCAN_SUMMARY_FILE not in files:
+        if "market_scan_latest.json" in files:
+            files.insert(files.index("market_scan_latest.json") + 1, MARKET_SCAN_SUMMARY_FILE)
+        else:
+            files.append(MARKET_SCAN_SUMMARY_FILE)
+    updated["files"] = files
+    return updated
+
+
+def write_market_scan_summary(scan_payload: dict) -> None:
+    write_json(OUT_DIR / MARKET_SCAN_SUMMARY_FILE, compact_market_scan_payload(scan_payload))
 
 
 def refresh_policy(now: datetime | None = None) -> dict:
@@ -277,6 +328,9 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
             target.write_bytes(archive.read(name))
 
     manifest = json.loads((OUT_DIR / "manifest.json").read_text(encoding="utf-8"))
+    scan_payload = json.loads((OUT_DIR / "market_scan_latest.json").read_text(encoding="utf-8"))
+    write_market_scan_summary(scan_payload)
+    manifest = add_market_scan_summary_to_manifest(manifest)
     counts = manifest.get("counts", {})
     assert_seed_quality(
         {
@@ -300,7 +354,7 @@ def main() -> None:
             manifest["qualityGates"] = {
                 **manifest.get("qualityGates", {}),
                 "buildMode": "offline",
-                "sourceZip": str(SEED_CACHE_ZIP.relative_to(ROOT_DIR)),
+                "sourceZip": SEED_CACHE_ZIP.relative_to(ROOT_DIR).as_posix(),
             }
             write_json(OUT_DIR / "manifest.json", manifest)
             print(json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -359,6 +413,7 @@ def main() -> None:
     assert_seed_quality(scan_payload, companies, analysis_by_code, fallback_source)
 
     write_json(OUT_DIR / "market_scan_latest.json", scan_payload)
+    write_market_scan_summary(scan_payload)
     write_json(OUT_DIR / "companies.json", {"items": companies})
     write_json(OUT_DIR / "analysis_by_code.json", analysis_by_code)
     write_json(OUT_DIR / "holding_analysis_by_code.json", holding_analysis_by_code)
@@ -377,6 +432,7 @@ def main() -> None:
         "cachePolicy": policy,
         "files": [
             "market_scan_latest.json",
+            MARKET_SCAN_SUMMARY_FILE,
             "companies.json",
             "analysis_by_code.json",
             "analysis_shards/*.json",
