@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>台股財報事件驅動掃描器</title>
-    <link rel="preload" href="/styles.css?v=20260518-holding-alerts" as="style" />
-    <link rel="stylesheet" href="/styles.css?v=20260518-holding-alerts" />
+    <link rel="preload" href="/styles.css?v=20260519-design-refresh" as="style" />
+    <link rel="stylesheet" href="/styles.css?v=20260519-design-refresh" />
   </head>
   <body>
     <header class="mobile-topbar" aria-label="手機版功能列">
@@ -93,12 +93,21 @@
 
         <main class="workspace">
           <section class="view-panel" data-view-panel="overview">
-            <div class="summary-grid">
-              <article class="panel summary-card">
-                <span class="status-pill status-watch">資料來源</span>
-                <h3>官方月營收，不是逐筆即時行情</h3>
-                <p>預設抓取 TWSE / TPEx 上市櫃清單、最新月營收、季報與估值；已公告季資料會自動累積為歷史快取。</p>
+            <div class="summary-grid kpi-strip" aria-label="掃描結果快速概覽">
+              <article class="panel summary-card kpi-card">
+                <div class="kpi-label"><span class="status-dot status-entry"></span><span>適合進場</span></div>
+                <div class="kpi-value"><strong id="overview-entry-count">--</strong><span>檔</span><small id="overview-entry-note">等待掃描</small></div>
               </article>
+              <article class="panel summary-card kpi-card">
+                <div class="kpi-label"><span class="status-dot status-watch"></span><span>接近觀察</span></div>
+                <div class="kpi-value"><strong id="overview-watch-count">--</strong><span>檔</span><small id="overview-watch-note">等待掃描</small></div>
+              </article>
+              <article class="panel summary-card kpi-card">
+                <div class="kpi-label"><span class="status-dot status-excluded"></span><span>排除清單</span></div>
+                <div class="kpi-value"><strong id="overview-excluded-count">--</strong><span>檔</span><small id="overview-excluded-note">等待掃描</small></div>
+              </article>
+            </div>
+            <div class="overview-copy-grid">
               <article class="panel summary-card">
                 <span class="status-pill status-entry">核心策略</span>
                 <h3>長期賺錢 + 高成長 + 估值不貴</h3>
@@ -107,7 +116,7 @@
               <article class="panel summary-card">
                 <span class="status-pill neutral">下一步</span>
                 <h3>選擇下一步</h3>
-                <p>你可以先搜尋單檔、建立持股，再到掃描結果查看股市清單或我的持股。</p>
+                <p>先搜尋單檔、建立持股，再到掃描結果查看股市清單或我的持股。</p>
               </article>
             </div>
             <section class="panel">

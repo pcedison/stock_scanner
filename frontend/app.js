@@ -1248,7 +1248,7 @@ function renderAnalysisCard(result, options = {}) {
   const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
   const { status: displayStatus, summary: displaySummary } = displayResultStatus(result, options.disclosureGroup);
   return `
-    <article class="card">
+    <article class="card analysis-card" data-result-status="${escapeHtml(displayStatus)}">
       <div class="card-head">
         <div>
           <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</h3>
@@ -1272,7 +1272,7 @@ function renderSelectedCompany() {
   }
 
   state.selectedCompany = company;
-  target.className = "selected-company card";
+  target.className = "selected-company card selected-company-card";
   target.innerHTML = `
     <div class="card-head">
       <div>
@@ -1306,7 +1306,7 @@ function renderHoldings() {
       const analysis = holdingScanResultByCode(stockCode);
       const missing = holdingScanMissingByCode(stockCode);
       return `
-        <article class="card" data-holding-code="${escapeHtml(stockCode)}">
+        <article class="card holding-card" data-holding-code="${escapeHtml(stockCode)}">
           <div class="card-head">
             <div>
               <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(name)}</h3>
@@ -1566,6 +1566,25 @@ function countMarketGroup(group) {
   return MARKET_RESULT_COLUMNS.reduce((total, [key]) => total + (group?.[key]?.length || 0), 0);
 }
 
+function renderOverviewStats(scan = state.marketScan) {
+  if (typeof document === "undefined") return;
+  const metricKeys = ["entry", "watch", "excluded"];
+  const values = Object.fromEntries(metricKeys.map((key) => [key, "--"]));
+  const note = scan?.generatedAt ? `${new Date(scan.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
+  if (scan) {
+    const grouped = groupMarketScanResults(scan);
+    for (const key of metricKeys) {
+      values[key] = (grouped.announced?.[key]?.length || 0) + (grouped.pending?.[key]?.length || 0);
+    }
+  }
+  for (const key of metricKeys) {
+    const count = document.querySelector(`#overview-${key}-count`);
+    const noteEl = document.querySelector(`#overview-${key}-note`);
+    if (count) count.textContent = String(values[key]);
+    if (noteEl) noteEl.textContent = note;
+  }
+}
+
 function activeMarketColumnKey() {
   return MARKET_COLUMN_LABELS[state.activeMarketColumn] ? state.activeMarketColumn : "entry";
 }
@@ -1720,10 +1739,23 @@ function renderMarketResultRow(result, options = {}) {
   const stockCode = safeText(result.stockCode, "未知代碼");
   const resultId = marketResultId(result, options.disclosureGroup, options.columnKey);
   const expanded = state.expandedMarketResultIds.has(resultId);
+  const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
+  const { status: displayStatus } = displayResultStatus(result, options.disclosureGroup);
+  const metaParts = [safeText(result.industryName || result.industry, ""), safeText(result.market, "")].filter(Boolean);
+  const meta = metaParts.length ? metaParts.join(" · ") : statusLabel(displayStatus);
+  const rulePreview = reasons
+    .slice(0, 3)
+    .map((rule) => `<span class="rule-chip">${escapeHtml(rule.code || "")}</span>`)
+    .join("");
   return `
     <article class="market-result-item ${expanded ? "expanded" : ""}">
       <button class="market-result-summary" type="button" data-market-result-toggle="${escapeHtml(resultId)}" aria-expanded="${expanded ? "true" : "false"}">
-        <span class="market-result-name">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</span>
+        <span class="status-dot ${statusClass(displayStatus)}" aria-hidden="true"></span>
+        <span class="market-result-body">
+          <span class="market-result-name">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</span>
+          <span class="market-result-meta">${escapeHtml(meta)}</span>
+        </span>
+        <span class="market-rule-preview">${rulePreview}</span>
         <span class="market-expand-icon" aria-hidden="true">${expanded ? "−" : "+"}</span>
       </button>
       ${expanded ? renderMarketResultDetails(result, options) : ""}
@@ -1801,6 +1833,7 @@ function renderMarketResults() {
   if (!state.marketScan) {
     setEmptyState(target, "尚未掃描市場");
     updateMarketColumnNav();
+    renderOverviewStats();
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
@@ -1846,6 +1879,7 @@ function renderMarketResults() {
     </div>
   `;
   applyEvidenceBarWidths(target);
+  renderOverviewStats();
 }
 
 function renderDataAndScheduler() {
