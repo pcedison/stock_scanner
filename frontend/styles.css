@@ -869,7 +869,7 @@ textarea {
 
 .holding-exit-alert-list {
   display: grid;
-  gap: 8px;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -881,6 +881,17 @@ textarea {
   gap: 8px;
   align-items: center;
   min-width: 0;
+  padding: 2px 0;
+}
+
+.holding-exit-alert-list li + li {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(180, 83, 9, 0.18);
+}
+
+.holding-exit-alert-banner.critical .holding-exit-alert-list li + li {
+  border-top-color: rgba(185, 28, 28, 0.18);
 }
 
 .holding-exit-alert-list span:last-child {
