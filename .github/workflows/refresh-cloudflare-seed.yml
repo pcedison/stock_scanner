@@ -38,14 +38,16 @@ jobs:
 
       - name: Rebuild seed from official sources
         run: |
-          if [ -f data/official_cache_seed_2026-05-14.zip ]; then
-            unzip -o data/official_cache_seed_2026-05-14.zip -d data
+          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          if [ -n "$SEED_ZIP" ]; then
+            unzip -o "$SEED_ZIP" -d data
           fi
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py
+          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
           python scripts/validate_cloudflare_seed_inputs.py \
-            --zip data/official_cache_seed_2026-05-14.zip \
+            --zip "$SEED_ZIP" \
             --summary-md .tmp/seed-quality.md \
             --summary-json .tmp/seed-quality.json \
             --max-age-days 45
@@ -55,10 +57,10 @@ jobs:
         id: changes
         run: |
           if git diff --quiet -- \
-            data/official_cache_seed_2026-05-14.zip \
-            data/official_cache_seed_2026-05-14.sha256 \
-            data/official_history_failed_companies_2026Q1.csv \
-            docs/official_history_failed_companies_2026Q1.md; then
+            data/official_cache_seed_*.zip \
+            data/official_cache_seed_*.sha256 \
+            data/official_history_failed_companies_*.csv \
+            docs/official_history_failed_companies_*.md; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No seed changes detected." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -73,10 +75,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
           git add \
-            data/official_cache_seed_2026-05-14.zip \
-            data/official_cache_seed_2026-05-14.sha256 \
-            data/official_history_failed_companies_2026Q1.csv \
-            docs/official_history_failed_companies_2026Q1.md
+            data/official_cache_seed_*.zip \
+            data/official_cache_seed_*.sha256 \
+            data/official_history_failed_companies_*.csv \
+            docs/official_history_failed_companies_*.md
           git commit -m "Refresh Cloudflare seed cache"
           git push --force-with-lease --set-upstream origin "$branch"
           {

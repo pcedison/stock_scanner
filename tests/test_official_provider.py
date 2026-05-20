@@ -9,6 +9,7 @@ from backend.adapters.fundamentals_import import (
     LocalFundamentalsImportAdapter,
 )
 from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
+from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 from backend.adapters.official_fundamentals import (
     OfficialBalanceSheetRow,
     OfficialFundamentalBundle,
@@ -186,6 +187,7 @@ def test_official_provider_builds_universe_and_marks_missing_fundamentals(tmp_pa
         fundamentals_adapter=FakeFundamentalsAdapter(),
         import_adapter=FakeEmptyImportAdapter(),
         history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        monthly_revenue_history=MonthlyRevenueHistoryStore(tmp_path / "monthly_revenue_history.json"),
     )
 
     companies = provider.list_companies()
@@ -208,6 +210,7 @@ def test_official_provider_search_uses_lightweight_company_profiles(tmp_path):
         fundamentals_adapter=ExplodingFundamentalsAdapter(),
         import_adapter=FakeEmptyImportAdapter(),
         history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        monthly_revenue_history=MonthlyRevenueHistoryStore(tmp_path / "monthly_revenue_history.json"),
     )
 
     matches = provider.search_companies("9999")
@@ -224,6 +227,7 @@ def test_official_provider_merges_csv_import_fundamentals(tmp_path):
         fundamentals_adapter=FakeFundamentalsAdapter(),
         import_adapter=FakeImportAdapter(),
         history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        monthly_revenue_history=MonthlyRevenueHistoryStore(tmp_path / "monthly_revenue_history.json"),
     )
 
     snapshot = provider.get_snapshot("9999")
@@ -277,6 +281,7 @@ def test_official_provider_uses_official_history_for_yoy_annuals_and_inventory(t
         fundamentals_adapter=FakeFundamentalsAdapterWithInventory(),
         import_adapter=FakeEmptyImportAdapter(),
         history_store=OfficialFundamentalsHistoryStore(history_path),
+        monthly_revenue_history=MonthlyRevenueHistoryStore(tmp_path / "monthly_revenue_history.json"),
     )
 
     snapshot = provider.get_snapshot("9999")

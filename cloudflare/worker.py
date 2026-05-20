@@ -156,10 +156,15 @@ def cache_key_from_manifest(manifest):
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
-def json_response(payload, status=200, headers=None):
+def json_response(payload, status=200, headers=None, public_cache_seconds=0):
+    cache_control = (
+        f"public, s-maxage={public_cache_seconds}, stale-while-revalidate=60"
+        if public_cache_seconds > 0
+        else "no-store"
+    )
     response_headers = {
         "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store",
+        "cache-control": cache_control,
         **SECURITY_HEADERS,
     }
     if headers:
@@ -493,7 +498,7 @@ class Api:
                 "time": utc_now(),
                 "cache": manifest,
                 "cacheQuality": quality,
-            })
+            }, public_cache_seconds=60)
 
         if path == "/api/cache/status" and request.method == "GET":
             return json_response(await self.cache_status())
@@ -503,7 +508,7 @@ class Api:
             return json_response(await self.ensure_refresh_job(manifest, force=True))
 
         if path == "/api/data-sources/status" and request.method == "GET":
-            return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}))
+            return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}), public_cache_seconds=300)
 
         if path == "/api/app-status" and request.method == "GET":
             data_source, settings = await asyncio.gather(
@@ -631,10 +636,10 @@ class Api:
             return json_response({"year": int(year), "source": "cloudflare-cache", "closedDates": [], "springFestivalDates": []})
 
         if path == "/api/integrations/status" and request.method == "GET":
-            return json_response({"line": False, "telegram": False, "email": False, "broker": False})
+            return json_response({"line": False, "telegram": False, "email": False, "broker": False}, public_cache_seconds=600)
 
         if path == "/api/backtest" and request.method == "GET":
-            return json_response(empty_backtest_status())
+            return json_response(empty_backtest_status(), public_cache_seconds=3600)
 
         return error_response("Not found", status=404)
 
@@ -1069,7 +1074,7 @@ class Api:
         limit = min(max(int((query.get("limit") or ["20"])[0]), 1), 20)
         companies = (await self.r2_json("public/companies.json", {"items": []})).get("items", [])
         if not raw_q:
-            return json_response({"items": companies[:limit]})
+            return json_response({"items": companies[:limit]}, public_cache_seconds=1800)
         items = [
             company
             for company in companies
@@ -1077,7 +1082,7 @@ class Api:
             or raw_q in str(company.get("name", "")).lower()
             or raw_q in str(company.get("industryName", "")).lower()
         ][:limit]
-        return json_response({"items": items})
+        return json_response({"items": items}, public_cache_seconds=300)
 
     async def list_companies(self, query):
         companies = (await self.r2_json("public/companies.json", {"items": []})).get("items", [])
@@ -1096,7 +1101,8 @@ class Api:
                 "limit": limit,
                 "total": total,
                 "hasMore": end < total,
-            }
+            },
+            public_cache_seconds=1800,
         )
 
     async def analyze_stock(self, stock_code: str):

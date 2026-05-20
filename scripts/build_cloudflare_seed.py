@@ -14,7 +14,14 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "cloudflare" / "seed"
 ANALYSIS_SHARD_DIR = OUT_DIR / "analysis_shards"
 HOLDING_ANALYSIS_SHARD_DIR = OUT_DIR / "holding_analysis_shards"
-SEED_CACHE_ZIP = ROOT_DIR / "data" / "official_cache_seed_2026-05-14.zip"
+
+
+def _find_seed_zip(data_dir: Path) -> Path:
+    candidates = sorted(data_dir.glob("official_cache_seed_*.zip"), key=lambda p: p.name, reverse=True)
+    return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
+
+
+SEED_CACHE_ZIP = _find_seed_zip(ROOT_DIR / "data")
 OFFLINE_SEED_PREFIX = "cloudflare_seed/"
 OFFLINE_SEED_REQUIRED_FILES = {
     "manifest.json",
@@ -212,6 +219,9 @@ def inventory_turnover_from_history(record: dict) -> float | None:
 
 
 def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
+    # Build company profile lookup to enrich history records with proper industry/name data
+    company_lookup: dict[str, Company] = {c.stockCode: c for c in official_provider.list_companies()}
+
     payload = official_provider.history_store.load()
     quarters = payload.get("quarters", {})
     if not isinstance(quarters, dict):
@@ -225,13 +235,23 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
         record = records.get(latest_period)
         if not isinstance(record, dict):
             continue
-        market = record.get("market") if record.get("market") in {"TWSE", "TPEX"} else "OTHER"
+
+        existing = company_lookup.get(stock_code)
+        if existing:
+            market = existing.market
+            company_name = existing.name
+            industry_name = existing.industryName
+            is_financial = existing.isFinancial
+        else:
+            market = record.get("market") if record.get("market") in {"TWSE", "TPEX"} else "OTHER"
+            company_name = str(record.get("companyName") or stock_code)
+            industry_name = "Unknown industry"
+            is_financial = _is_financial_company(stock_code, industry_name, company_name)
+
         if market == "TWSE" and not settings.scan_twse:
             continue
         if market == "TPEX" and not settings.scan_tpex:
             continue
-        company_name = str(record.get("companyName") or stock_code)
-        industry_name = "Unknown industry"
         quarter_month = max(1, min(12, int(record.get("quarter") or 1) * 3))
         fiscal_year = int(record.get("fiscalYear") or period_key(latest_period)[0] or 1970)
         company = Company(
@@ -239,7 +259,7 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
             name=company_name,
             market=market,
             industryName=industry_name,
-            isFinancial=_is_financial_company(stock_code, industry_name, company_name),
+            isFinancial=is_financial,
         )
         snapshots.append(
             FundamentalSnapshot.model_validate(

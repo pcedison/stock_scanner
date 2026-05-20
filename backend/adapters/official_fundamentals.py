@@ -149,10 +149,7 @@ class OfficialFundamentalsAdapter:
         self.timeout = timeout
 
     def _fetch_json(self, url: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]] | dict[str, Any]:
-        try:
-            response = httpx.get(url, params=params, timeout=self.timeout, follow_redirects=True)
-        except httpx.TransportError:
-            response = httpx.get(url, params=params, timeout=self.timeout, follow_redirects=True, verify=False)
+        response = httpx.get(url, params=params, timeout=self.timeout, follow_redirects=True)
         response.raise_for_status()
         return response.json()
 

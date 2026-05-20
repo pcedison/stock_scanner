@@ -77,10 +77,7 @@ class OfficialMonthlyRevenueAdapter:
         self.timeout = timeout
 
     def _fetch_json(self, url: str) -> list[dict[str, Any]]:
-        try:
-            response = httpx.get(url, timeout=self.timeout)
-        except httpx.TransportError:
-            response = httpx.get(url, timeout=self.timeout, verify=False)
+        response = httpx.get(url, timeout=self.timeout)
         response.raise_for_status()
         rows = response.json()
         return rows if isinstance(rows, list) else []

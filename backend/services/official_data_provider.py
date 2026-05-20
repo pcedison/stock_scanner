@@ -6,6 +6,7 @@ from typing import Optional
 
 from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.adapters.fundamentals_import import LocalFundamentalsImportAdapter
+from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 from backend.adapters.official_fundamentals import OfficialFundamentalsAdapter
 from backend.adapters.official_monthly_revenue import (
     OfficialCompanyProfileRow,
@@ -18,9 +19,17 @@ from backend.models.settings import ScannerSettings
 from backend.services.data_provider import normalize_query
 
 
+_FINANCIAL_KEYWORDS = frozenset({"金融", "銀行", "保險", "金控", "證券", "票券", "期貨", "投信", "投顧"})
+
+
 def _is_financial_company(stock_code: str, industry_name: str, company_name: str) -> bool:
-    text = f"{stock_code} {industry_name} {company_name}"
-    return stock_code.startswith("28") or any(keyword in text for keyword in ("金融", "銀行", "保險", "金控", "證券"))
+    text = f"{industry_name} {company_name}"
+    if any(keyword in text for keyword in _FINANCIAL_KEYWORDS):
+        return True
+    try:
+        return 2801 <= int(stock_code) <= 2999
+    except ValueError:
+        return False
 
 
 def _latest_completed_quarter_from_month(month: str) -> str:
@@ -58,12 +67,14 @@ class OfficialDataProvider:
         fundamentals_adapter: Optional[OfficialFundamentalsAdapter] = None,
         import_adapter: Optional[LocalFundamentalsImportAdapter] = None,
         history_store: Optional[OfficialFundamentalsHistoryStore] = None,
+        monthly_revenue_history: Optional[MonthlyRevenueHistoryStore] = None,
         ttl_seconds: int = 900,
     ) -> None:
         self.adapter = adapter or OfficialMonthlyRevenueAdapter()
         self.fundamentals_adapter = fundamentals_adapter or OfficialFundamentalsAdapter()
         self.import_adapter = import_adapter or LocalFundamentalsImportAdapter()
         self.history_store = history_store or OfficialFundamentalsHistoryStore()
+        self.monthly_revenue_history = monthly_revenue_history or MonthlyRevenueHistoryStore()
         self.ttl_seconds = ttl_seconds
         self._profiles_expires_at = 0.0
         self._snapshots_expires_at = 0.0
@@ -130,6 +141,10 @@ class OfficialDataProvider:
                 history_status = self.history_store.merge_latest(fundamentals.incomes, fundamentals.balances)
             except Exception as exc:  # pragma: no cover - depends on local filesystem state
                 history_status = {"enabled": False, "path": str(self.history_store.path), "error": str(exc)}
+            try:
+                self.monthly_revenue_history.merge_rows(revenue_rows)
+            except Exception:  # pragma: no cover - filesystem state
+                pass
             revenue_by_code = {row.stockCode: row for row in revenue_rows if row.stockCode}
             companies: list[Company] = []
             snapshots: dict[str, FundamentalSnapshot] = {}
@@ -189,6 +204,10 @@ class OfficialDataProvider:
                 )
                 annuals = list({row["year"]: row for row in sorted(annuals, key=lambda item: item["year"])}.values())
 
+                try:
+                    snapshot_year = int(snapshot_month[:4])
+                except (ValueError, TypeError):
+                    snapshot_year = 0
                 snapshots[company.stockCode] = FundamentalSnapshot.model_validate(
                     {
                         "company": company.model_dump(),
@@ -198,19 +217,22 @@ class OfficialDataProvider:
                                 imported_monthly.monthlyRevenueYoY if imported_monthly else None,
                                 revenue.monthlyRevenueYoY if revenue else None,
                             ),
-                            "previousMonthRevenueYoY": imported_monthly.previousMonthRevenueYoY
-                            if imported_monthly
-                            else None,
+                            "previousMonthRevenueYoY": _first_present(
+                                imported_monthly.previousMonthRevenueYoY if imported_monthly else None,
+                                self.monthly_revenue_history.previous_month_yoy(company.stockCode, snapshot_month),
+                            ),
                             "cumulativeRevenueYoY": _first_present(
                                 imported_monthly.cumulativeRevenueYoY if imported_monthly else None,
                                 revenue.cumulativeRevenueYoY if revenue else None,
                             ),
-                            "trailingThreeMonthAverageYoY": imported_monthly.trailingThreeMonthAverageYoY
-                            if imported_monthly
-                            else None,
-                            "janFebCombinedRevenueYoY": imported_monthly.janFebCombinedRevenueYoY
-                            if imported_monthly
-                            else None,
+                            "trailingThreeMonthAverageYoY": _first_present(
+                                imported_monthly.trailingThreeMonthAverageYoY if imported_monthly else None,
+                                self.monthly_revenue_history.trailing_three_month_avg_yoy(company.stockCode, snapshot_month),
+                            ),
+                            "janFebCombinedRevenueYoY": _first_present(
+                                imported_monthly.janFebCombinedRevenueYoY if imported_monthly else None,
+                                self.monthly_revenue_history.jan_feb_combined_yoy(company.stockCode, snapshot_year) if snapshot_year else None,
+                            ),
                             "isSpringFestivalMonth": imported_monthly.isSpringFestivalMonth
                             if imported_monthly and imported_monthly.isSpringFestivalMonth is not None
                             else False,
@@ -301,6 +323,7 @@ class OfficialDataProvider:
                 **fundamentals.status,
                 "fundamentalsImport": imported.status,
                 "officialFundamentalsHistory": history_status,
+                "monthlyRevenueHistory": self.monthly_revenue_history.status(),
             }
 
     def _safe_refresh_companies(self) -> None:

@@ -24,7 +24,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CF_D1_DATABASE: stock-scanner-beta-db
       CF_PAGES_PROJECT: stock-scanner-beta
-      CF_PAGES_PRODUCTION_BRANCH: codex/lightweight-auth-evidence-ui
+      CF_PAGES_PRODUCTION_BRANCH: main
       CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
 
     steps:

@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ZIP = Path("data/official_cache_seed_2026-05-14.zip")
+def _find_seed_zip(data_dir: Path) -> Path:
+    candidates = sorted(data_dir.glob("official_cache_seed_*.zip"), key=lambda p: p.name, reverse=True)
+    return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
+
+
+DEFAULT_ZIP = _find_seed_zip(Path("data"))
 DEFAULT_FAILED_COMPANIES_CSV = Path("data/official_history_failed_companies_2026Q1.csv")
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",

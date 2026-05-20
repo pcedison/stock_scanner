@@ -28,34 +28,112 @@ jobs:
       FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
       CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
+      # D1 database_id from cloudflare/wrangler.toml (not secret, it's committed)
+      CF_D1_DATABASE_ID: c29c7b4a-4a2d-4711-badd-1aaad43ce3b6
       CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
 
     steps:
+      # Lightweight pre-check: query D1 via REST API and check health URL
+      # This runs before checkout/npm/pip so empty runs exit in < 10 seconds.
+      - name: Early exit — check pending jobs without heavy dependencies
+        id: early-check
+        run: |
+          if [ "$FORCE_REFRESH" = "true" ]; then
+            echo "run_refresh=true" >> "$GITHUB_OUTPUT"
+            echo "Force refresh requested via workflow_dispatch." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          pending=0
+          if api_result=$(curl -sf --max-time 10 -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${CF_D1_DATABASE_ID}/query" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' 2>/dev/null); then
+            pending=$(python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.argv[1])
+    r = d.get('result', [{}])
+    results = r[0].get('results', [{}]) if isinstance(r, list) and r else [{}]
+    print(int(results[0].get('cnt', 0) if isinstance(results, list) and results else 0))
+except Exception:
+    print(0)
+" "$api_result" 2>/dev/null || echo 0)
+          fi
+
+          stale=false
+          if [ -n "$CF_WORKER_HEALTH_URL" ]; then
+            if health=$(curl -sf --max-time 15 "$CF_WORKER_HEALTH_URL" 2>/dev/null); then
+              age_hours=$(python3 -c "
+import sys, json
+from datetime import datetime, timezone
+try:
+    d = json.loads(sys.argv[1])
+    generated_at = d.get('cache', {}).get('generatedAt', '')
+    if not generated_at:
+        print(999)
+        sys.exit()
+    dt = datetime.fromisoformat(generated_at.replace('Z', '+00:00'))
+    age = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    print(int(age))
+except Exception:
+    print(999)
+" "$health" 2>/dev/null || echo 999)
+              if [ "$age_hours" -gt 36 ]; then
+                stale=true
+                echo "Production seed is stale (${age_hours}h old); R2 rebuild will run." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "Production seed is fresh (${age_hours}h old)." >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              stale=true
+              echo "Health URL unreachable; treating as stale." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          echo "pending_count=$pending" >> "$GITHUB_OUTPUT"
+          if [ "$pending" -gt 0 ] || [ "$stale" = "true" ]; then
+            echo "run_refresh=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_refresh=false" >> "$GITHUB_OUTPUT"
+            echo "No pending refresh jobs and seed is fresh — skipping heavy setup." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Check out repository
+        if: steps.early-check.outputs.run_refresh == 'true'
         uses: actions/checkout@v6
 
       - name: Set up Node.js
+        if: steps.early-check.outputs.run_refresh == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
 
       - name: Set up Python
+        if: steps.early-check.outputs.run_refresh == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
 
       - name: Install dependencies
+        if: steps.early-check.outputs.run_refresh == 'true'
         run: |
           npm ci
-          python -m pip install --upgrade pip
           pip install -r requirements.txt -c constraints.txt
 
       - name: Apply D1 migrations
+        if: steps.early-check.outputs.run_refresh == 'true'
         run: npx wrangler d1 migrations apply "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml
 
       - name: Check pending market refresh jobs
         id: refresh-check
+        if: steps.early-check.outputs.run_refresh == 'true'
         run: |
           mkdir -p .tmp
           if [ "$FORCE_REFRESH" = "true" ]; then
@@ -129,7 +207,7 @@ jobs:
           fi
 
       - name: Stop when no refresh is queued
-        if: steps.refresh-check.outputs.run_refresh != 'true'
+        if: steps.early-check.outputs.run_refresh == 'true' && steps.refresh-check.outputs.run_refresh != 'true'
         run: echo "No queued market_scan refresh job and production seed is fresh; skipping R2 seed rebuild." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mark queued refresh jobs as running
@@ -143,14 +221,16 @@ jobs:
       - name: Rebuild seed from official sources
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
-          if [ -f data/official_cache_seed_2026-05-14.zip ]; then
-            unzip -o data/official_cache_seed_2026-05-14.zip -d data
+          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          if [ -n "$SEED_ZIP" ]; then
+            unzip -o "$SEED_ZIP" -d data
           fi
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py
+          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
           python scripts/validate_cloudflare_seed_inputs.py \
-            --zip data/official_cache_seed_2026-05-14.zip \
+            --zip "$SEED_ZIP" \
             --summary-md .tmp/seed-quality.md \
             --summary-json .tmp/seed-quality.json \
             --max-age-days 3
@@ -176,7 +256,13 @@ jobs:
           done
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_fundamentals_history.json" --remote --file data/official_fundamentals_history.json
           npx wrangler r2 object put "$CF_R2_BUCKET/official/official_history_backfill_progress.json" --remote --file data/official_history_backfill_progress.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_cache_seed_2026-05-14.zip" --remote --file data/official_cache_seed_2026-05-14.zip
+          if [ -f data/monthly_revenue_history.json ]; then
+            npx wrangler r2 object put "$CF_R2_BUCKET/official/monthly_revenue_history.json" --remote --file data/monthly_revenue_history.json
+          fi
+          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          if [ -n "$SEED_ZIP" ]; then
+            npx wrangler r2 object put "$CF_R2_BUCKET/official/$(basename "$SEED_ZIP")" --remote --file "$SEED_ZIP"
+          fi
 
       - name: Verify refreshed production seed
         if: steps.refresh-check.outputs.run_refresh == 'true'

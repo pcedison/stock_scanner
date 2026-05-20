@@ -7,12 +7,23 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_ZIP = ROOT_DIR / "data" / "official_cache_seed_2026-05-14.zip"
-DEFAULT_SHA = ROOT_DIR / "data" / "official_cache_seed_2026-05-14.sha256"
+
+
+def _find_seed_zip(data_dir: Path) -> Path:
+    candidates = sorted(data_dir.glob("official_cache_seed_*.zip"), key=lambda p: p.name, reverse=True)
+    return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
+
+
+DEFAULT_ZIP = _find_seed_zip(ROOT_DIR / "data")
+DEFAULT_SHA = DEFAULT_ZIP.with_suffix(".sha256")
 SEED_DIR = ROOT_DIR / "cloudflare" / "seed"
 OFFICIAL_ENTRIES = (
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
+)
+# Entries that are included when present but not required (populated after first online build)
+OFFICIAL_OPTIONAL_ENTRIES = (
+    "monthly_revenue_history.json",
 )
 SEED_FILES = (
     "manifest.json",
@@ -38,6 +49,10 @@ def package_seed_cache(zip_path: Path = DEFAULT_ZIP, sha_path: Path = DEFAULT_SH
     with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for entry in OFFICIAL_ENTRIES:
             _add_file(archive, ROOT_DIR / "data" / entry, entry)
+        for entry in OFFICIAL_OPTIONAL_ENTRIES:
+            source = ROOT_DIR / "data" / entry
+            if source.exists():
+                archive.write(source, entry)
         for entry in SEED_FILES:
             _add_file(archive, seed_dir / entry, f"cloudflare_seed/{entry}")
         shard_dir = seed_dir / "analysis_shards"
