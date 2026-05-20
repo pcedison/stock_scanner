@@ -419,17 +419,23 @@ def test_worker_market_scan_uses_precomputed_summary(monkeypatch):
     )
     api = worker.Api(env=types.SimpleNamespace(CACHE=cache))
 
+    refresh_forces = []
+
     async def fake_refresh_job(manifest, force=False):
+        refresh_forces.append(force)
         return {"status": "fresh", "reason": "test"}
 
     api.ensure_refresh_job = fake_refresh_job
 
-    response = asyncio.run(api.route(types.SimpleNamespace(method="POST"), "/api/scan/market", {}))
+    request = SingleReadRequest('{"refreshMode":"force"}')
+    request.method = "POST"
+    response = asyncio.run(api.route(request, "/api/scan/market", {}))
     payload = json.loads(response.body)
 
     assert payload["entry"][0]["stockCode"] == "1234"
     assert payload["detailMode"] == "summary"
     assert payload["cacheStatus"]["refreshStatus"] == "fresh"
+    assert refresh_forces == [True]
     assert "public/market_scan_latest.json" not in cache.calls
 
 

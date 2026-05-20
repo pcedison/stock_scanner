@@ -525,9 +525,11 @@ class Api:
             return await self.search_companies(query)
 
         if path == "/api/scan/market" and request.method == "POST":
+            payload = await self.request_json(request)
+            refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
-            refresh_status = await self.ensure_refresh_job(manifest)
+            refresh_status = await self.ensure_refresh_job(manifest, force=refresh_mode == "force")
             if not isinstance(scan, dict):
                 scan = self.empty_market_scan()
             scan = self.compact_market_scan(scan)
