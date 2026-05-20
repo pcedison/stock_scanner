@@ -71,6 +71,8 @@ def analysis_shard_key(stock_code: str) -> str:
 
 def compact_scan_result(result: dict) -> dict:
     if not isinstance(result, dict):
+        result = jsonable_encoder(result)
+    if not isinstance(result, dict):
         return {}
     compact = {key: result.get(key) for key in SUMMARY_RESULT_KEYS if key in result}
     reasons = result.get("reasons")
@@ -149,7 +151,10 @@ def scan_payload_needs_rebuild(scan_payload: dict) -> bool:
         items = scan_payload.get(category)
         if not isinstance(items, list) or not items:
             continue
-        return any(not items[0].get(key) for key in REQUIRED_SCAN_SUMMARY_KEYS)
+        first_item = items[0] if isinstance(items[0], dict) else jsonable_encoder(items[0])
+        if not isinstance(first_item, dict):
+            return True
+        return any(not first_item.get(key) for key in REQUIRED_SCAN_SUMMARY_KEYS)
     return False
 
 

@@ -5,6 +5,11 @@ from scripts.build_cloudflare_seed import (
 )
 
 
+class ObjectResult:
+    def __init__(self, **values):
+        self.__dict__.update(values)
+
+
 def test_compact_market_scan_payload_strips_heavy_evidence():
     payload = {
         "generatedAt": "2026-05-19T00:00:00+00:00",
@@ -82,3 +87,28 @@ def test_complete_market_scan_payload_does_not_need_rebuild():
     }
 
     assert scan_payload_needs_rebuild(scan) is False
+
+
+def test_object_market_scan_payload_is_compacted_without_losing_identity():
+    scan = {
+        "universeSize": 1,
+        "entry": [
+            ObjectResult(
+                stockCode="1234",
+                companyName="Object Co",
+                status="ENTRY",
+                summary="summary",
+                reasons=[{"code": "OFFICIAL_Q", "severity": "INFO", "message": "2026Q1"}],
+            )
+        ],
+        "watch": [],
+        "excluded": [],
+    }
+
+    assert scan_payload_needs_rebuild(scan) is False
+    compact = compact_market_scan_payload(scan)
+
+    assert compact["entry"][0]["stockCode"] == "1234"
+    assert compact["entry"][0]["companyName"] == "Object Co"
+    assert compact["entry"][0]["status"] == "ENTRY"
+    assert compact["entry"][0]["reasons"][0]["code"] == "OFFICIAL_Q"
