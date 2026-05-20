@@ -4,7 +4,7 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-STYLE_VERSION = "20260518-holding-alerts"
+STYLE_VERSION = "20260519-design-refresh"
 
 
 def test_frontend_hygiene_current_budget_passes():
@@ -27,10 +27,12 @@ def test_frontend_hygiene_rejects_inner_html_growth():
     assert any("innerHTML" in problem for problem in problems)
 
 
-def test_frontend_css_cache_buster_includes_holding_alert_styles():
+def test_frontend_css_cache_buster_includes_design_refresh_styles():
     index_html = (ROOT_DIR / "frontend" / "index.html").read_text(encoding="utf-8")
     styles_css = (ROOT_DIR / "frontend" / "styles.css").read_text(encoding="utf-8")
 
     assert f'href="/styles.css?v={STYLE_VERSION}" as="style"' in index_html
     assert f'href="/styles.css?v={STYLE_VERSION}"' in index_html
+    assert ".kpi-card" in styles_css
+    assert "Claude Design v2 port" in styles_css
     assert ".holding-exit-alert-banner.critical" in styles_css
