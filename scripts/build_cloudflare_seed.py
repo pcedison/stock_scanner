@@ -40,6 +40,7 @@ MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
 MARKET_SCAN_SUMMARY_FILE = "market_scan_summary.json"
 MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded", "results")
 SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
+REQUIRED_SCAN_SUMMARY_KEYS = ("stockCode", "companyName", "status")
 SUMMARY_REASON_KEYS = ("code", "title", "passed", "severity", "message")
 SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION"}
 
@@ -139,6 +140,17 @@ def rebuild_scan_from_analysis(scan_payload: dict, results: list[dict]) -> dict:
     ]
     rebuilt["universeSize"] = len(rebuilt["entry"]) + len(rebuilt["watch"]) + len(rebuilt["excluded"])
     return rebuilt
+
+
+def scan_payload_needs_rebuild(scan_payload: dict) -> bool:
+    if not scan_payload.get("universeSize"):
+        return True
+    for category in ("entry", "watch", "excluded"):
+        items = scan_payload.get(category)
+        if not isinstance(items, list) or not items:
+            continue
+        return any(not items[0].get(key) for key in REQUIRED_SCAN_SUMMARY_KEYS)
+    return False
 
 
 def period_key(period: str | None) -> tuple[int, int]:
@@ -407,7 +419,7 @@ def main() -> None:
                 holding_analysis_by_code[result.stockCode] = holding_encoded
                 holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
 
-    if not scan_payload.get("universeSize") and analysis_results:
+    if analysis_results and scan_payload_needs_rebuild(scan_payload):
         scan_payload = rebuild_scan_from_analysis(scan_payload, analysis_results)
 
     assert_seed_quality(scan_payload, companies, analysis_by_code, fallback_source)
