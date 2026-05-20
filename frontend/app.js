@@ -561,7 +561,7 @@ function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
           .slice(0, 4)
           .map(
             (item) => `
-              <li>
+              <li class="holding-exit-alert-row ${item.status === "EXIT" ? "exit" : "warning"}">
                 <strong>${escapeHtml(item.stockCode)} ${escapeHtml(item.companyName)}</strong>
                 <span class="status-pill ${statusClass(item.status)}">${escapeHtml(item.label)}</span>
                 <span>${escapeHtml(item.summary)}</span>

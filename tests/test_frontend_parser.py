@@ -368,6 +368,7 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["exitAlerts"][0]["stockCode"] == "3008"
     assert payload["exitAlerts"][0]["exitCodes"] == ["X1", "X4"]
     assert "holding-exit-alert-banner" in payload["exitAlertBanner"]
+    assert "holding-exit-alert-row exit" in payload["exitAlertBanner"]
     assert "3008" in payload["exitAlertBanner"]
     assert "data-open-holding-alert-details" in payload["exitAlertBanner"]
     assert "出場 X1、X4" in payload["exitSignalHtml"]

@@ -846,15 +846,14 @@ textarea {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr) auto;
   gap: 16px;
   align-items: center;
-  border: 2px solid var(--amber);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  background: var(--amber-bg);
+  background: var(--surface);
   padding: 16px;
 }
 
 .holding-exit-alert-banner.critical {
-  border-color: var(--red);
-  background: var(--red-bg);
+  border-color: var(--line-strong);
 }
 
 .holding-exit-alert-banner h3 {
@@ -869,7 +868,7 @@ textarea {
 
 .holding-exit-alert-list {
   display: grid;
-  gap: 0;
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -878,19 +877,25 @@ textarea {
 .holding-exit-alert-list li {
   display: grid;
   grid-template-columns: minmax(86px, 0.75fr) auto minmax(0, 1.4fr);
-  gap: 8px;
+  gap: 10px;
   align-items: center;
   min-width: 0;
-  padding: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
 }
 
-.holding-exit-alert-list li + li {
-  margin-top: 0;
-  border-top: 1px solid rgba(180, 83, 9, 0.18);
+.holding-exit-alert-row.exit {
+  border-color: rgba(185, 28, 28, 0.22);
+  border-left-color: var(--red);
+  background: #fff7f7;
 }
 
-.holding-exit-alert-banner.critical .holding-exit-alert-list li + li {
-  border-top-color: rgba(185, 28, 28, 0.18);
+.holding-exit-alert-row.warning {
+  border-color: rgba(180, 83, 9, 0.24);
+  border-left-color: var(--amber);
+  background: #fffaf0;
 }
 
 .holding-exit-alert-list span:last-child {
@@ -900,6 +905,9 @@ textarea {
 }
 
 .holding-exit-alert-more {
+  border-color: var(--line);
+  border-left-color: var(--line-strong);
+  background: var(--surface-soft);
   color: var(--muted);
   font-weight: 800;
 }
@@ -2759,10 +2767,6 @@ textarea {
 .holding-exit-alert-banner {
   overflow: hidden;
   border-width: 1px;
-}
-
-.holding-exit-alert-banner.critical {
-  border-width: 2px;
 }
 
 .holding-exit-alert-banner .button-row {
