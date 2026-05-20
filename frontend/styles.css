@@ -881,12 +881,11 @@ textarea {
   gap: 8px;
   align-items: center;
   min-width: 0;
-  padding: 2px 0;
+  padding: 12px 0;
 }
 
 .holding-exit-alert-list li + li {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 0;
   border-top: 1px solid rgba(180, 83, 9, 0.18);
 }
 
