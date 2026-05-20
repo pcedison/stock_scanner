@@ -79,6 +79,21 @@ python scripts\plan_cloudflare_recovery.py --d1-backup .tmp\d1-backups\pre-deplo
 
 This keeps production deploys deterministic while preventing the committed seed from silently going stale.
 
+## Server-Side R2 Seed Rebuild
+
+`.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. It runs every 15 minutes and can also be dispatched manually with `force=true`.
+
+1. Poll D1 `refresh_jobs` for queued or running `market_scan` jobs.
+2. Stop without touching R2 when no job is queued, unless the workflow is manually forced.
+3. Mark queued jobs as `running`.
+4. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
+5. Package and validate `data/official_cache_seed_2026-05-14.zip` with a strict freshness gate.
+6. Upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and official cache artifacts to R2.
+7. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
+8. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
+
+The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. The web app sends `refreshMode: "force"` on overview load and after login; the Worker records that as a D1 refresh job, and this workflow performs the actual seed rebuild and R2 update on the next run.
+
 ## Monitoring
 
 `.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 30 minutes. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.

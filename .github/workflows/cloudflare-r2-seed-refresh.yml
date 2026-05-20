@@ -1,0 +1,174 @@
+name: Refresh Cloudflare R2 Seed
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and upload even when no queued D1 refresh job exists."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+      CF_R2_BUCKET: stock-scanner-beta-cache
+      CF_D1_DATABASE: stock-scanner-beta-db
+      CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml
+
+      - name: Check pending market refresh jobs
+        id: refresh-check
+        run: |
+          mkdir -p .tmp
+          if [ "$FORCE_REFRESH" = "true" ]; then
+            echo "pending_count=manual" >> "$GITHUB_OUTPUT"
+            echo "run_refresh=true" >> "$GITHUB_OUTPUT"
+            echo "Manual force refresh requested." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          npx wrangler d1 execute "$CF_D1_DATABASE" \
+            --remote \
+            --config cloudflare/wrangler.toml \
+            --json \
+            --command "SELECT COUNT(*) AS pending_count FROM refresh_jobs WHERE job_type = 'market_scan' AND status IN ('queued', 'running');" \
+            > .tmp/refresh-job-count.json
+
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path(".tmp/refresh-job-count.json").read_text(encoding="utf-8"))
+
+          def find_pending_count(value):
+              if isinstance(value, dict):
+                  if "pending_count" in value:
+                      return int(value.get("pending_count") or 0)
+                  for child in value.values():
+                      found = find_pending_count(child)
+                      if found is not None:
+                          return found
+              if isinstance(value, list):
+                  for child in value:
+                      found = find_pending_count(child)
+                      if found is not None:
+                          return found
+              return None
+
+          pending_count = find_pending_count(payload) or 0
+          print(f"pending_count={pending_count}")
+          print(f"run_refresh={'true' if pending_count > 0 else 'false'}")
+          PY
+
+      - name: Stop when no refresh is queued
+        if: steps.refresh-check.outputs.run_refresh != 'true'
+        run: echo "No queued market_scan refresh job found; skipping R2 seed rebuild." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark queued refresh jobs as running
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: |
+          npx wrangler d1 execute "$CF_D1_DATABASE" \
+            --remote \
+            --config cloudflare/wrangler.toml \
+            --command "UPDATE refresh_jobs SET status = 'running', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
+
+      - name: Rebuild seed from official sources
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: |
+          CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
+          python scripts/package_cloudflare_seed_cache.py
+          python scripts/generate_official_failed_report.py
+          python scripts/validate_cloudflare_seed_inputs.py \
+            --zip data/official_cache_seed_2026-05-14.zip \
+            --summary-md .tmp/seed-quality.md \
+            --summary-json .tmp/seed-quality.json \
+            --max-age-days 3
+          cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload rebuilt seed cache to R2
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: |
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/manifest.json" --remote --file cloudflare/seed/manifest.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/companies.json" --remote --file cloudflare/seed/companies.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/data_sources_status.json" --remote --file cloudflare/seed/data_sources_status.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_latest.json" --remote --file cloudflare/seed/market_scan_latest.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_summary.json" --remote --file cloudflare/seed/market_scan_summary.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_by_code.json" --remote --file cloudflare/seed/analysis_by_code.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_by_code.json" --remote --file cloudflare/seed/holding_analysis_by_code.json
+          for file in cloudflare/seed/analysis_shards/*.json; do
+            shard="$(basename "$file" .json)"
+            npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_shards/$shard.json" --remote --file "$file"
+          done
+          for file in cloudflare/seed/holding_analysis_shards/*.json; do
+            shard="$(basename "$file" .json)"
+            npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_shards/$shard.json" --remote --file "$file"
+          done
+          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_fundamentals_history.json" --remote --file data/official_fundamentals_history.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_history_backfill_progress.json" --remote --file data/official_history_backfill_progress.json
+          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_cache_seed_2026-05-14.zip" --remote --file data/official_cache_seed_2026-05-14.zip
+
+      - name: Verify refreshed production seed
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: |
+          if [ -z "$CF_WORKER_HEALTH_URL" ]; then
+            echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
+            exit 1
+          fi
+          python scripts/check_cloudflare_health.py \
+            --url "$CF_WORKER_HEALTH_URL" \
+            --manifest cloudflare/seed/manifest.json
+          python scripts/run_remote_smoke.py --health-url "$CF_WORKER_HEALTH_URL" --manifest cloudflare/seed/manifest.json
+
+      - name: Mark refresh jobs as completed
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: |
+          npx wrangler d1 execute "$CF_D1_DATABASE" \
+            --remote \
+            --config cloudflare/wrangler.toml \
+            --command "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), updated_at = datetime('now'), error = NULL WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"
+
+      - name: Mark refresh jobs as failed
+        if: failure() && steps.refresh-check.outputs.run_refresh == 'true'
+        run: |
+          npx wrangler d1 execute "$CF_D1_DATABASE" \
+            --remote \
+            --config cloudflare/wrangler.toml \
+            --command "UPDATE refresh_jobs SET status = 'failed', finished_at = datetime('now'), updated_at = datetime('now'), error = 'GitHub Actions run ${GITHUB_RUN_ID} failed' WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"

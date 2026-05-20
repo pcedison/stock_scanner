@@ -15,6 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEPLOY_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-deploy.yml"
 HEALTH_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-health-monitor.yml"
 SEED_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "refresh-cloudflare-seed.yml"
+R2_SEED_REFRESH_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-r2-seed-refresh.yml"
 DEPLOY_DOC = ROOT_DIR / "docs" / "cloudflare_deployment.md"
 
 
@@ -28,6 +29,9 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
     deploy_text = (root / DEPLOY_WORKFLOW.relative_to(ROOT_DIR)).read_text(encoding="utf-8")
     health_exists = (root / HEALTH_WORKFLOW.relative_to(ROOT_DIR)).exists()
     seed_exists = (root / SEED_WORKFLOW.relative_to(ROOT_DIR)).exists()
+    r2_seed_refresh_path = root / R2_SEED_REFRESH_WORKFLOW.relative_to(ROOT_DIR)
+    r2_seed_refresh_exists = r2_seed_refresh_path.exists()
+    r2_seed_refresh_text = r2_seed_refresh_path.read_text(encoding="utf-8") if r2_seed_refresh_exists else ""
     deploy_doc = (root / DEPLOY_DOC.relative_to(ROOT_DIR)).read_text(encoding="utf-8")
 
     required_patterns = {
@@ -45,8 +49,22 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
         problems.append("scheduled health monitor workflow is missing")
     if not seed_exists:
         problems.append("scheduled seed refresh workflow is missing")
-    if "required reviewers" not in deploy_doc or "CF_WORKER_HEALTH_URL" not in deploy_doc:
-        problems.append("Cloudflare deployment doc must mention environment reviewers and CF_WORKER_HEALTH_URL")
+    if not r2_seed_refresh_exists:
+        problems.append("scheduled R2 seed refresh workflow is missing")
+    else:
+        r2_required_patterns = {
+            "D1 refresh job polling": r"SELECT COUNT\(\*\) AS pending_count FROM refresh_jobs",
+            "online seed rebuild": r"CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed\.py",
+            "R2 market scan summary upload": r"market_scan_summary\.json",
+            "refresh job success marker": r"status = 'success'",
+            "refresh job failure marker": r"status = 'failed'",
+            "remote smoke": r"scripts/run_remote_smoke\.py",
+        }
+        for label, pattern in r2_required_patterns.items():
+            if not re.search(pattern, r2_seed_refresh_text):
+                problems.append(f"R2 seed refresh workflow missing {label}")
+    if "required reviewers" not in deploy_doc or "CF_WORKER_HEALTH_URL" not in deploy_doc or "cloudflare-r2-seed-refresh.yml" not in deploy_doc:
+        problems.append("Cloudflare deployment doc must mention environment reviewers, CF_WORKER_HEALTH_URL, and the R2 seed refresh workflow")
     return problems
 
 
