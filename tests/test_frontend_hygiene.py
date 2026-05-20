@@ -5,6 +5,7 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
+APP_VERSION = "20260520-design-refresh"
 
 
 def test_frontend_hygiene_current_budget_passes():
@@ -33,6 +34,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
 
     assert f'href="/styles.css?v={STYLE_VERSION}" as="style"' in index_html
     assert f'href="/styles.css?v={STYLE_VERSION}"' in index_html
+    assert f'src="/app.js?v={APP_VERSION}"' in index_html
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css
     assert ".holding-exit-alert-banner.critical" in styles_css
