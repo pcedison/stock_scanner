@@ -41,6 +41,64 @@ console.log(JSON.stringify({
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_overview_counts_follow_active_market_disclosure_tab():
+    script = r"""
+const { state, activeMarketDisclosureKey, renderOverviewStats } = require("./frontend/app.js");
+const nodes = new Map();
+global.document = {
+  querySelector(selector) {
+    if (!nodes.has(selector)) nodes.set(selector, { textContent: "" });
+    return nodes.get(selector);
+  },
+};
+const officialQ = { code: "OFFICIAL_Q", severity: "INFO", message: "2026Q1 EPS 1.23" };
+const oldQ = { code: "OFFICIAL_Q", severity: "INFO", message: "2025Q4 EPS 1.23" };
+const scan = {
+  generatedAt: "2026-05-20T00:00:00.000Z",
+  filingContext: { activeFinancialReport: { period: "2026Q1" } },
+  entry: [
+    { stockCode: "1001", status: "ENTRY", reasons: [officialQ] },
+    { stockCode: "1002", status: "ENTRY", reasons: [oldQ] },
+  ],
+  watch: [
+    { stockCode: "2001", status: "INSUFFICIENT_DATA", reasons: [officialQ, { code: "E3", severity: "WATCH" }] },
+    { stockCode: "2002", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "INSUFFICIENT_DATA" }] },
+  ],
+  excluded: [
+    { stockCode: "3001", status: "EXCLUDED", reasons: [officialQ] },
+  ],
+};
+function counts() {
+  return {
+    entry: nodes.get("#overview-entry-count").textContent,
+    watch: nodes.get("#overview-watch-count").textContent,
+    excluded: nodes.get("#overview-excluded-count").textContent,
+  };
+}
+state.activeMarketDisclosureTab = "announced";
+renderOverviewStats(scan);
+const announced = counts();
+state.activeMarketDisclosureTab = "pending";
+renderOverviewStats(scan);
+const pending = counts();
+console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosureKey("bogus") }));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["announced"] == {"entry": "1", "watch": "1", "excluded": "1"}
+    assert payload["pending"] == {"entry": "1", "watch": "1", "excluded": "0"}
+    assert payload["fallback"] == "announced"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
 const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");

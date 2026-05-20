@@ -52,6 +52,43 @@ async function registerViaApi(page, username: string, password = "test-password-
   }, { username, password });
 }
 
+test("overview auto-refreshes market counts on load and after login", async ({ page }) => {
+  const scanBodies: any[] = [];
+  await page.route("**/api/scan/market", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      try {
+        scanBodies.push(request.postDataJSON());
+      } catch {
+        scanBodies.push({});
+      }
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
+  await expect(page.locator("#overview-watch-count")).not.toHaveText("--", { timeout: 15_000 });
+  await expect(page.locator("#overview-excluded-count")).not.toHaveText("--", { timeout: 15_000 });
+  expect(scanBodies.some((body) => body?.refreshMode === "force")).toBeTruthy();
+
+  const overviewCounts = await page
+    .locator("#overview-entry-count, #overview-watch-count, #overview-excluded-count")
+    .allTextContents();
+  const navCounts = await page.locator("[data-market-column-nav]").evaluateAll((buttons) =>
+    buttons.map((button) => (button.textContent || "").match(/\((\d+)\)/)?.[1] || ""),
+  );
+  expect(overviewCounts).toEqual(navCounts);
+
+  const forceCountBeforeLogin = scanBodies.filter((body) => body?.refreshMode === "force").length;
+  await page.locator("#open-onboarding-btn").click();
+  await page.locator("#auth-modal-username").fill(`overview-${Date.now()}@example.com`);
+  await page.locator("#auth-modal-password").fill("test-password-123");
+  await page.locator("#auth-modal-form").evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await expect.poll(() => scanBodies.filter((body) => body?.refreshMode === "force").length).toBeGreaterThan(forceCountBeforeLogin);
+});
+
 test("settings stay read-only for non-admin users and CSP is strict", async ({ page, isMobile }) => {
   const response = await page.goto("/");
   expect(response?.headers()["content-security-policy"]).not.toContain("unsafe-inline");

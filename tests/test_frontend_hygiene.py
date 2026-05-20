@@ -5,7 +5,7 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260520-design-refresh"
+APP_VERSION = "20260520-overview-refresh"
 
 
 def test_frontend_hygiene_current_budget_passes():

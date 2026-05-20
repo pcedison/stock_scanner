@@ -192,6 +192,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const MOBILE_NAV_BREAKPOINT = 680;
 let holdingsScanRefreshTimer = null;
+let marketScanRefreshPromise = null;
 
 function syncAccountPanelPlacement() {
   if (typeof document === "undefined") return;
@@ -928,6 +929,7 @@ async function authenticateFromForm(mode, source = "header") {
     passwordInput.value = "";
     renderHoldings();
     requestHoldingsScanRefresh();
+    refreshOverviewMarketScan();
     if (isModal) {
       $("#auth-username").value = username;
       closeAuthGate();
@@ -1566,15 +1568,20 @@ function countMarketGroup(group) {
   return MARKET_RESULT_COLUMNS.reduce((total, [key]) => total + (group?.[key]?.length || 0), 0);
 }
 
-function renderOverviewStats(scan = state.marketScan) {
+function activeMarketDisclosureKey(tab = state.activeMarketDisclosureTab) {
+  return MARKET_DISCLOSURE_TABS.some((item) => item.key === tab) ? tab : "announced";
+}
+
+function renderOverviewStats(scan = state.marketScan, activeTab = state.activeMarketDisclosureTab) {
   if (typeof document === "undefined") return;
   const metricKeys = ["entry", "watch", "excluded"];
   const values = Object.fromEntries(metricKeys.map((key) => [key, "--"]));
   const note = scan?.generatedAt ? `${new Date(scan.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
   if (scan) {
     const grouped = groupMarketScanResults(scan);
+    const group = grouped[activeMarketDisclosureKey(activeTab)];
     for (const key of metricKeys) {
-      values[key] = (grouped.announced?.[key]?.length || 0) + (grouped.pending?.[key]?.length || 0);
+      values[key] = group?.[key]?.length || 0;
     }
   }
   for (const key of metricKeys) {
@@ -1626,10 +1633,11 @@ function marketColumnNote(columnKey) {
 }
 
 function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDisclosureTab) {
+  const tabKey = activeMarketDisclosureKey(activeTab);
   $$("[data-market-column-nav]").forEach((button) => {
     const columnKey = button.dataset.marketColumnNav;
     const label = MARKET_COLUMN_LABELS[columnKey] || columnKey;
-    const count = grouped ? grouped?.[activeTab]?.[columnKey]?.length ?? 0 : null;
+    const count = grouped ? grouped?.[tabKey]?.[columnKey]?.length ?? 0 : null;
     button.classList.toggle("active", columnKey === activeMarketColumnKey());
     button.textContent = count === null ? label : `${label} (${count})`;
   });
@@ -1839,9 +1847,7 @@ function renderMarketResults() {
   $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
   const grouped = groupMarketScanResults(state.marketScan);
   clampMarketListPages(grouped);
-  const activeTab = MARKET_DISCLOSURE_TABS.some((tab) => tab.key === state.activeMarketDisclosureTab)
-    ? state.activeMarketDisclosureTab
-    : "announced";
+  const activeTab = activeMarketDisclosureKey();
   const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
   const activeGroup = grouped[activeTab];
   const activeColumn = activeMarketColumnKey();
@@ -1879,7 +1885,7 @@ function renderMarketResults() {
     </div>
   `;
   applyEvidenceBarWidths(target);
-  renderOverviewStats();
+  renderOverviewStats(state.marketScan, activeTab);
 }
 
 function renderDataAndScheduler() {
@@ -1997,6 +2003,7 @@ function showView(view) {
   if (view === "admin") renderAdminUsers();
   if (view === "data") renderDataAndScheduler();
   updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
+  renderOverviewStats(state.marketScan, state.activeMarketDisclosureTab);
 }
 
 async function loadCompanies() {
@@ -2134,21 +2141,54 @@ async function analyzeSelectedCompany() {
 }
 
 async function scanMarket() {
+  return refreshMarketScan({ revealResults: true });
+}
+
+function renderMarketScanError(target, error) {
+  if (target) target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "掃描失敗")}</p>`;
+}
+
+async function refreshMarketScan({ revealResults = false, refreshMode = "auto" } = {}) {
   const target = $("#market-results");
-  setEmptyState(target, "掃描中");
-  showView("scan");
-  showTab("market");
-  try {
-    state.marketScan = await apiJson("/api/scan/market", {
-      method: "POST",
-      body: JSON.stringify({ settings: state.settings }),
+  if (revealResults) {
+    setEmptyState(target, "掃描中");
+    showView("scan");
+    showTab("market");
+  }
+  if (marketScanRefreshPromise) {
+    try {
+      await marketScanRefreshPromise;
+      renderMarketResults();
+    } catch (error) {
+      if (revealResults) renderMarketScanError(target, error);
+      return null;
+    }
+    return state.marketScan;
+  }
+  marketScanRefreshPromise = apiJson("/api/scan/market", {
+    method: "POST",
+    body: JSON.stringify({ settings: state.settings, refreshMode }),
+  })
+    .then((scan) => {
+      state.marketScan = scan;
+      resetMarketListUi();
+      return scan;
+    })
+    .finally(() => {
+      marketScanRefreshPromise = null;
     });
-    resetMarketListUi();
+  try {
+    await marketScanRefreshPromise;
   } catch (error) {
-    target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "掃描失敗")}</p>`;
-    return;
+    if (revealResults) renderMarketScanError(target, error);
+    return null;
   }
   renderMarketResults();
+  return state.marketScan;
+}
+
+function refreshOverviewMarketScan() {
+  void refreshMarketScan({ refreshMode: "force" }).catch(() => {});
 }
 
 async function scanHoldings() {
@@ -2585,6 +2625,7 @@ async function init() {
   renderHoldingResults();
   showView("overview");
   requestHoldingsScanRefresh();
+  refreshOverviewMarketScan();
   maybeStartFirstRunFlow();
 }
 
@@ -2635,6 +2676,8 @@ if (typeof module !== "undefined") {
     renderMarketResultRow,
     renderMarketPagination,
     groupMarketScanResults,
+    activeMarketDisclosureKey,
+    renderOverviewStats,
     sortMarketResultsForDisplay,
     e4PerValue,
     isHoldingTracked,
