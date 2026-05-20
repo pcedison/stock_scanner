@@ -90,7 +90,14 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     }
 
 
-def run_public_smoke(health_url: str, manifest: Path | None, timeout: int, propagation_timeout: int = 90) -> dict[str, Any]:
+def run_public_smoke(
+    health_url: str,
+    manifest: Path | None,
+    timeout: int,
+    propagation_timeout: int = 90,
+    max_cache_age_hours: float | None = None,
+    reject_offline_seed: bool = False,
+) -> dict[str, Any]:
     base_url = base_url_from_health_url(health_url)
     client = RemoteClient(base_url, timeout)
     expected_manifest = _load_json_file(manifest)
@@ -100,7 +107,12 @@ def run_public_smoke(health_url: str, manifest: Path | None, timeout: int, propa
     while True:
         try:
             health = client.request_json("/api/health")
-            validate_health_payload(health, expected_manifest)
+            validate_health_payload(
+                health,
+                expected_manifest,
+                max_cache_age_hours=max_cache_age_hours,
+                reject_offline_seed=reject_offline_seed,
+            )
             payloads = {
                 "health": health,
                 "appStatus": client.request_json("/api/app-status"),
@@ -135,10 +147,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument("--propagation-timeout", type=int, default=90)
+    parser.add_argument(
+        "--max-cache-age-hours",
+        type=float,
+        help="Fail when cache.sourceLastCheckedAt or generatedAt is older than this many hours",
+    )
+    parser.add_argument(
+        "--reject-offline-seed",
+        action="store_true",
+        help="Fail when the deployed manifest reports qualityGates.buildMode=offline",
+    )
     args = parser.parse_args(argv)
 
     try:
-        summary = run_public_smoke(args.health_url, args.manifest, args.timeout, args.propagation_timeout)
+        summary = run_public_smoke(
+            args.health_url,
+            args.manifest,
+            args.timeout,
+            args.propagation_timeout,
+            max_cache_age_hours=args.max_cache_age_hours,
+            reject_offline_seed=args.reject_offline_seed,
+        )
     except RuntimeError as exc:
         print(f"Remote smoke failed: {exc}", file=sys.stderr)
         return 1

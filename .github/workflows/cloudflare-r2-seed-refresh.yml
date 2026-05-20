@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloudflare-production
+  group: cloudflare-r2-seed-refresh
   cancel-in-progress: false
 
 jobs:
@@ -72,7 +72,7 @@ jobs:
             --command "SELECT COUNT(*) AS pending_count FROM refresh_jobs WHERE job_type = 'market_scan' AND status IN ('queued', 'running');" \
             > .tmp/refresh-job-count.json
 
-          python - <<'PY' >> "$GITHUB_OUTPUT"
+          pending_count="$(python - <<'PY'
           import json
           from pathlib import Path
 
@@ -94,13 +94,43 @@ jobs:
               return None
 
           pending_count = find_pending_count(payload) or 0
-          print(f"pending_count={pending_count}")
-          print(f"run_refresh={'true' if pending_count > 0 else 'false'}")
+          print(pending_count)
           PY
+          )"
+
+          stale_refresh=false
+          if [ -n "$CF_WORKER_HEALTH_URL" ]; then
+            if python scripts/check_cloudflare_health.py \
+              --url "$CF_WORKER_HEALTH_URL" \
+              --max-cache-age-hours 36 \
+              --reject-offline-seed \
+              > .tmp/production-health.json 2> .tmp/production-health.err; then
+              echo "Production seed freshness is healthy." >> "$GITHUB_STEP_SUMMARY"
+            else
+              stale_refresh=true
+              {
+                echo "Production seed freshness check failed; R2 seed rebuild will run."
+                echo
+                echo '```text'
+                cat .tmp/production-health.err
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "CF_WORKER_HEALTH_URL is empty; freshness cannot queue a rebuild." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "pending_count=$pending_count" >> "$GITHUB_OUTPUT"
+          echo "stale_refresh=$stale_refresh" >> "$GITHUB_OUTPUT"
+          if [ "$pending_count" -gt 0 ] || [ "$stale_refresh" = "true" ]; then
+            echo "run_refresh=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_refresh=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Stop when no refresh is queued
         if: steps.refresh-check.outputs.run_refresh != 'true'
-        run: echo "No queued market_scan refresh job found; skipping R2 seed rebuild." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "No queued market_scan refresh job and production seed is fresh; skipping R2 seed rebuild." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mark queued refresh jobs as running
         if: steps.refresh-check.outputs.run_refresh == 'true'
@@ -157,8 +187,14 @@ jobs:
           fi
           python scripts/check_cloudflare_health.py \
             --url "$CF_WORKER_HEALTH_URL" \
-            --manifest cloudflare/seed/manifest.json
-          python scripts/run_remote_smoke.py --health-url "$CF_WORKER_HEALTH_URL" --manifest cloudflare/seed/manifest.json
+            --manifest cloudflare/seed/manifest.json \
+            --max-cache-age-hours 36 \
+            --reject-offline-seed
+          python scripts/run_remote_smoke.py \
+            --health-url "$CF_WORKER_HEALTH_URL" \
+            --manifest cloudflare/seed/manifest.json \
+            --max-cache-age-hours 36 \
+            --reject-offline-seed
 
       - name: Mark refresh jobs as completed
         if: steps.refresh-check.outputs.run_refresh == 'true'

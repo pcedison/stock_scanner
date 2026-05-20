@@ -5,15 +5,13 @@ on:
     branches:
       - main
       - master
-  schedule:
-    - cron: "20 1,5,9,13 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: cloudflare-production
+  group: cloudflare-deploy-production
   cancel-in-progress: false
 
 jobs:
@@ -24,7 +22,6 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
       CF_PAGES_PROJECT: stock-scanner-beta
       CF_PAGES_PRODUCTION_BRANCH: codex/lightweight-auth-evidence-ui
@@ -68,46 +65,8 @@ jobs:
       - name: Run browser smoke tests
         run: npm run test:e2e
 
-      - name: Validate committed Cloudflare seed cache
-        run: |
-          mkdir -p .tmp
-          python scripts/validate_cloudflare_seed_inputs.py \
-            --zip data/official_cache_seed_2026-05-14.zip \
-            --summary-md .tmp/seed-quality.md \
-            --summary-json .tmp/seed-quality.json \
-            --max-age-days 45
-          cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Rebuild Cloudflare seed from committed cache
-        run: |
-          if [ -f data/official_cache_seed_2026-05-14.zip ]; then
-            unzip -o data/official_cache_seed_2026-05-14.zip -d data
-          fi
-          CLOUDFLARE_SEED_MODE=offline python scripts/build_cloudflare_seed.py
-
       - name: Validate generated Worker bundle boundary
         run: npx wrangler deploy --config cloudflare/wrangler.toml --dry-run --outdir .tmp/worker-dry-run
-
-      - name: Upload seed cache to R2
-        run: |
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/manifest.json" --remote --file cloudflare/seed/manifest.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/companies.json" --remote --file cloudflare/seed/companies.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/data_sources_status.json" --remote --file cloudflare/seed/data_sources_status.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_latest.json" --remote --file cloudflare/seed/market_scan_latest.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_summary.json" --remote --file cloudflare/seed/market_scan_summary.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_by_code.json" --remote --file cloudflare/seed/analysis_by_code.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_by_code.json" --remote --file cloudflare/seed/holding_analysis_by_code.json
-          for file in cloudflare/seed/analysis_shards/*.json; do
-            shard="$(basename "$file" .json)"
-            npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_shards/$shard.json" --remote --file "$file"
-          done
-          for file in cloudflare/seed/holding_analysis_shards/*.json; do
-            shard="$(basename "$file" .json)"
-            npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_shards/$shard.json" --remote --file "$file"
-          done
-          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_fundamentals_history.json" --remote --file data/official_fundamentals_history.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_history_backfill_progress.json" --remote --file data/official_history_backfill_progress.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_cache_seed_2026-05-14.zip" --remote --file data/official_cache_seed_2026-05-14.zip
 
       - name: Export D1 backup before migrations
         run: |
@@ -129,9 +88,6 @@ jobs:
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml
 
-      - name: Mark refresh jobs as completed
-        run: npx wrangler d1 execute "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml --command "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"
-
       - name: Deploy Python Worker API
         id: deploy-worker
         run: npx wrangler deploy --config cloudflare/wrangler.toml --strict --message "GitHub Actions ${GITHUB_SHA}"
@@ -140,7 +96,7 @@ jobs:
         working-directory: frontend
         run: ../node_modules/.bin/wrangler pages deploy . --project-name "$CF_PAGES_PROJECT" --branch "$CF_PAGES_PRODUCTION_BRANCH"
 
-      - name: Verify deployed health and manifest counts
+      - name: Verify deployed health freshness
         run: |
           if [ -z "$CF_WORKER_HEALTH_URL" ]; then
             echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
@@ -148,10 +104,15 @@ jobs:
           fi
           python scripts/check_cloudflare_health.py \
             --url "$CF_WORKER_HEALTH_URL" \
-            --manifest cloudflare/seed/manifest.json
+            --max-cache-age-hours 36 \
+            --reject-offline-seed
 
       - name: Run deployed public smoke
-        run: python scripts/run_remote_smoke.py --health-url "$CF_WORKER_HEALTH_URL" --manifest cloudflare/seed/manifest.json
+        run: |
+          python scripts/run_remote_smoke.py \
+            --health-url "$CF_WORKER_HEALTH_URL" \
+            --max-cache-age-hours 36 \
+            --reject-offline-seed
 
       - name: Roll back Worker after failed post-deploy verification
         if: failure() && steps.deploy-worker.outcome == 'success'

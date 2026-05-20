@@ -33,7 +33,11 @@ jobs:
             echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
             exit 1
           fi
-          python scripts/check_cloudflare_health.py --url "$CF_WORKER_HEALTH_URL" | tee .tmp-health.json
+          python scripts/check_cloudflare_health.py \
+            --url "$CF_WORKER_HEALTH_URL" \
+            --max-cache-age-hours 36 \
+            --reject-offline-seed \
+            | tee .tmp-health.json
           {
             echo "## Cloudflare health"
             echo
@@ -44,7 +48,13 @@ jobs:
 
       - name: Check market scan smoke
         run: |
-          python scripts/run_remote_smoke.py --health-url "$CF_WORKER_HEALTH_URL" --timeout 30 --propagation-timeout 1 | tee .tmp-smoke.json
+          python scripts/run_remote_smoke.py \
+            --health-url "$CF_WORKER_HEALTH_URL" \
+            --timeout 30 \
+            --propagation-timeout 1 \
+            --max-cache-age-hours 36 \
+            --reject-offline-seed \
+            | tee .tmp-smoke.json
           {
             echo
             echo "## Public smoke"

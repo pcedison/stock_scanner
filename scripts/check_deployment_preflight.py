@@ -53,10 +53,10 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "D1 export": r"wrangler d1 export",
         "D1 migrations": r"wrangler d1 migrations apply",
         "Worker dry-run": r"wrangler deploy .*--dry-run",
-        "market scan summary R2 upload": r"market_scan_summary\.json",
-        "holding analysis R2 upload": r"holding_analysis_shards",
         "post-deploy health": r"scripts/check_cloudflare_health\.py",
         "post-deploy remote smoke": r"scripts/run_remote_smoke\.py",
+        "post-deploy freshness gate": r"--max-cache-age-hours",
+        "offline seed rejection": r"--reject-offline-seed",
         "rollback": r"wrangler rollback",
         "non-interactive rollback": r"wrangler rollback .*--yes",
         "health URL variable": r"CF_WORKER_HEALTH_URL",
@@ -64,6 +64,14 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
     for label, pattern in required_patterns.items():
         if not re.search(pattern, text):
             problems.append(f"Deploy workflow is missing {label}")
+    forbidden_patterns = {
+        "R2 seed upload": r"wrangler r2 object put",
+        "offline seed rebuild": r"CLOUDFLARE_SEED_MODE\s*=\s*offline",
+        "refresh job success mutation": r"UPDATE refresh_jobs SET status = 'success'",
+    }
+    for label, pattern in forbidden_patterns.items():
+        if re.search(pattern, text):
+            problems.append(f"Deploy workflow must not perform {label}")
     return problems
 
 
