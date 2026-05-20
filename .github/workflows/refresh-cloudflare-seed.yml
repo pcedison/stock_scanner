@@ -38,6 +38,9 @@ jobs:
 
       - name: Rebuild seed from official sources
         run: |
+          if [ -f data/official_cache_seed_2026-05-14.zip ]; then
+            unzip -o data/official_cache_seed_2026-05-14.zip -d data
+          fi
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py

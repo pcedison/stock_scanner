@@ -54,6 +54,7 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
     else:
         r2_required_patterns = {
             "D1 refresh job polling": r"SELECT COUNT\(\*\) AS pending_count FROM refresh_jobs",
+            "committed seed restore": r"unzip -o data/official_cache_seed_2026-05-14\.zip -d data",
             "online seed rebuild": r"CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed\.py",
             "R2 market scan summary upload": r"market_scan_summary\.json",
             "refresh job success marker": r"status = 'success'",
