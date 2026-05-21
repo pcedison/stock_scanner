@@ -659,7 +659,14 @@ class Api:
         if key in self._r2_cache:
             return self._r2_cache[key]
         obj = js_to_py(await self.env.CACHE.get(key))
-        result = fallback if obj is None else json.loads(await obj.text())
+        if obj is None:
+            self._r2_cache[key] = fallback
+            return fallback
+        try:
+            result = json.loads(await obj.text())
+        except Exception as exc:
+            print(f"R2 JSON parse error for key={key}: {exc}")
+            result = fallback
         self._r2_cache[key] = result
         return result
 

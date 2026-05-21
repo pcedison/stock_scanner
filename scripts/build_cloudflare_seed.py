@@ -4,9 +4,8 @@ import json
 import os
 import sys
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from fastapi.encoders import jsonable_encoder
 
@@ -31,15 +30,57 @@ OFFLINE_SEED_REQUIRED_FILES = {
     "analysis_by_code.json",
     "holding_analysis_by_code.json",
 }
-TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.main import data_sources_status, engine, official_provider, _scan_market_payload  # noqa: E402
 from backend.models.company import Company  # noqa: E402
 from backend.models.financial import FundamentalSnapshot  # noqa: E402
 from backend.models.holding import Holding  # noqa: E402
-from backend.services.official_data_provider import _is_financial_company  # noqa: E402
+from backend.models.settings import ScannerSettings  # noqa: E402
+from backend.services.cache_policy import refresh_policy  # noqa: E402
+from backend.services.filing_calendar import filing_context  # noqa: E402
+from backend.services.official_data_provider import OfficialDataProvider, _is_financial_company  # noqa: E402
+from backend.services.rules import RuleEngine  # noqa: E402
 from backend.services.settings_service import load_settings  # noqa: E402
+
+engine = RuleEngine()
+official_provider = OfficialDataProvider()
+
+
+def _scan_market_payload(settings: ScannerSettings) -> dict:
+    context = filing_context()
+    entry = []
+    watch = []
+    excluded = []
+    for snapshot in official_provider.iter_snapshots(settings):
+        result = engine.evaluate_entry(snapshot, settings)
+        if result.status == "ENTRY":
+            entry.append(result)
+        elif result.status == "EXCLUDED":
+            excluded.append(result)
+        else:
+            watch.append(result)
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "dataSource": "official_twse_tpex_monthly_revenue",
+        "filingContext": context,
+        "universeSize": len(entry) + len(watch) + len(excluded),
+        "note": "掃描官方 TWSE/TPEx 上市櫃 universe。月營收、最新季損益、資產負債表、EPS、PER/PBR/殖利率納入初篩。",
+        "entry": entry,
+        "watch": watch,
+        "excluded": excluded,
+    }
+
+
+def _data_sources_status_payload() -> dict:
+    official_status = official_provider.status(refresh=False)
+    return {
+        "activeProvider": "OfficialDataProvider",
+        "activeProviderIsRealtime": False,
+        "activeProviderIsFullMarket": True,
+        "officialUniverseSize": official_status.get("companies"),
+        "officialMonthlySnapshotSize": official_status.get("monthlySnapshots"),
+        "sourceStatus": official_status.get("sourceStatus", {}),
+    }
 
 
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
@@ -123,19 +164,6 @@ def add_market_scan_summary_to_manifest(manifest: dict) -> dict:
 def write_market_scan_summary(scan_payload: dict) -> None:
     write_json(OUT_DIR / MARKET_SCAN_SUMMARY_FILE, compact_market_scan_payload(scan_payload))
 
-
-def refresh_policy(now: datetime | None = None) -> dict:
-    current = now or datetime.now(TAIPEI_TZ)
-    financial_deadlines = {(3, 31), (5, 15), (5, 30), (8, 31), (11, 14)}
-    in_financial_window = any(
-        month == current.month and abs((current.date() - current.replace(month=month, day=day).date()).days) <= 3
-        for month, day in financial_deadlines
-    )
-    if in_financial_window:
-        return {"strategy": "stale_while_revalidate", "reason": "financial_report_window", "minIntervalSeconds": 7200}
-    if 8 <= current.day <= 12:
-        return {"strategy": "stale_while_revalidate", "reason": "monthly_revenue_window", "minIntervalSeconds": 10800}
-    return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
 
 
 def rebuild_scan_from_analysis(scan_payload: dict, results: list[dict]) -> dict:
@@ -458,7 +486,7 @@ def main() -> None:
         write_json(ANALYSIS_SHARD_DIR / f"{shard_key}.json", shard_payload)
     for shard_key, shard_payload in holding_analysis_shards.items():
         write_json(HOLDING_ANALYSIS_SHARD_DIR / f"{shard_key}.json", shard_payload)
-    write_json(OUT_DIR / "data_sources_status.json", data_sources_status(check_network=False))
+    write_json(OUT_DIR / "data_sources_status.json", _data_sources_status_payload())
 
     manifest = {
         "generatedAt": scan_payload.get("generatedAt"),

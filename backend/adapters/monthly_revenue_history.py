@@ -165,7 +165,7 @@ class MonthlyRevenueHistoryStore:
     def _save(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
         self._cache = payload
         self._cache_mtime = self.path.stat().st_mtime

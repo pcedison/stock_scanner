@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 
 import httpx
+
+_FETCH_RETRIES = 2
+_FETCH_RETRY_DELAY = 0.5
 
 
 TWSE_INCOME_URLS = [
@@ -153,12 +157,23 @@ class OfficialFundamentalsAdapter:
         response.raise_for_status()
         return response.json()
 
+    def _fetch_with_retry(self, url: str) -> list[dict[str, Any]] | dict[str, Any]:
+        last_exc: Exception | None = None
+        for attempt in range(_FETCH_RETRIES + 1):
+            try:
+                return self._fetch_json(url)
+            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+                last_exc = exc
+                if attempt < _FETCH_RETRIES:
+                    time.sleep(_FETCH_RETRY_DELAY)
+        raise last_exc  # type: ignore[misc]
+
     def _fetch_many(self, urls: Iterable[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         status: dict[str, Any] = {}
         url_list = list(urls)
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(url_list)))) as executor:
-            futures = {executor.submit(self._fetch_json, url): url for url in url_list}
+            futures = {executor.submit(self._fetch_with_retry, url): url for url in url_list}
             for future in as_completed(futures):
                 url = futures[future]
                 try:

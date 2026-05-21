@@ -9,15 +9,14 @@ from pathlib import Path
 from threading import RLock
 from typing import Callable
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from backend.models.settings import ScannerSettings
+from backend.services.cache_policy import refresh_policy  # noqa: F401 — re-exported for callers
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SCAN_CACHE_PATH = ROOT_DIR / "data" / "market_scan_cache.json"
 DEFAULT_REFRESH_STATE_PATH = ROOT_DIR / "data" / "cache_refresh_state.json"
-TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
 def utc_now() -> str:
@@ -40,31 +39,6 @@ def _settings_payload(settings: ScannerSettings) -> dict:
 def scan_cache_key(settings: ScannerSettings) -> str:
     payload = json.dumps(_settings_payload(settings), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def _financial_window(today: datetime) -> bool:
-    deadlines = {(3, 31), (5, 15), (5, 30), (8, 31), (11, 14)}
-    return any(abs((today.date() - today.replace(month=month, day=day).date()).days) <= 3 for month, day in deadlines if month == today.month)
-
-
-def refresh_policy(now: datetime | None = None) -> dict:
-    current = now or datetime.now(TAIPEI_TZ)
-    in_revenue_window = 8 <= current.day <= 12
-    in_financial_window = _financial_window(current)
-    if in_financial_window:
-        interval = timedelta(hours=2)
-        reason = "financial_report_window"
-    elif in_revenue_window:
-        interval = timedelta(hours=3)
-        reason = "monthly_revenue_window"
-    else:
-        interval = timedelta(hours=12)
-        reason = "routine_refresh"
-    return {
-        "strategy": "stale_while_revalidate",
-        "reason": reason,
-        "minIntervalSeconds": int(interval.total_seconds()),
-    }
 
 
 class ScanCacheService:
@@ -230,4 +204,6 @@ class ScanCacheService:
 
     def _write_json(self, path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
