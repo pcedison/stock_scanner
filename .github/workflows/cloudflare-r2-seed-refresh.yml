@@ -35,7 +35,7 @@ jobs:
     steps:
       # Lightweight pre-check: query D1 via REST API and check health URL
       # This runs before checkout/npm/pip so empty runs exit in < 10 seconds.
-      - name: Early exit — check pending jobs without heavy dependencies
+      - name: Early exit - check pending jobs without heavy dependencies
         id: early-check
         run: |
           if [ "$FORCE_REFRESH" = "true" ]; then
@@ -50,36 +50,38 @@ jobs:
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' 2>/dev/null); then
-            pending=$(python3 -c "
-import sys, json
-try:
-    d = json.loads(sys.argv[1])
-    r = d.get('result', [{}])
-    results = r[0].get('results', [{}]) if isinstance(r, list) and r else [{}]
-    print(int(results[0].get('cnt', 0) if isinstance(results, list) and results else 0))
-except Exception:
-    print(0)
-" "$api_result" 2>/dev/null || echo 0)
+            pending=$(python3 - "$api_result" <<'PY'
+          import sys, json
+          try:
+              d = json.loads(sys.argv[1])
+              r = d.get('result', [{}])
+              results = r[0].get('results', [{}]) if isinstance(r, list) and r else [{}]
+              print(int(results[0].get('cnt', 0) if isinstance(results, list) and results else 0))
+          except Exception:
+              print(0)
+          PY
+            )
           fi
 
           stale=false
           if [ -n "$CF_WORKER_HEALTH_URL" ]; then
             if health=$(curl -sf --max-time 15 "$CF_WORKER_HEALTH_URL" 2>/dev/null); then
-              age_hours=$(python3 -c "
-import sys, json
-from datetime import datetime, timezone
-try:
-    d = json.loads(sys.argv[1])
-    generated_at = d.get('cache', {}).get('generatedAt', '')
-    if not generated_at:
-        print(999)
-        sys.exit()
-    dt = datetime.fromisoformat(generated_at.replace('Z', '+00:00'))
-    age = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-    print(int(age))
-except Exception:
-    print(999)
-" "$health" 2>/dev/null || echo 999)
+              age_hours=$(python3 - "$health" <<'PY'
+          import sys, json
+          from datetime import datetime, timezone
+          try:
+              d = json.loads(sys.argv[1])
+              generated_at = d.get('cache', {}).get('generatedAt', '')
+              if not generated_at:
+                  print(999)
+                  sys.exit()
+              dt = datetime.fromisoformat(generated_at.replace('Z', '+00:00'))
+              age = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+              print(int(age))
+          except Exception:
+              print(999)
+          PY
+                )
               if [ "$age_hours" -gt 36 ]; then
                 stale=true
                 echo "Production seed is stale (${age_hours}h old); R2 rebuild will run." >> "$GITHUB_STEP_SUMMARY"
@@ -97,7 +99,7 @@ except Exception:
             echo "run_refresh=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_refresh=false" >> "$GITHUB_OUTPUT"
-            echo "No pending refresh jobs and seed is fresh — skipping heavy setup." >> "$GITHUB_STEP_SUMMARY"
+            echo "No pending refresh jobs and seed is fresh; skipping heavy setup." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Check out repository

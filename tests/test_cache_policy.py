@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from backend.services.cache_policy import FINANCIAL_REPORT_DEADLINES, in_financial_window, refresh_policy
+from backend.services.cache_policy import (
+    FINANCIAL_REPORT_DEADLINES,
+    MONTHLY_REVENUE_WINDOW_END_DAY,
+    in_financial_window,
+    refresh_policy,
+)
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 
@@ -44,9 +49,14 @@ def test_refresh_policy_financial_window():
 
 
 def test_refresh_policy_monthly_revenue_window():
-    policy = refresh_policy(_dt(3, 10))  # day 10 in 8-12 range
+    policy = refresh_policy(_dt(3, 10))  # day 10 in 8-15 range
     assert policy["reason"] == "monthly_revenue_window"
     assert policy["minIntervalSeconds"] == 10800
+
+
+def test_monthly_revenue_window_keeps_late_filing_followup_days():
+    assert MONTHLY_REVENUE_WINDOW_END_DAY == 15
+    assert refresh_policy(_dt(7, 15))["reason"] == "monthly_revenue_window"
 
 
 def test_refresh_policy_routine():

@@ -1,6 +1,12 @@
 @echo off
 setlocal
 
+if exist .env (
+  for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
+    if not "%%A"=="" set "%%A=%%B"
+  )
+)
+
 python -m pip show fastapi >nul 2>nul
 if errorlevel 1 (
   echo Missing Python packages. Please run:

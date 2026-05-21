@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.check_deployment_preflight import validate_deploy_workflow, validate_worker_cors
+from scripts.check_deployment_preflight import validate_deploy_workflow, validate_worker_cors, validate_workflow_yaml
 
 
 def test_validate_worker_cors_rejects_local_or_insecure_production_origins(tmp_path):
@@ -26,6 +26,23 @@ def test_validate_deploy_workflow_accepts_current_guardrails():
     problems = validate_deploy_workflow(Path(".github/workflows/cloudflare-deploy.yml"))
 
     assert problems == []
+
+
+def test_validate_workflow_yaml_accepts_current_workflows():
+    assert validate_workflow_yaml(Path(".github/workflows")) == []
+
+
+def test_validate_workflow_yaml_rejects_invalid_workflow(tmp_path):
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "bad.yml").write_text(
+        "name: bad\njobs:\n  test:\n    steps:\n      - run: |\nimport sys\n",
+        encoding="utf-8",
+    )
+
+    problems = validate_workflow_yaml(workflow_dir)
+
+    assert any("bad.yml" in problem for problem in problems)
 
 
 def test_validate_deploy_workflow_rejects_r2_seed_writes(tmp_path):

@@ -205,7 +205,7 @@ class OfficialFundamentalsAdapter:
             stock_code = str(_pick(row, "公司代號", "SecuritiesCompanyCode") or "").strip()
             if not stock_code or not stock_code.isdigit():
                 continue
-            market = "TPEX" if "SecuritiesCompanyCode" in row or str(_pick(row, "Date") or "") else "TWSE"
+            market = "TPEX" if "SecuritiesCompanyCode" in row else "TWSE"
             revenue = _to_float(_pick(row, "營業收入", "收入"))
             cost = _to_float(_pick(row, "營業成本", "支出"))
             gross_profit = _to_float(_pick(row, "營業毛利（毛損）淨額", "營業毛利（毛損）"))
@@ -236,7 +236,7 @@ class OfficialFundamentalsAdapter:
             stock_code = str(_pick(row, "公司代號", "SecuritiesCompanyCode") or "").strip()
             if not stock_code or not stock_code.isdigit():
                 continue
-            market = "TPEX" if "SecuritiesCompanyCode" in row or str(_pick(row, "Date") or "") else "TWSE"
+            market = "TPEX" if "SecuritiesCompanyCode" in row else "TWSE"
             balances[stock_code] = OfficialBalanceSheetRow(
                 stockCode=stock_code,
                 companyName=str(_pick(row, "公司名稱", "CompanyName") or "").strip(),

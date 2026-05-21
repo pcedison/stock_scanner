@@ -9,18 +9,26 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_APP = ROOT_DIR / "frontend" / "app.js"
 DEFAULT_DOM = ROOT_DIR / "frontend" / "dom.js"
+DEFAULT_AUTH = ROOT_DIR / "frontend" / "auth.js"
 
 
-def frontend_hygiene_report(app_path: Path = DEFAULT_APP, dom_path: Path = DEFAULT_DOM) -> dict[str, object]:
+def frontend_hygiene_report(
+    app_path: Path = DEFAULT_APP,
+    dom_path: Path = DEFAULT_DOM,
+    auth_path: Path = DEFAULT_AUTH,
+) -> dict[str, object]:
     app_text = app_path.read_text(encoding="utf-8")
     dom_text = dom_path.read_text(encoding="utf-8")
+    auth_text = auth_path.read_text(encoding="utf-8") if auth_path.exists() else ""
     return {
         "appPath": str(app_path.relative_to(ROOT_DIR)),
         "domPath": str(dom_path.relative_to(ROOT_DIR)),
+        "authPath": str(auth_path.relative_to(ROOT_DIR)),
         "appLines": len(app_text.splitlines()),
         "innerHTMLAssignments": app_text.count("innerHTML"),
         "insertAdjacentHTMLCalls": app_text.count("insertAdjacentHTML"),
         "hasSharedEscapeHelper": "function escapeHtml" in dom_text and "StockScannerDom" in dom_text,
+        "hasSharedAuthHelper": "StockScannerAuth" in auth_text and "normalizeAuthUser" in auth_text,
         "emptyStateUsesSharedHelper": "emptyStateHtml(" in app_text,
     }
 
@@ -37,6 +45,8 @@ def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max
         problems.append("insertAdjacentHTML is not allowed in frontend/app.js")
     if not report["hasSharedEscapeHelper"]:
         problems.append("frontend/dom.js must own the shared escapeHtml helper")
+    if not report["hasSharedAuthHelper"]:
+        problems.append("frontend/auth.js must own shared auth identity helpers")
     if not report["emptyStateUsesSharedHelper"]:
         problems.append("frontend/app.js should use emptyStateHtml for empty/loading placeholders")
     return problems

@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_WRANGLER = ROOT_DIR / "cloudflare" / "wrangler.toml"
 DEFAULT_DEPLOY_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-deploy.yml"
+DEFAULT_WORKFLOW_DIR = ROOT_DIR / ".github" / "workflows"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -75,6 +76,25 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
     return problems
 
 
+def validate_workflow_yaml(workflow_dir: Path = DEFAULT_WORKFLOW_DIR) -> list[str]:
+    problems: list[str] = []
+    try:
+        import yaml
+    except ImportError:
+        return ["PyYAML is required to validate GitHub workflow YAML files"]
+
+    for workflow_path in sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")]):
+        try:
+            yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            try:
+                display_path = workflow_path.relative_to(ROOT_DIR)
+            except ValueError:
+                display_path = workflow_path
+            problems.append(f"{display_path} is not valid YAML: {exc}")
+    return problems
+
+
 def validate_health_url(require_health_url: bool) -> list[str]:
     if not require_health_url:
         return []
@@ -91,10 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check deployment guardrails before Cloudflare deploys.")
     parser.add_argument("--wrangler", type=Path, default=DEFAULT_WRANGLER)
     parser.add_argument("--deploy-workflow", type=Path, default=DEFAULT_DEPLOY_WORKFLOW)
+    parser.add_argument("--workflow-dir", type=Path, default=DEFAULT_WORKFLOW_DIR)
     parser.add_argument("--require-health-url", action="store_true")
     args = parser.parse_args(argv)
 
     problems = [
+        *validate_workflow_yaml(args.workflow_dir),
         *validate_worker_cors(args.wrangler),
         *validate_deploy_workflow(args.deploy_workflow),
         *validate_health_url(args.require_health_url),

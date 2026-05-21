@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
+from backend.services.cache_policy import MONTHLY_REVENUE_WINDOW_END_DAY, MONTHLY_REVENUE_WINDOW_START_DAY
 from backend.services.calendar import load_market_calendar
 
 
@@ -21,7 +22,7 @@ def should_wake_up(today: Optional[date] = None) -> WakeUpDecision:
     calendar = load_market_calendar(today.year)
     events: list[str] = []
 
-    if 8 <= today.day <= 15:
+    if MONTHLY_REVENUE_WINDOW_START_DAY <= today.day <= MONTHLY_REVENUE_WINDOW_END_DAY:
         events.append("MONTHLY_REVENUE_WINDOW")
     if today.month == 3 and today.day >= 25:
         events.append("ANNUAL_REPORT_WINDOW")

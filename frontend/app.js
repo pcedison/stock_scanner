@@ -10,8 +10,13 @@ const HOLDING_SIGNAL_HELPERS =
   typeof require === "function" && typeof module !== "undefined" && module.exports
     ? require("./holding_signals.js")
     : globalThis.StockScannerHoldingSignals;
+const AUTH_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./auth.js")
+    : globalThis.StockScannerAuth;
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
+const { authValidationMessage, isSuperUserIdentity, normalizeAuthUser, normalizeAuthUsername } = AUTH_HELPERS;
 
 const DEFAULT_COMPANIES = [
   { stockCode: "2330", name: "台積電", market: "TWSE", industryName: "半導體業", isFinancial: false },
@@ -245,35 +250,6 @@ function toggleMobileMenu() {
 
 function normalizeText(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
-}
-
-function normalizeAuthUsername(username) {
-  return normalizeText(username).toLowerCase();
-}
-
-function isSuperUserIdentity(user) {
-  return Boolean(user?.isSuperUser);
-}
-
-function normalizeAuthUser(user) {
-  if (!user || typeof user !== "object") return null;
-  const username = normalizeText(user.username);
-  if (!username) return null;
-  return {
-    ...user,
-    username,
-    displayName: normalizeText(user.displayName) || username,
-    isSuperUser: isSuperUserIdentity(user),
-  };
-}
-
-function authValidationMessage(username, password) {
-  const normalized = normalizeAuthUsername(username);
-  if (!normalized) return "請輸入電子信箱。";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return "請輸入有效電子信箱。";
-  if ((password || "").length < 8) return "密碼至少需要 8 個字元。";
-  if ((password || "").length > 128) return "密碼不可超過 128 個字元。";
-  return "";
 }
 
 function safeText(value, fallback = "") {
@@ -1991,7 +1967,7 @@ function showView(view) {
     strategy: ["策略規則", ""],
     data: ["資料與排程", "查看資料來源、官方 adapter 與事件驅動排程狀態。"],
   };
-  titles.admin = ["使用者管理", "只允許 pcedison@gmail.com 管理註冊帳號與刪除一般使用者。"];
+  titles.admin = ["使用者管理", "只允許管理員管理註冊帳號與刪除一般使用者。"];
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.viewPanel !== view));
   const [title, subtitle] = titles[view] || titles.overview;

@@ -11,7 +11,7 @@ FINANCIAL_REPORT_DEADLINES: frozenset[tuple[int, int]] = frozenset(
     {(3, 31), (5, 15), (5, 30), (8, 31), (11, 14)}
 )
 MONTHLY_REVENUE_WINDOW_START_DAY = 8
-MONTHLY_REVENUE_WINDOW_END_DAY = 12
+MONTHLY_REVENUE_WINDOW_END_DAY = 15
 
 
 def in_financial_window(now: datetime) -> bool:

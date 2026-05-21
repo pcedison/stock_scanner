@@ -20,6 +20,7 @@ def test_frontend_hygiene_rejects_inner_html_growth():
         "innerHTMLAssignments": 20,
         "insertAdjacentHTMLCalls": 0,
         "hasSharedEscapeHelper": True,
+        "hasSharedAuthHelper": True,
         "emptyStateUsesSharedHelper": True,
     }
 
@@ -34,6 +35,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
 
     assert f'href="/styles.css?v={STYLE_VERSION}" as="style"' in index_html
     assert f'href="/styles.css?v={STYLE_VERSION}"' in index_html
+    assert 'src="/auth.js?v=20260521-auth-helpers"' in index_html
     assert f'src="/app.js?v={APP_VERSION}"' in index_html
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css

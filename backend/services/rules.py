@@ -9,6 +9,12 @@ from backend.services.calendar import load_market_calendar
 
 ENTRY_PER_THRESHOLD = 20
 
+_E3_TITLE: dict[str, str] = {
+    "monthly": "本月月營收年增率 >= 50%",
+    "trailing_3m_avg": "近 3 個月平均營收年增率 >= 50%",
+    "cumulative_ytd": "今年累計營收年增率 >= 50%",
+}
+
 
 def _latest_annual_net_incomes(snapshot: FundamentalSnapshot, years: int) -> list[float | None]:
     ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
@@ -169,12 +175,13 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
     if company.isFinancial and not settings.exclude_financial_industry:
         return _financial_entry_rules(snapshot)
 
+    e3_title = _E3_TITLE.get(settings.revenue_growth_mode, "今年累計營收年增率 >= 50%")
     e3 = (
-        _rule_missing("E3", "今年累計營收年增率 >= 50%", f"目前採用 {settings.revenue_growth_mode}，但缺少對應營收年增率資料。")
+        _rule_missing("E3", e3_title, f"目前採用 {settings.revenue_growth_mode}，但缺少對應營收年增率資料。")
         if revenue_growth is None
         else RuleResult(
             code="E3",
-            title="今年累計營收年增率 >= 50%",
+            title=e3_title,
             passed=revenue_growth >= 50,
             severity="WATCH" if revenue_growth < 50 else "INFO",
             message=f"目前採用 {settings.revenue_growth_mode}，年增率為 {revenue_growth:.1f}%。",
@@ -298,6 +305,7 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> lis
     monthly = snapshot.monthlyRevenue
     quarterly = snapshot.quarterlyFinancial
     spring_guard = _is_spring_month(snapshot, settings)
+    ann_yoy = _annual_net_income_yoy(snapshot)
     yoy_drop = None
     if monthly.previousMonthRevenueYoY is not None and monthly.monthlyRevenueYoY is not None:
         yoy_drop = monthly.previousMonthRevenueYoY - monthly.monthlyRevenueYoY
@@ -378,11 +386,15 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> lis
             _rule_missing("X5", "淨利不可衰退", "缺少最新季淨利年增率，不能確認淨利是否轉弱。")
             if quarterly.netIncomeYoY is None
             else RuleResult(
-            code="X5",
-            title="淨利不可衰退",
-            passed=quarterly.netIncomeYoY >= 0 and (_annual_net_income_yoy(snapshot) is None or _annual_net_income_yoy(snapshot) >= 0),
-            severity="EXIT" if quarterly.netIncomeYoY < 0 or (_annual_net_income_yoy(snapshot) is not None and _annual_net_income_yoy(snapshot) < 0) else "INFO",
-            message=f"最新季淨利年增率為 {quarterly.netIncomeYoY:.1f}%；年度淨利年增率為 {_annual_net_income_yoy(snapshot):.1f}%。" if _annual_net_income_yoy(snapshot) is not None else f"最新季淨利年增率為 {quarterly.netIncomeYoY:.1f}%。",
+                code="X5",
+                title="淨利不可衰退",
+                passed=quarterly.netIncomeYoY >= 0 and (ann_yoy is None or ann_yoy >= 0),
+                severity="EXIT" if quarterly.netIncomeYoY < 0 or (ann_yoy is not None and ann_yoy < 0) else "INFO",
+                message=(
+                    f"最新季淨利年增率為 {quarterly.netIncomeYoY:.1f}%；年度淨利年增率為 {ann_yoy:.1f}%。"
+                    if ann_yoy is not None
+                    else f"最新季淨利年增率為 {quarterly.netIncomeYoY:.1f}%。"
+                ),
             )
         ),
         (
@@ -413,14 +425,64 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> lis
 def _add_watch_rules(entry_reasons: list[RuleResult], exit_reasons: list[RuleResult], snapshot: FundamentalSnapshot) -> list[RuleResult]:
     entry_ok = all(reason.passed for reason in entry_reasons)
     exit_ok = all(reason.passed for reason in exit_reasons if reason.code.startswith("X"))
+    monthly = snapshot.monthlyRevenue
+    quarterly = snapshot.quarterlyFinancial
+    valuation = snapshot.valuation
+    cum_yoy = monthly.cumulativeRevenueYoY
+    eps_yoy = quarterly.epsYoY
+    net_yoy = quarterly.netIncomeYoY
+    per = valuation.per
+    inv_turn = valuation.inventoryTurnover
     return [
-        RuleResult(code="A1", title="原進場條件仍符合", passed=entry_ok, severity="WATCH" if not entry_ok else "INFO", message="E1-E6 全部通過才可列入加碼觀察。"),
-        RuleResult(code="A2", title="累計營收年增率仍 >= 50%", passed=snapshot.monthlyRevenue.cumulativeRevenueYoY is not None and snapshot.monthlyRevenue.cumulativeRevenueYoY >= 50, severity="WATCH" if not (snapshot.monthlyRevenue.cumulativeRevenueYoY is not None and snapshot.monthlyRevenue.cumulativeRevenueYoY >= 50) else "INFO", message=f"累計營收年增率為 {snapshot.monthlyRevenue.cumulativeRevenueYoY if snapshot.monthlyRevenue.cumulativeRevenueYoY is not None else '缺資料'}%。"),
-        RuleResult(code="A3", title="最新季 EPS 年增率 > 0", passed=snapshot.quarterlyFinancial.epsYoY is not None and snapshot.quarterlyFinancial.epsYoY > 0, severity="WATCH" if not (snapshot.quarterlyFinancial.epsYoY is not None and snapshot.quarterlyFinancial.epsYoY > 0) else "INFO", message=f"最新季 EPS 年增率為 {snapshot.quarterlyFinancial.epsYoY if snapshot.quarterlyFinancial.epsYoY is not None else '缺資料'}%。"),
-        RuleResult(code="A4", title="最新季淨利年增率 > 0", passed=snapshot.quarterlyFinancial.netIncomeYoY is not None and snapshot.quarterlyFinancial.netIncomeYoY > 0, severity="WATCH" if not (snapshot.quarterlyFinancial.netIncomeYoY is not None and snapshot.quarterlyFinancial.netIncomeYoY > 0) else "INFO", message=f"最新季淨利年增率為 {snapshot.quarterlyFinancial.netIncomeYoY if snapshot.quarterlyFinancial.netIncomeYoY is not None else '缺資料'}%。"),
-        RuleResult(code="A5", title=f"PER 仍 < {ENTRY_PER_THRESHOLD}", passed=snapshot.valuation.per is not None and snapshot.valuation.per < ENTRY_PER_THRESHOLD, severity="WATCH" if not (snapshot.valuation.per is not None and snapshot.valuation.per < ENTRY_PER_THRESHOLD) else "INFO", message=f"PER 為 {snapshot.valuation.per if snapshot.valuation.per is not None else '缺資料'}。"),
-        RuleResult(code="A6", title="存貨週轉率仍 > 2.5", passed=snapshot.valuation.inventoryTurnover is not None and snapshot.valuation.inventoryTurnover > 2.5, severity="WATCH" if not (snapshot.valuation.inventoryTurnover is not None and snapshot.valuation.inventoryTurnover > 2.5) else "INFO", message=f"存貨週轉率為 {snapshot.valuation.inventoryTurnover if snapshot.valuation.inventoryTurnover is not None else '缺資料'}。"),
-        RuleResult(code="A7", title="未觸發任何出場條件", passed=exit_ok, severity="WATCH" if not exit_ok else "INFO", message="X1-X5 未觸發時才可加碼觀察。"),
+        RuleResult(
+            code="A1",
+            title="原進場條件仍符合",
+            passed=entry_ok,
+            severity="WATCH" if not entry_ok else "INFO",
+            message="E1-E6 全部通過才可列入加碼觀察。",
+        ),
+        RuleResult(
+            code="A2",
+            title="累計營收年增率仍 >= 50%",
+            passed=cum_yoy is not None and cum_yoy >= 50,
+            severity="WATCH" if not (cum_yoy is not None and cum_yoy >= 50) else "INFO",
+            message=f"累計營收年增率為 {cum_yoy if cum_yoy is not None else '缺資料'}%。",
+        ),
+        RuleResult(
+            code="A3",
+            title="最新季 EPS 年增率 > 0",
+            passed=eps_yoy is not None and eps_yoy > 0,
+            severity="WATCH" if not (eps_yoy is not None and eps_yoy > 0) else "INFO",
+            message=f"最新季 EPS 年增率為 {eps_yoy if eps_yoy is not None else '缺資料'}%。",
+        ),
+        RuleResult(
+            code="A4",
+            title="最新季淨利年增率 > 0",
+            passed=net_yoy is not None and net_yoy > 0,
+            severity="WATCH" if not (net_yoy is not None and net_yoy > 0) else "INFO",
+            message=f"最新季淨利年增率為 {net_yoy if net_yoy is not None else '缺資料'}%。",
+        ),
+        RuleResult(
+            code="A5",
+            title=f"PER 仍 < {ENTRY_PER_THRESHOLD}",
+            passed=per is not None and per < ENTRY_PER_THRESHOLD,
+            severity="WATCH" if not (per is not None and per < ENTRY_PER_THRESHOLD) else "INFO",
+            message=f"PER 為 {per if per is not None else '缺資料'}。",
+        ),
+        RuleResult(
+            code="A6",
+            title="存貨週轉率仍 > 2.5",
+            passed=inv_turn is not None and inv_turn > 2.5,
+            severity="WATCH" if not (inv_turn is not None and inv_turn > 2.5) else "INFO",
+            message=f"存貨週轉率為 {inv_turn if inv_turn is not None else '缺資料'}。",
+        ),
+        RuleResult(
+            code="A7",
+            title="未觸發任何出場條件",
+            passed=exit_ok,
+            severity="WATCH" if not exit_ok else "INFO",
+            message="X1-X5 未觸發時才可加碼觀察。",
+        ),
     ]
 
 

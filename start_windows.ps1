@@ -1,5 +1,12 @@
 $ErrorActionPreference = "Stop"
 
+if (Test-Path ".env") {
+    Get-Content ".env" | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' } | ForEach-Object {
+        $key, $val = $_ -split '=', 2
+        [System.Environment]::SetEnvironmentVariable($key.Trim(), $val.Trim(), "Process")
+    }
+}
+
 python -m pip show fastapi *> $null
 if ($LASTEXITCODE -ne 0) {
   Write-Host "Missing Python packages. Please run:"

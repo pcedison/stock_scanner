@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import RLock
+from time import monotonic
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -16,8 +18,8 @@ from pydantic import BaseModel, Field
 from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueAdapter
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AuthRateLimitError, AuthService, SUPER_USER_USERNAME
-from backend.services.backtest import run_backtest
+from backend.services.auth import AuthRateLimitError, AuthService, super_user_username
+from backend.services.backtest import DEFAULT_BACKTEST_PATH, run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
 from backend.services.integrations import integration_status
@@ -93,6 +95,8 @@ def _validate_runtime_security(cors_origins: list[str]) -> None:
             "APP_CORS_ALLOW_ORIGINS must use https origins in production: "
             + ", ".join(insecure_origins)
         )
+    if not super_user_username():
+        raise RuntimeError("SUPER_USER_USERNAME must be configured when APP_ENV=production")
 
 
 CORS_ALLOWED_ORIGINS = _cors_allowed_origins()
@@ -166,6 +170,32 @@ auth_db_path = os.getenv("AUTH_DB_PATH")
 auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()
 SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+
+_backtest_cache: dict = {}
+_backtest_cache_lock = RLock()
+_BACKTEST_CACHE_TTL_SECONDS = 3600
+
+
+def _backtest_source_signature() -> tuple[str, int | None, int | None]:
+    try:
+        stat = DEFAULT_BACKTEST_PATH.stat()
+    except FileNotFoundError:
+        return (str(DEFAULT_BACKTEST_PATH), None, None)
+    return (str(DEFAULT_BACKTEST_PATH), stat.st_mtime_ns, stat.st_size)
+
+
+def _backtest_status_cached() -> dict:
+    now = monotonic()
+    signature = _backtest_source_signature()
+    with _backtest_cache_lock:
+        if signature == _backtest_cache.get("signature") and now < _backtest_cache.get("expires_at", 0.0):
+            return _backtest_cache["result"]
+    result = run_backtest()
+    with _backtest_cache_lock:
+        _backtest_cache["result"] = result
+        _backtest_cache["signature"] = signature
+        _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
+    return result
 
 
 class AnalyzeRequest(BaseModel):
@@ -321,7 +351,12 @@ def _report_response(payload: dict, report_format: str, title: str, filename_pre
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "dataSource": "mock", "time": datetime.now(timezone.utc).isoformat()}
+    settings = load_settings()
+    return {
+        "status": "ok",
+        "dataSource": "mock" if settings.use_mock_data else "official_twse_tpex",
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.post("/api/auth/register")
@@ -380,7 +415,7 @@ def auth_me(request: Request) -> dict:
 @app.get("/api/admin/users")
 def list_admin_users(request: Request) -> dict:
     _require_super_user(request)
-    return {"superUser": SUPER_USER_USERNAME, "users": auth_service.list_users()}
+    return {"superUser": super_user_username(), "users": auth_service.list_users()}
 
 
 @app.delete("/api/admin/users/{user_id}")
@@ -392,7 +427,7 @@ def delete_admin_user(user_id: int, request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"superUser": SUPER_USER_USERNAME, "users": auth_service.list_users()}
+    return {"superUser": super_user_username(), "users": auth_service.list_users()}
 
 
 @app.get("/api/me/holdings")
@@ -604,7 +639,7 @@ def app_status(today: Optional[date] = None) -> dict:
         "schedulerStatus": scheduler_payload,
         "schedulerAutoScan": auto_scan_payload,
         "integrationStatus": integration_status(),
-        "backtestStatus": run_backtest(),
+        "backtestStatus": _backtest_status_cached(),
     }
 
 

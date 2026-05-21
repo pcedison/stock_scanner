@@ -52,6 +52,8 @@ class ScanCacheService:
         self._lock = RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan-cache-refresh")
         self._running: dict[str, Future] = {}
+        self._memory_cache: dict[str, dict] = {}
+        self._memory_cache_signature: tuple[int, int] | None = None
 
     def get_or_refresh(
         self,
@@ -89,6 +91,8 @@ class ScanCacheService:
             cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
             cache.setdefault("items", {})[key] = item
             self._write_json(self.scan_cache_path, cache)
+            self._memory_cache = copy.deepcopy(cache.get("items", {}))
+            self._memory_cache_signature = self._file_signature(self.scan_cache_path)
         return item
 
     def status(self, settings: ScannerSettings | None = None) -> dict:
@@ -168,9 +172,22 @@ class ScanCacheService:
 
     def _get_item(self, key: str) -> dict | None:
         with self._lock:
+            signature = self._file_signature(self.scan_cache_path)
+            if signature == self._memory_cache_signature and key in self._memory_cache:
+                return copy.deepcopy(self._memory_cache[key])
             cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
-        item = cache.get("items", {}).get(key)
-        return copy.deepcopy(item) if item else None
+            self._memory_cache = copy.deepcopy(cache.get("items", {}))
+            self._memory_cache_signature = signature
+            item = cache.get("items", {}).get(key)
+            return copy.deepcopy(item) if item else None
+
+    @staticmethod
+    def _file_signature(path: Path) -> tuple[int, int] | None:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
 
     def _is_due(self, stored_at: str | None, policy: dict) -> bool:
         stored_time = _parse_time(stored_at)
@@ -179,11 +196,12 @@ class ScanCacheService:
         return datetime.now(timezone.utc) >= stored_time.astimezone(timezone.utc) + timedelta(seconds=policy["minIntervalSeconds"])
 
     def _append_job(self, job: dict) -> None:
-        state = self._read_json(self.refresh_state_path, {"version": 1, "jobs": []})
-        jobs = state.setdefault("jobs", [])
-        jobs.append(job)
-        state["jobs"] = jobs[-100:]
-        self._write_json(self.refresh_state_path, state)
+        with self._lock:
+            state = self._read_json(self.refresh_state_path, {"version": 1, "jobs": []})
+            jobs = state.setdefault("jobs", [])
+            jobs.append(job)
+            state["jobs"] = jobs[-100:]
+            self._write_json(self.refresh_state_path, state)
 
     def _update_job(self, job_id: str, **updates) -> None:
         with self._lock:

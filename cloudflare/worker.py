@@ -21,7 +21,7 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
-_DEFAULT_SUPER_USER_USERNAME = "pcedison@gmail.com"
+_DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME = "pcedison@gmail.com"
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
 LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
@@ -128,6 +128,15 @@ def runtime_environment(env) -> str:
 
 def is_production_environment(env) -> bool:
     return runtime_environment(env) in {"prod", "production"}
+
+
+def configured_super_user_username(env) -> str:
+    configured = str(env_value(env, "SUPER_USER_USERNAME", "") or "").strip().lower()
+    if configured:
+        return configured
+    if is_production_environment(env):
+        return ""
+    return _DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
 
 
 def origin_host(origin: str) -> str:
@@ -369,14 +378,15 @@ def js_to_py(value):
     return value
 
 
-def public_user(row, super_user: str = _DEFAULT_SUPER_USER_USERNAME):
+def public_user(row, super_user: str | None = None):
     if not row:
         return None
+    resolved_super_user = super_user if super_user is not None else _DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
     return {
         "id": row["id"],
         "username": row["username"],
         "displayName": row.get("display_name") or row["username"],
-        "isSuperUser": str(row["username"]).lower() == super_user,
+        "isSuperUser": bool(resolved_super_user and str(row["username"]).lower() == resolved_super_user),
     }
 
 
@@ -412,8 +422,7 @@ class Api:
     def __init__(self, env):
         self.env = env
         self._r2_cache: dict = {}
-        # Read from Cloudflare env binding; fall back to default if not configured.
-        self._super_user = str(env_value(env, "SUPER_USER_USERNAME") or _DEFAULT_SUPER_USER_USERNAME).strip().lower()
+        self._super_user = configured_super_user_username(env)
 
     async def fetch(self, request):
         if request.method == "OPTIONS":

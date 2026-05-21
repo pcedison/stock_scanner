@@ -64,8 +64,18 @@ def test_production_runtime_security_rejects_local_cors(monkeypatch):
 def test_production_runtime_security_allows_explicit_https_origin(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("SESSION_COOKIE_SECURE", "1")
+    monkeypatch.setenv("SUPER_USER_USERNAME", "admin@example.com")
 
     main_module._validate_runtime_security(["https://stock-scanner-beta.pages.dev"])
+
+
+def test_production_runtime_security_requires_super_user(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "1")
+    monkeypatch.delenv("SUPER_USER_USERNAME", raising=False)
+
+    with pytest.raises(RuntimeError, match="SUPER_USER_USERNAME"):
+        main_module._validate_runtime_security(["https://stock-scanner-beta.pages.dev"])
 
 
 def test_production_runtime_security_rejects_non_https_origin(monkeypatch):
@@ -107,6 +117,28 @@ def test_app_status_contract_shape():
     assert set(payload["schedulerAutoScan"]) == {"action", "autoScanEnabled", "manualScanEnabled", "scan"}
     assert set(payload["backtestStatus"]) >= {"status", "trades", "metrics"}
     assert set(payload["backtestStatus"]["metrics"]) == {"tradeCount", "winRate", "totalReturn", "maxDrawdown"}
+
+
+def test_backtest_status_cache_invalidates_when_source_file_changes(tmp_path, monkeypatch):
+    source = tmp_path / "backtest_history.csv"
+    calls = {"count": 0}
+
+    def fake_run_backtest():
+        calls["count"] += 1
+        return {"status": "OK", "trades": [], "metrics": {"tradeCount": calls["count"]}}
+
+    monkeypatch.setattr(main_module, "DEFAULT_BACKTEST_PATH", source)
+    monkeypatch.setattr(main_module, "run_backtest", fake_run_backtest)
+    main_module._backtest_cache.clear()
+
+    first = main_module._backtest_status_cached()
+    second = main_module._backtest_status_cached()
+    source.write_text("changed\n", encoding="utf-8")
+    third = main_module._backtest_status_cached()
+
+    assert first["metrics"]["tradeCount"] == 1
+    assert second["metrics"]["tradeCount"] == 1
+    assert third["metrics"]["tradeCount"] == 2
 
 
 def test_companies_endpoint_is_paginated():
@@ -231,6 +263,20 @@ def test_auth_accepts_common_email_symbols(tmp_path):
     assert service.authenticate("qa+audit%2026@example.com", "test-password-123") is not None
     with pytest.raises(ValueError):
         service.create_user("bad account@example.com", "test-password-123")
+    service.close()
+
+
+def test_auth_service_close_reopens_thread_local_connection(tmp_path):
+    service = AuthService(tmp_path / "auth.sqlite3")
+    user = service.create_user("close-test@example.com", "test-password-123")
+
+    first_connection = service._connect()
+    service.close()
+    reopened_connection = service._connect()
+
+    assert reopened_connection is not first_connection
+    assert service.authenticate(user.username, "test-password-123") is not None
+    service.close()
 
 
 def test_failed_login_attempts_are_rate_limited(tmp_path, monkeypatch):
@@ -407,6 +453,14 @@ def test_scheduler_wakeup_endpoint():
     assert response.status_code == 200
     assert payload["status"] == "WAKE"
     assert "SPRING_FESTIVAL_GUARD" in payload["events"]
+
+
+def test_scheduler_keeps_monthly_revenue_followup_through_day_15():
+    response = client.get("/api/scheduler/wakeup?today=2026-07-15")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert "MONTHLY_REVENUE_WINDOW" in payload["events"]
 
 
 def test_scheduler_auto_scan_runs_when_enabled():

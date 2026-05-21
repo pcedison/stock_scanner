@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,11 +19,27 @@ DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
-SUPER_USER_USERNAME = os.getenv("SUPER_USER_USERNAME", "pcedison@gmail.com").strip().lower()
+DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME = "pcedison@gmail.com"
 AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
 SESSION_CLEANUP_INTERVAL_SECONDS = 15 * 60
+
+
+def _runtime_environment() -> str:
+    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower() or "development"
+
+
+def super_user_username() -> str:
+    configured = os.getenv("SUPER_USER_USERNAME", "").strip().lower()
+    if configured:
+        return configured
+    if _runtime_environment() in {"prod", "production"}:
+        return ""
+    return DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
+
+
+SUPER_USER_USERNAME = super_user_username()
 
 
 class AuthRateLimitError(Exception):
@@ -38,26 +55,37 @@ class AuthUser:
     display_name: str | None = None
 
     def public_dict(self) -> dict:
+        super_user = super_user_username()
         return {
             "id": self.id,
             "username": self.username,
             "displayName": self.display_name or self.username,
-            "isSuperUser": self.username.lower() == SUPER_USER_USERNAME,
+            "isSuperUser": bool(super_user and self.username.lower() == super_user),
         }
 
 
 class AuthService:
     def __init__(self, db_path: Path | str = DEFAULT_DB_PATH):
         self.db_path = Path(db_path)
+        self._local = threading.local()
         self._last_session_cleanup_at: datetime | None = None
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(str(self.db_path), timeout=30)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            self._local.conn = conn
+        return self._local.conn
+
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            delattr(self._local, "conn")
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -387,10 +415,12 @@ class AuthService:
 
     @staticmethod
     def is_super_user(user: AuthUser | None) -> bool:
-        return bool(user and user.username.lower() == SUPER_USER_USERNAME)
+        super_user = super_user_username()
+        return bool(user and super_user and user.username.lower() == super_user)
 
     def list_users(self) -> list[dict]:
         now = self._now()
+        super_user = super_user_username()
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -410,7 +440,7 @@ class AuthService:
                     users.created_at DESC,
                     users.username ASC
                 """,
-                (now, SUPER_USER_USERNAME),
+                (now, super_user),
             ).fetchall()
         return [
             {
@@ -420,18 +450,19 @@ class AuthService:
                 "createdAt": row["created_at"],
                 "holdingsCount": int(row["holdings_count"] or 0),
                 "activeSessionCount": int(row["active_session_count"] or 0),
-                "isSuperUser": row["username"].lower() == SUPER_USER_USERNAME,
-                "canDelete": row["username"].lower() != SUPER_USER_USERNAME,
+                "isSuperUser": bool(super_user and row["username"].lower() == super_user),
+                "canDelete": not (super_user and row["username"].lower() == super_user),
             }
             for row in rows
         ]
 
     def delete_user(self, user_id: int) -> bool:
+        super_user = super_user_username()
         with self._connect() as connection:
             row = connection.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
             if row is None:
                 return False
-            if row["username"].lower() == SUPER_USER_USERNAME:
+            if super_user and row["username"].lower() == super_user:
                 raise ValueError("super user cannot be deleted")
             connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM holdings WHERE user_id = ?", (user_id,))
