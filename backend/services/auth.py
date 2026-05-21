@@ -39,9 +39,6 @@ def super_user_username() -> str:
     return DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
 
 
-SUPER_USER_USERNAME = super_user_username()
-
-
 class AuthRateLimitError(Exception):
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds
@@ -464,7 +461,5 @@ class AuthService:
                 return False
             if super_user and row["username"].lower() == super_user:
                 raise ValueError("super user cannot be deleted")
-            connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-            connection.execute("DELETE FROM holdings WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
         return True

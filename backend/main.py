@@ -615,7 +615,7 @@ def integrations_status() -> dict:
 
 @app.get("/api/backtest")
 def backtest_status() -> dict:
-    return run_backtest()
+    return _backtest_status_cached()
 
 
 @app.get("/api/app-status")
