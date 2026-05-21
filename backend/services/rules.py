@@ -228,18 +228,16 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
             evidence=e1_evidence,
         )
     )
-    e2_growth_ok = all(
-        later > earlier for earlier, later in zip(annual_3y, annual_3y[1:]) if earlier is not None and later is not None
-    )
-    e2 = (
-        _rule_missing(
+    if len(annual_3y) < 3 or any(value is None for value in annual_3y):
+        e2 = _rule_missing(
             "E2",
             "近 3 年淨利正成長",
             _annual_net_income_message(annual_3_rows, 3, growth_rule=True),
             evidence=e2_evidence,
         )
-        if len(annual_3y) < 3 or any(value is None for value in annual_3y)
-        else RuleResult(
+    else:
+        e2_growth_ok = all(later > earlier for earlier, later in zip(annual_3y, annual_3y[1:]))
+        e2 = RuleResult(
             code="E2",
             title="近 3 年淨利正成長",
             passed=e2_growth_ok,
@@ -247,7 +245,6 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
             message=_annual_net_income_message(annual_3_rows, 3, growth_rule=True),
             evidence=e2_evidence,
         )
-    )
 
     rules = [
         e1,

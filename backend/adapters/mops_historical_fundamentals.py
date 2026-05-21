@@ -150,36 +150,36 @@ class OfficialMopsHistoricalFundamentalsAdapter:
     def __init__(self, timeout: float = 20) -> None:
         self.timeout = timeout
 
+    def _fetch_income(self, stock_code: str, company_name: str, market: str, fiscal_year: int, quarter: int) -> tuple[list[OfficialIncomeStatementRow], dict[str, Any]]:
+        payload = self._fetch_statement_payload(MOPS_API_INCOME_ENDPOINT, stock_code, fiscal_year, quarter)
+        if payload:
+            rows = self.parse_income_payload(payload, stock_code, company_name, market)
+            return rows, {"ok": True, "rows": len(rows)}
+        html = self._fetch_statement(MOPS_INCOME_ENDPOINT, stock_code, market, fiscal_year, quarter)
+        if html:
+            rows = self.parse_income_statement(html, stock_code, company_name, market)
+            return rows, {"ok": True, "rows": len(rows), "fallback": "html"}
+        return [], {"ok": False, "rows": 0}
+
+    def _fetch_balance(self, stock_code: str, company_name: str, market: str, fiscal_year: int, quarter: int) -> tuple[list[OfficialBalanceSheetRow], dict[str, Any]]:
+        payload = self._fetch_statement_payload(MOPS_API_BALANCE_ENDPOINT, stock_code, fiscal_year, quarter)
+        if payload:
+            rows = self.parse_balance_payload(payload, stock_code, company_name, market)
+            return rows, {"ok": True, "rows": len(rows)}
+        html = self._fetch_statement(MOPS_BALANCE_ENDPOINT, stock_code, market, fiscal_year, quarter)
+        if html:
+            rows = self.parse_balance_sheet(html, stock_code, company_name, market)
+            return rows, {"ok": True, "rows": len(rows), "fallback": "html"}
+        return [], {"ok": False, "rows": 0}
+
     def fetch_company_period(self, stock_code: str, company_name: str, market: str, fiscal_year: int, quarter: int) -> MopsHistoricalBundle:
-        status: dict[str, Any] = {}
-        incomes: list[OfficialIncomeStatementRow] = []
-        balances: list[OfficialBalanceSheetRow] = []
-
-        income_payload = self._fetch_statement_payload(MOPS_API_INCOME_ENDPOINT, stock_code, fiscal_year, quarter)
-        if income_payload:
-            incomes = self.parse_income_payload(income_payload, stock_code, company_name, market)
-            status["income"] = {"ok": True, "rows": len(incomes)}
-        else:
-            income_html = self._fetch_statement(MOPS_INCOME_ENDPOINT, stock_code, market, fiscal_year, quarter)
-            if income_html:
-                incomes = self.parse_income_statement(income_html, stock_code, company_name, market)
-                status["income"] = {"ok": True, "rows": len(incomes), "fallback": "html"}
-            else:
-                status["income"] = {"ok": False, "rows": 0}
-
-        balance_payload = self._fetch_statement_payload(MOPS_API_BALANCE_ENDPOINT, stock_code, fiscal_year, quarter)
-        if balance_payload:
-            balances = self.parse_balance_payload(balance_payload, stock_code, company_name, market)
-            status["balance"] = {"ok": True, "rows": len(balances)}
-        else:
-            balance_html = self._fetch_statement(MOPS_BALANCE_ENDPOINT, stock_code, market, fiscal_year, quarter)
-            if balance_html:
-                balances = self.parse_balance_sheet(balance_html, stock_code, company_name, market)
-                status["balance"] = {"ok": True, "rows": len(balances), "fallback": "html"}
-            else:
-                status["balance"] = {"ok": False, "rows": 0}
-
-        return MopsHistoricalBundle(incomes=incomes, balances=balances, status=status)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            income_future = executor.submit(self._fetch_income, stock_code, company_name, market, fiscal_year, quarter)
+            balance_future = executor.submit(self._fetch_balance, stock_code, company_name, market, fiscal_year, quarter)
+            incomes, income_status = income_future.result()
+            balances, balance_status = balance_future.result()
+        return MopsHistoricalBundle(incomes=incomes, balances=balances, status={"income": income_status, "balance": balance_status})
 
     def _fetch_statement_payload(self, endpoint: str, stock_code: str, fiscal_year: int, quarter: int) -> dict[str, Any] | None:
         payload = {

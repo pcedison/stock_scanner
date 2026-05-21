@@ -193,6 +193,8 @@ class OfficialHistoryBackfillService:
         pending = 0
         income_rows = 0
         balance_rows = 0
+        _SAVE_EVERY = 10
+        _saves_since_last = 0
         completed_codes = set(progress.get("completedCompanies", []))
         failed_companies = dict(progress.get("failedCompanies", {}))
         pending_companies = dict(progress.get("pendingCompanies", {}))
@@ -279,17 +281,14 @@ class OfficialHistoryBackfillService:
             if company_errors:
                 failed += 1
                 failed_companies[company.stockCode] = company_errors
-                progress["failedCompanies"] = failed_companies
-                progress["lastCompany"] = company.stockCode
-                self.progress_store.save(progress)
-                continue
-            failed_companies.pop(company.stockCode, None)
-            if company_pending:
-                pending += 1
-                pending_companies[company.stockCode] = company_pending
             else:
-                pending_companies.pop(company.stockCode, None)
-            completed_codes.add(company.stockCode)
+                failed_companies.pop(company.stockCode, None)
+                if company_pending:
+                    pending += 1
+                    pending_companies[company.stockCode] = company_pending
+                else:
+                    pending_companies.pop(company.stockCode, None)
+                completed_codes.add(company.stockCode)
             progress["completedCompanies"] = sorted(completed_codes)
             progress["failedCompanies"] = failed_companies
             progress["pendingCompanies"] = pending_companies
@@ -301,7 +300,10 @@ class OfficialHistoryBackfillService:
                 "incomeRows": income_rows,
                 "balanceRows": balance_rows,
             }
-            self.progress_store.save(progress)
+            _saves_since_last += 1
+            if _saves_since_last >= _SAVE_EVERY:
+                self.progress_store.save(progress)
+                _saves_since_last = 0
 
         progress["completedCompanies"] = sorted(completed_codes)
         progress["failedCompanies"] = failed_companies
@@ -316,7 +318,7 @@ class OfficialHistoryBackfillService:
 
         return OfficialHistoryBackfillResult(
             requestedCompanies=requested,
-            backfilledCompanies=requested,
+            backfilledCompanies=max(0, requested - failed),
             skippedCompanies=skipped,
             failedCompanies=failed,
             pendingCompanies=pending,

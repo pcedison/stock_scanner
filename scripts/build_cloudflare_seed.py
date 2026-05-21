@@ -385,6 +385,28 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
     return manifest
 
 
+def _build_analysis_for_snapshots(
+    snapshots,
+    settings,
+    analysis_by_code: dict,
+    analysis_shards: dict,
+    holding_analysis_by_code: dict,
+    holding_analysis_shards: dict,
+    analysis_results: list,
+) -> None:
+    for snapshot in snapshots:
+        result = engine.evaluate_entry(snapshot, settings)
+        encoded = jsonable_encoder(result)
+        analysis_by_code[result.stockCode] = encoded
+        analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = encoded
+        analysis_results.append(encoded)
+        holding = Holding(stockCode=result.stockCode, name=result.companyName, shares=0, averageCost=None)
+        holding_result = engine.evaluate_holding(snapshot, holding, settings)
+        holding_encoded = jsonable_encoder(holding_result)
+        holding_analysis_by_code[result.stockCode] = holding_encoded
+        holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
+
+
 def main() -> None:
     seed_mode = os.getenv("CLOUDFLARE_SEED_MODE", "offline_first").strip().lower()
     if seed_mode in {"offline", "offline_first"}:
@@ -411,40 +433,37 @@ def main() -> None:
     generated_at = datetime.fromisoformat(scan_payload["generatedAt"])
     next_refresh = generated_at + timedelta(seconds=policy["minIntervalSeconds"])
     companies = official_provider.list_companies()
-    analysis_by_code = {}
+    analysis_by_code: dict = {}
     analysis_shards: dict[str, dict[str, dict]] = {}
-    holding_analysis_by_code = {}
+    holding_analysis_by_code: dict = {}
     holding_analysis_shards: dict[str, dict[str, dict]] = {}
-    analysis_results = []
+    analysis_results: list = []
     fallback_source = None
-    for snapshot in official_provider.iter_snapshots(settings):
-        result = engine.evaluate_entry(snapshot, settings)
-        encoded = jsonable_encoder(result)
-        analysis_by_code[result.stockCode] = encoded
-        analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = encoded
-        analysis_results.append(encoded)
-        holding = Holding(stockCode=result.stockCode, name=result.companyName, shares=0, averageCost=None)
-        holding_result = engine.evaluate_holding(snapshot, holding, settings)
-        holding_encoded = jsonable_encoder(holding_result)
-        holding_analysis_by_code[result.stockCode] = holding_encoded
-        holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
+
+    _build_analysis_for_snapshots(
+        official_provider.iter_snapshots(settings),
+        settings,
+        analysis_by_code,
+        analysis_shards,
+        holding_analysis_by_code,
+        holding_analysis_shards,
+        analysis_results,
+    )
 
     if not analysis_results:
         history_snapshots = history_seed_snapshots(settings)
         if history_snapshots:
             fallback_source = "official_fundamentals_history"
             companies = [snapshot.company for snapshot in history_snapshots]
-            for snapshot in history_snapshots:
-                result = engine.evaluate_entry(snapshot, settings)
-                encoded = jsonable_encoder(result)
-                analysis_by_code[result.stockCode] = encoded
-                analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = encoded
-                analysis_results.append(encoded)
-                holding = Holding(stockCode=result.stockCode, name=result.companyName, shares=0, averageCost=None)
-                holding_result = engine.evaluate_holding(snapshot, holding, settings)
-                holding_encoded = jsonable_encoder(holding_result)
-                holding_analysis_by_code[result.stockCode] = holding_encoded
-                holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
+            _build_analysis_for_snapshots(
+                history_snapshots,
+                settings,
+                analysis_by_code,
+                analysis_shards,
+                holding_analysis_by_code,
+                holding_analysis_shards,
+                analysis_results,
+            )
 
     if analysis_results and scan_payload_needs_rebuild(scan_payload):
         scan_payload = rebuild_scan_from_analysis(scan_payload, analysis_results)
@@ -480,7 +499,7 @@ def main() -> None:
             "data_sources_status.json",
             "official_fundamentals_history.json",
             "official_history_backfill_progress.json",
-            "official_cache_seed_2026-05-14.zip",
+            *(([SEED_CACHE_ZIP.name]) if SEED_CACHE_ZIP.exists() else []),
         ],
         "counts": {
             "companies": len(companies),
