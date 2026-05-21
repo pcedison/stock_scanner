@@ -196,7 +196,7 @@ class OfficialMopsHistoricalFundamentalsAdapter:
             "User-Agent": "Mozilla/5.0",
         }
         try:
-            response = httpx.post(endpoint, json=payload, headers=headers, timeout=self.timeout, follow_redirects=True, verify=False)
+            response = httpx.post(endpoint, json=payload, headers=headers, timeout=self.timeout, follow_redirects=True)
             response.raise_for_status()
             body = response.json()
         except (httpx.HTTPError, ValueError):
@@ -223,7 +223,7 @@ class OfficialMopsHistoricalFundamentalsAdapter:
             "Referer": endpoint.replace("ajax_", ""),
         }
         try:
-            response = httpx.get(endpoint, params=params, headers=headers, timeout=self.timeout, follow_redirects=True, verify=False)
+            response = httpx.get(endpoint, params=params, headers=headers, timeout=self.timeout, follow_redirects=True)
             response.raise_for_status()
         except httpx.HTTPError:
             return None

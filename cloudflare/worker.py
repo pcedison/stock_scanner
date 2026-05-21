@@ -21,7 +21,7 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
-SUPER_USER_USERNAME = "pcedison@gmail.com"
+_DEFAULT_SUPER_USER_USERNAME = "pcedison@gmail.com"
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
 LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
@@ -369,14 +369,14 @@ def js_to_py(value):
     return value
 
 
-def public_user(row):
+def public_user(row, super_user: str = _DEFAULT_SUPER_USER_USERNAME):
     if not row:
         return None
     return {
         "id": row["id"],
         "username": row["username"],
         "displayName": row.get("display_name") or row["username"],
-        "isSuperUser": str(row["username"]).lower() == SUPER_USER_USERNAME,
+        "isSuperUser": str(row["username"]).lower() == super_user,
     }
 
 
@@ -412,6 +412,8 @@ class Api:
     def __init__(self, env):
         self.env = env
         self._r2_cache: dict = {}
+        # Read from Cloudflare env binding; fall back to default if not configured.
+        self._super_user = str(env_value(env, "SUPER_USER_USERNAME") or _DEFAULT_SUPER_USER_USERNAME).strip().lower()
 
     async def fetch(self, request):
         if request.method == "OPTIONS":
@@ -483,7 +485,7 @@ class Api:
         return {
             "access-control-allow-origin": origin,
             "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "access-control-allow-headers": "content-type,cookie",
+            "access-control-allow-headers": f"content-type,{CSRF_HEADER_NAME}",
             "access-control-allow-credentials": "true",
             "vary": "Origin",
         }
@@ -577,7 +579,7 @@ class Api:
         if path == "/api/auth/me" and request.method == "GET":
             user = await self.current_user(request)
             holdings = await self.list_holdings(user["id"]) if user else []
-            return json_response({"authenticated": bool(user), "user": public_user(user), "holdings": holdings})
+            return json_response({"authenticated": bool(user), "user": public_user(user, self._super_user), "holdings": holdings})
 
         if path == "/api/admin/users" and request.method == "GET":
             await self.require_super_user(request)
@@ -731,6 +733,11 @@ class Api:
             return {"status": existing["status"], "reason": existing["reason"], "jobId": existing["id"], "queuedAt": existing["queued_at"]}
         job_id = secrets.token_hex(16)
         now = utc_now()
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        await self.db_run(
+            "DELETE FROM refresh_jobs WHERE status IN ('success','failed') AND finished_at < ?",
+            stale_cutoff,
+        )
         await self.db_run(
             """
             INSERT INTO refresh_jobs (id, job_type, cache_key, status, reason, queued_at, updated_at)
@@ -809,7 +816,7 @@ class Api:
 
     async def require_super_user(self, request):
         user = await self.require_user(request)
-        if str(user.get("username", "")).lower() != SUPER_USER_USERNAME:
+        if str(user.get("username", "")).lower() != self._super_user:
             raise ForbiddenError("Only the super user can manage users")
         return user
 
@@ -833,10 +840,10 @@ class Api:
                 users.username ASC
             """,
             utc_now(),
-            SUPER_USER_USERNAME,
+            self._super_user,
         )
         return {
-            "superUser": SUPER_USER_USERNAME,
+            "superUser": self._super_user,
             "users": [
                 {
                     "id": row["id"],
@@ -845,8 +852,8 @@ class Api:
                     "createdAt": row.get("created_at"),
                     "holdingsCount": row.get("holdings_count") or 0,
                     "activeSessionCount": row.get("active_session_count") or 0,
-                    "isSuperUser": str(row["username"]).lower() == SUPER_USER_USERNAME,
-                    "canDelete": str(row["username"]).lower() != SUPER_USER_USERNAME,
+                    "isSuperUser": str(row["username"]).lower() == self._super_user,
+                    "canDelete": str(row["username"]).lower() != self._super_user,
                 }
                 for row in rows
             ],
@@ -855,8 +862,8 @@ class Api:
     async def delete_admin_user(self, user_id: int):
         target = await self.db_first("SELECT id, username FROM users WHERE id = ?", user_id)
         if not target:
-            return {"superUser": SUPER_USER_USERNAME, "users": [], "deleted": False, "message": "User not found"}
-        if str(target["username"]).lower() == SUPER_USER_USERNAME:
+            return {"superUser": self._super_user, "users": [], "deleted": False, "message": "User not found"}
+        if str(target["username"]).lower() == self._super_user:
             raise BadRequestError("super user cannot be deleted")
         await self.db_run("DELETE FROM sessions WHERE user_id = ?", user_id)
         await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
@@ -967,7 +974,7 @@ class Api:
         await self.clear_auth_failures(username, request)
         token = await self.create_session(user["id"])
         holdings = await self.list_holdings(user["id"])
-        return json_response({"authenticated": True, "user": public_user(user), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
+        return json_response({"authenticated": True, "user": public_user(user, self._super_user), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def login(self, request):
         payload = await self.request_json(request)
@@ -984,7 +991,7 @@ class Api:
         await self.clear_auth_failures(username, request)
         token = await self.create_session(row["id"])
         holdings = await self.list_holdings(row["id"])
-        return json_response({"authenticated": True, "user": public_user(row), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
+        return json_response({"authenticated": True, "user": public_user(row, self._super_user), "holdings": holdings}, headers={"set-cookie": session_cookie(token)})
 
     async def list_holdings(self, user_id: int):
         rows = await self.db_all(

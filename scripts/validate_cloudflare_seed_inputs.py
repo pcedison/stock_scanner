@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 
-def _find_seed_zip(data_dir: Path) -> Path:
-    candidates = sorted(data_dir.glob("official_cache_seed_*.zip"), key=lambda p: p.name, reverse=True)
-    return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from seed_utils import find_seed_zip  # noqa: E402
 
-
-DEFAULT_ZIP = _find_seed_zip(Path("data"))
+DEFAULT_ZIP = find_seed_zip(Path("data"))
 DEFAULT_FAILED_COMPANIES_CSV = Path("data/official_history_failed_companies_2026Q1.csv")
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",

@@ -20,10 +20,10 @@ from backend.services.auth import AuthRateLimitError, AuthService, SUPER_USER_US
 from backend.services.backtest import run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
-from backend.services.filing_calendar import filing_context
 from backend.services.integrations import integration_status
 from backend.services.official_history_backfill import OfficialHistoryBackfillService
 from backend.services.official_data_provider import OfficialDataProvider
+from backend.services.market_scan import data_sources_status_payload, scan_market_payload as _scan_market_payload_impl
 from backend.services.reporting import render_csv_report, render_markdown_report
 from backend.services.rules import RuleEngine
 from backend.services.scheduler import should_wake_up
@@ -274,36 +274,7 @@ def _paginated_items(items: list, page: int, limit: int) -> dict:
 
 
 def _scan_market_payload(settings: ScannerSettings) -> dict:
-    provider = _active_provider(settings)
-    context = filing_context()
-    entry = []
-    watch = []
-    excluded = []
-    for snapshot in provider.iter_snapshots(settings):
-        result = engine.evaluate_entry(snapshot, settings)
-        if result.status == "ENTRY":
-            entry.append(result)
-        elif result.status == "EXCLUDED":
-            excluded.append(result)
-        else:
-            watch.append(result)
-
-    data_source = "mock" if settings.use_mock_data else "official_twse_tpex_monthly_revenue"
-    note = (
-        "MVP 目前只掃描 data/sample_companies.json 與 data/sample_fundamentals.json 的示範樣本；不是 realtime，也不是真實全台上市櫃全市場資料。"
-        if settings.use_mock_data
-        else "目前掃描官方 TWSE/TPEx 上市櫃 universe，並依目前申報窗口區分當期財報已公告與尚未公告；月營收、最新季損益、資產負債表、EPS、PER/PBR/殖利率會納入初篩，最新季資料會自動累積為官方歷史快取。這不是逐筆行情 realtime。"
-    )
-    return {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "dataSource": data_source,
-        "filingContext": context,
-        "universeSize": len(entry) + len(watch) + len(excluded),
-        "note": note,
-        "entry": entry,
-        "watch": watch,
-        "excluded": excluded,
-    }
+    return _scan_market_payload_impl(settings, _active_provider(settings), engine)
 
 
 def _scan_market_payload_after_official_refresh(settings: ScannerSettings) -> dict:
@@ -451,54 +422,12 @@ def delete_my_holding(stock_code: str, request: Request) -> dict:
 @app.get("/api/data-sources/status")
 def data_sources_status(check_network: bool = False) -> dict:
     settings = load_settings()
-    official_status = official_provider.status(refresh=False) if not settings.use_mock_data else None
-    payload = {
-        "activeProvider": "MockDataProvider" if settings.use_mock_data else "OfficialDataProvider",
-        "activeProviderIsRealtime": False,
-        "activeProviderIsFullMarket": not settings.use_mock_data,
-        "activeProviderHasCompleteFundamentals": False,
-        "mockUniverseSize": len(mock_provider.list_companies()),
-        "officialUniverseSize": official_status["companies"] if official_status else None,
-        "officialMonthlySnapshotSize": official_status["monthlySnapshots"] if official_status else None,
-        "officialIncomeStatementSize": official_status["sourceStatus"].get("incomeRows") if official_status else None,
-        "officialBalanceSheetSize": official_status["sourceStatus"].get("balanceRows") if official_status else None,
-        "officialValuationSize": official_status["sourceStatus"].get("valuationRows") if official_status else None,
-        "fundamentalsImportRows": official_status["sourceStatus"].get("fundamentalsImport", {}).get("rows") if official_status else None,
-        "fundamentalsImportPath": official_status["sourceStatus"].get("fundamentalsImport", {}).get("path") if official_status else None,
-        "officialHistoryRows": official_status["sourceStatus"].get("officialFundamentalsHistory", {}).get("rows") if official_status else None,
-        "officialHistoryPath": official_status["sourceStatus"].get("officialFundamentalsHistory", {}).get("path") if official_status else None,
-        "officialHistoricalFundamentals": {
-            "status": "official_cache_enabled",
-            "cache": official_status["sourceStatus"].get("officialFundamentalsHistory") if official_status else None,
-            "note": "TWSE/TPEx OpenAPI latest statement rows are persisted locally. Historical gaps can be backfilled from the official MOPS JSON APIs via POST /api/data-sources/backfill-history, or by data/fundamentals_import.csv when a licensed/manual source is preferred.",
-        },
-        "marketScanCache": scan_cache_service.status(settings if not settings.use_mock_data else None),
-        "officialMonthlyRevenueAdapters": {
-            "TWSE_COMPANY_PROFILE": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
-            "TPEX_COMPANY_PROFILE": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
-            "TWSE": "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
-            "TPEX": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
-        },
-        "officialFundamentalsAdapters": {
-            "TWSE_INCOME": "https://openapi.twse.com.tw/v1/opendata/t187ap06_L_*",
-            "TWSE_BALANCE": "https://openapi.twse.com.tw/v1/opendata/t187ap07_L_*",
-            "TPEX_INCOME": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_*",
-            "TPEX_BALANCE": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap07_O_*",
-            "MOPS_HISTORICAL_INCOME": "https://mops.twse.com.tw/mops/api/t164sb04",
-            "MOPS_HISTORICAL_BALANCE": "https://mops.twse.com.tw/mops/api/t164sb03",
-            "TWSE_VALUATION": "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d",
-            "TPEX_VALUATION": "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis",
-        },
-        "thirdPartyDataPlatforms": {
-            "MacroMicro": {
-                "enabled": False,
-                "configured": False,
-                "requires": ["licensed API plan", "API key", "data redistribution/storage terms"],
-                "note": "MacroMicro API/data downloads are subscription or enterprise-licensed services. Do not scrape without explicit written authorization.",
-            }
-        },
-        "note": "關閉 Mock Data 後會改掃官方 TWSE/TPEx universe、最新月營收、最新季損益、資產負債表與官方估值；MOPS 官方歷史 API 可續跑回補 5 年歷史快取。當期尚未公告會標示 pending，不視為可掃描結論。",
-    }
+    payload = data_sources_status_payload(
+        settings,
+        official_provider,
+        mock_universe_size=len(mock_provider.list_companies()),
+        scan_cache_status=scan_cache_service.status(settings if not settings.use_mock_data else None),
+    )
     if check_network:
         payload["networkCheck"] = OfficialMonthlyRevenueAdapter().health()
     return payload

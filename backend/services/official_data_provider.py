@@ -134,6 +134,9 @@ class OfficialDataProvider:
                 return
 
             profiles = self.adapter.fetch_company_profiles()
+            # Profiles fetched as part of full refresh — update profile TTL immediately
+            # so a concurrent list_companies() call doesn't trigger a redundant profile fetch.
+            self._profiles_expires_at = monotonic() + self.ttl_seconds
             revenue_rows = self.adapter.fetch_monthly_revenue()
             fundamentals = self.fundamentals_adapter.fetch_bundle()
             imported = self.import_adapter.fetch_bundle()

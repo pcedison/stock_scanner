@@ -1,6 +1,5 @@
 const HOLDINGS_KEY = "tw_stock_scanner.holdings.v1";
 const ONBOARDING_KEY = "tw_stock_scanner.onboarding_done.v1";
-const SUPER_USER_USERNAME = "pcedison@gmail.com";
 const COMPANIES_PAGE_LIMIT = 500;
 const MAX_COMPANY_PAGES = 10;
 const DOM_HELPERS =
@@ -253,7 +252,7 @@ function normalizeAuthUsername(username) {
 }
 
 function isSuperUserIdentity(user) {
-  return normalizeAuthUsername(user?.username) === SUPER_USER_USERNAME;
+  return Boolean(user?.isSuperUser);
 }
 
 function normalizeAuthUser(user) {
@@ -2635,7 +2634,6 @@ if (typeof document !== "undefined") {
 
 if (typeof module !== "undefined") {
   module.exports = {
-    SUPER_USER_USERNAME,
     COMPANIES_PAGE_LIMIT,
     DEFAULT_COMPANIES,
     STRATEGY_STATUS_DETAILS,

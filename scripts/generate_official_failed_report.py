@@ -125,6 +125,8 @@ def build_rows(ctx: dict | None = None) -> tuple[list[dict[str, object]], int]:
 
 
 def write_csv(rows: list[dict[str, object]], csv_path: Path) -> None:
+    if not rows:
+        return
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))

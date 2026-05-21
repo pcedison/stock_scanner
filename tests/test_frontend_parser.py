@@ -101,7 +101,7 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, SUPER_USER_USERNAME, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -246,9 +246,9 @@ state.holdings = [{ stockCode: "3008", name: "Largan", shares: 100, averageCost:
 const exitAlerts = holdingExitAlerts({ results: [exitHoldingResult], missing: [] });
 const exitAlertBanner = renderHoldingExitAlertBanner(exitAlerts);
 state.holdings = [];
-const pcedisonFromUsername = normalizeAuthUser({ username: " PCEDISON@GMAIL.COM ", displayName: "", isSuperUser: false });
-const pcedisonMissingFlag = normalizeAuthUser({ username: "pcedison@gmail.com" });
-const normalWithFlag = normalizeAuthUser({ username: "normal@example.com", isSuperUser: true });
+const pcedisonFromUsername = normalizeAuthUser({ username: " PCEDISON@GMAIL.COM ", displayName: "", isSuperUser: true });
+const pcedisonMissingFlag = normalizeAuthUser({ username: "pcedison@gmail.com", isSuperUser: true });
+const normalWithFlag = normalizeAuthUser({ username: "normal@example.com", isSuperUser: false });
 state.auth = { authenticated: true, user: pcedisonFromUsername };
 const superState = isSuperUser();
 state.auth = { checked: true, authenticated: true, user: normalWithFlag };
@@ -272,7 +272,7 @@ const adminErrors = {
   notFound: adminUsersErrorMessage("Not found"),
   normal: adminUsersErrorMessage("請先登入"),
 };
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { superUserUsername: SUPER_USER_USERNAME, normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, exitCodes, exitSignal, exitSignalHtml, exitAlerts, exitAlertBanner, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, exitCodes, exitSignal, exitSignalHtml, exitAlerts, exitAlertBanner, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -331,11 +331,10 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["authValidation"]["shortPassword"] == "密碼至少需要 8 個字元。"
     assert "管理 API 尚未部署" in payload["adminErrors"]["notFound"]
     assert payload["adminErrors"]["normal"] == "使用者清單讀取失敗：請先登入"
-    assert payload["auth"]["superUserUsername"] == "pcedison@gmail.com"
     assert payload["auth"]["normalizedSuperUsername"] == "pcedison@gmail.com"
-    assert payload["auth"]["pcedisonFromUsername"]["isSuperUser"] is True
-    assert payload["auth"]["pcedisonMissingFlag"]["isSuperUser"] is True
-    assert payload["auth"]["normalWithFlag"]["isSuperUser"] is False
+    assert payload["auth"]["pcedisonFromUsername"]["isSuperUser"] is True   # API flag trusted
+    assert payload["auth"]["pcedisonMissingFlag"]["isSuperUser"] is True    # API flag trusted
+    assert payload["auth"]["normalWithFlag"]["isSuperUser"] is False        # API flag trusted
     assert payload["auth"]["pcedisonIdentity"] is True
     assert payload["auth"]["normalIdentity"] is False
     assert payload["auth"]["superState"] is True

@@ -10,17 +10,10 @@ from pathlib import Path
 from fastapi.encoders import jsonable_encoder
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = Path(__file__).resolve().parent
 OUT_DIR = ROOT_DIR / "cloudflare" / "seed"
 ANALYSIS_SHARD_DIR = OUT_DIR / "analysis_shards"
 HOLDING_ANALYSIS_SHARD_DIR = OUT_DIR / "holding_analysis_shards"
-
-
-def _find_seed_zip(data_dir: Path) -> Path:
-    candidates = sorted(data_dir.glob("official_cache_seed_*.zip"), key=lambda p: p.name, reverse=True)
-    return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
-
-
-SEED_CACHE_ZIP = _find_seed_zip(ROOT_DIR / "data")
 OFFLINE_SEED_PREFIX = "cloudflare_seed/"
 OFFLINE_SEED_REQUIRED_FILES = {
     "manifest.json",
@@ -30,14 +23,22 @@ OFFLINE_SEED_REQUIRED_FILES = {
     "analysis_by_code.json",
     "holding_analysis_by_code.json",
 }
-sys.path.insert(0, str(ROOT_DIR))
+
+# Ensure both project root (for backend.*) and scripts/ (for seed_utils) are importable.
+for _p in (str(ROOT_DIR), str(SCRIPTS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from seed_utils import find_seed_zip  # noqa: E402
+
+SEED_CACHE_ZIP = find_seed_zip(ROOT_DIR / "data")
 
 from backend.models.company import Company  # noqa: E402
 from backend.models.financial import FundamentalSnapshot  # noqa: E402
 from backend.models.holding import Holding  # noqa: E402
 from backend.models.settings import ScannerSettings  # noqa: E402
 from backend.services.cache_policy import refresh_policy  # noqa: E402
-from backend.services.filing_calendar import filing_context  # noqa: E402
+from backend.services.market_scan import data_sources_status_payload, scan_market_payload  # noqa: E402
 from backend.services.official_data_provider import OfficialDataProvider, _is_financial_company  # noqa: E402
 from backend.services.rules import RuleEngine  # noqa: E402
 from backend.services.settings_service import load_settings  # noqa: E402
@@ -47,40 +48,13 @@ official_provider = OfficialDataProvider()
 
 
 def _scan_market_payload(settings: ScannerSettings) -> dict:
-    context = filing_context()
-    entry = []
-    watch = []
-    excluded = []
-    for snapshot in official_provider.iter_snapshots(settings):
-        result = engine.evaluate_entry(snapshot, settings)
-        if result.status == "ENTRY":
-            entry.append(result)
-        elif result.status == "EXCLUDED":
-            excluded.append(result)
-        else:
-            watch.append(result)
-    return {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "dataSource": "official_twse_tpex_monthly_revenue",
-        "filingContext": context,
-        "universeSize": len(entry) + len(watch) + len(excluded),
-        "note": "掃描官方 TWSE/TPEx 上市櫃 universe。月營收、最新季損益、資產負債表、EPS、PER/PBR/殖利率納入初篩。",
-        "entry": entry,
-        "watch": watch,
-        "excluded": excluded,
-    }
+    return scan_market_payload(settings, official_provider, engine)
 
 
 def _data_sources_status_payload() -> dict:
-    official_status = official_provider.status(refresh=False)
-    return {
-        "activeProvider": "OfficialDataProvider",
-        "activeProviderIsRealtime": False,
-        "activeProviderIsFullMarket": True,
-        "officialUniverseSize": official_status.get("companies"),
-        "officialMonthlySnapshotSize": official_status.get("monthlySnapshots"),
-        "sourceStatus": official_status.get("sourceStatus", {}),
-    }
+    settings = load_settings()
+    settings.use_mock_data = False
+    return data_sources_status_payload(settings, official_provider)
 
 
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))

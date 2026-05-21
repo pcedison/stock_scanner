@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import sqlite3
@@ -17,7 +18,7 @@ DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
-SUPER_USER_USERNAME = "pcedison@gmail.com"
+SUPER_USER_USERNAME = os.getenv("SUPER_USER_USERNAME", "pcedison@gmail.com").strip().lower()
 AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
