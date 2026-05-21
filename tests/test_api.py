@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 import backend.main as main_module
 from backend.main import app
 from backend.models.settings import ScannerSettings
-from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService, SUPER_USER_USERNAME
+from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService
 from backend.services.settings_service import load_settings, save_settings
 
 

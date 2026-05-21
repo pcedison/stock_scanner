@@ -16,14 +16,12 @@ _E3_TITLE: dict[str, str] = {
 }
 
 
-def _latest_annual_net_incomes(snapshot: FundamentalSnapshot, years: int) -> list[float | None]:
-    ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
-    return [item.netIncome for item in ordered[-years:]]
+def _latest_annual_net_incomes(sorted_annuals: list[AnnualFinancial], years: int) -> list[float | None]:
+    return [item.netIncome for item in sorted_annuals[-years:]]
 
 
-def _latest_annual_financials(snapshot: FundamentalSnapshot, years: int) -> list[AnnualFinancial]:
-    ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
-    return ordered[-years:]
+def _latest_annual_financials(sorted_annuals: list[AnnualFinancial], years: int) -> list[AnnualFinancial]:
+    return sorted_annuals[-years:]
 
 
 def _annual_net_income_evidence(rows: list[AnnualFinancial]) -> list[dict]:
@@ -166,10 +164,11 @@ def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
 
 def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> list[RuleResult]:
     company = snapshot.company
-    annual_5_rows = _latest_annual_financials(snapshot, 5)
-    annual_3_rows = _latest_annual_financials(snapshot, 3)
-    annual_5y = _latest_annual_net_incomes(snapshot, 5)
-    annual_3y = _latest_annual_net_incomes(snapshot, 3)
+    sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
+    annual_5_rows = _latest_annual_financials(sorted_annuals, 5)
+    annual_3_rows = _latest_annual_financials(sorted_annuals, 3)
+    annual_5y = _latest_annual_net_incomes(sorted_annuals, 5)
+    annual_3y = _latest_annual_net_incomes(sorted_annuals, 3)
     revenue_growth = _revenue_growth_for_entry(snapshot, settings)
 
     if company.isFinancial and not settings.exclude_financial_industry:

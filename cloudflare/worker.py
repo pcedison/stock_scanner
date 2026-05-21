@@ -690,7 +690,7 @@ class Api:
         )
         if in_financial_window:
             return {"strategy": "stale_while_revalidate", "reason": "financial_report_window", "minIntervalSeconds": 7200}
-        if 8 <= now.day <= 12:
+        if 8 <= now.day <= 15:
             return {"strategy": "stale_while_revalidate", "reason": "monthly_revenue_window", "minIntervalSeconds": 10800}
         return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
 
@@ -744,7 +744,7 @@ class Api:
         now = utc_now()
         stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         await self.db_run(
-            "DELETE FROM refresh_jobs WHERE status IN ('success','failed') AND finished_at < ?",
+            "DELETE FROM refresh_jobs WHERE queued_at < ?",
             stale_cutoff,
         )
         await self.db_run(

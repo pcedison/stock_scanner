@@ -98,9 +98,13 @@ class ScanCacheService:
     def status(self, settings: ScannerSettings | None = None) -> dict:
         key = scan_cache_key(settings) if settings else None
         with self._lock:
-            cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
+            signature = self._file_signature(self.scan_cache_path)
+            if signature != self._memory_cache_signature:
+                cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
+                self._memory_cache = copy.deepcopy(cache.get("items", {}))
+                self._memory_cache_signature = signature
+            items = copy.deepcopy(self._memory_cache)
             state = self._read_json(self.refresh_state_path, {"version": 1, "jobs": []})
-        items = cache.get("items", {})
         jobs = state.get("jobs", [])
         selected = items.get(key) if key else None
         return {
