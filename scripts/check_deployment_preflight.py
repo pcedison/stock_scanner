@@ -59,6 +59,7 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "post-deploy remote smoke": r"scripts/run_remote_smoke\.py",
         "post-deploy freshness gate": r"--max-cache-age-hours",
         "offline seed rejection": r"--reject-offline-seed",
+        "Worker super user secret check": r"check_cloudflare_worker_secrets\.py.*SUPER_USER_USERNAME",
         "rollback": r"wrangler rollback",
         "non-interactive rollback": r"wrangler rollback .*--yes",
         "health URL variable": r"CF_WORKER_HEALTH_URL",

@@ -469,7 +469,13 @@ def test_production_csrf_behavior_matches_fastapi_and_worker(monkeypatch):
     worker = load_worker_module(monkeypatch)
     monkeypatch.setenv("APP_ENV", "production")
     client = TestClient(app)
-    api = worker.Api(env=types.SimpleNamespace(APP_ENV="production", APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev"))
+    api = worker.Api(
+        env=types.SimpleNamespace(
+            APP_ENV="production",
+            APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
+            SUPER_USER_USERNAME="contract-admin@example.com",
+        )
+    )
 
     async def fake_route(request, path, query):
         return worker.json_response({"ok": True})

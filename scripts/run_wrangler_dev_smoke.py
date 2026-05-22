@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT_DIR / ".tmp" / "wrangler-dev-smoke.log"
+DEFAULT_SMOKE_SUPER_USER = "wrangler-smoke-admin@example.com"
 
 
 def validate_worker_smoke_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +86,8 @@ def run_smoke(port: int, timeout_seconds: int, log_path: Path) -> dict[str, Any]
                 "--log-level",
                 "log",
                 "--show-interactive-dev-session=false",
+                "--var",
+                f"SUPER_USER_USERNAME:{os.getenv('SUPER_USER_USERNAME', DEFAULT_SMOKE_SUPER_USER)}",
             ],
             cwd=ROOT_DIR,
             stdout=log,

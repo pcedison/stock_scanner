@@ -137,6 +137,11 @@ def configured_super_user_username(env) -> str:
     return str(env_value(env, "SUPER_USER_USERNAME", "") or "").strip().lower()
 
 
+def validate_runtime_security(env, super_user: str) -> None:
+    if is_production_environment(env) and not super_user:
+        raise RuntimeError("SUPER_USER_USERNAME must be configured when APP_ENV=production")
+
+
 def origin_host(origin: str) -> str:
     return (urlparse(str(origin or "")).hostname or "").lower()
 
@@ -424,6 +429,7 @@ class Api:
         self.env = env
         self._r2_cache: dict = {}
         self._super_user = configured_super_user_username(env)
+        validate_runtime_security(env, self._super_user)
         self._cors_allowed_origins = self.cors_allowed_origins()
 
     async def fetch(self, request):
