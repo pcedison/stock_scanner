@@ -17,11 +17,31 @@ HEALTH_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-health-monito
 SEED_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "refresh-cloudflare-seed.yml"
 R2_SEED_REFRESH_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-r2-seed-refresh.yml"
 DEPLOY_DOC = ROOT_DIR / "docs" / "cloudflare_deployment.md"
+PRODUCTION_CONCURRENCY_GROUP = "cloudflare-production"
 
 
 def valid_health_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme == "https" and bool(parsed.netloc) and parsed.path.endswith("/api/health")
+
+
+def _workflow_concurrency_group(text: str) -> str | None:
+    for line_number, line in enumerate(text.splitlines()):
+        inline = re.match(r"^concurrency:\s+([^#\n]+?)\s*$", line)
+        if inline:
+            return inline.group(1).strip().strip("'\"")
+        if not re.match(r"^concurrency:\s*$", line):
+            continue
+
+        for child in text.splitlines()[line_number + 1 :]:
+            if child.strip() == "":
+                continue
+            if not child.startswith((" ", "\t")):
+                return None
+            group = re.match(r"^\s+group:\s*([^#\n]+?)\s*$", child)
+            if group:
+                return group.group(1).strip().strip("'\"")
+    return None
 
 
 def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
@@ -45,6 +65,8 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
     for label, pattern in required_patterns.items():
         if not re.search(pattern, deploy_text):
             problems.append(f"deploy workflow missing {label}")
+    if _workflow_concurrency_group(deploy_text) != PRODUCTION_CONCURRENCY_GROUP:
+        problems.append(f"deploy workflow concurrency group must be shared production group {PRODUCTION_CONCURRENCY_GROUP}")
     if not health_exists:
         problems.append("scheduled health monitor workflow is missing")
     if not seed_exists:
@@ -52,6 +74,8 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
     if not r2_seed_refresh_exists:
         problems.append("scheduled R2 seed refresh workflow is missing")
     else:
+        if _workflow_concurrency_group(r2_seed_refresh_text) != PRODUCTION_CONCURRENCY_GROUP:
+            problems.append(f"R2 seed refresh workflow concurrency group must be shared production group {PRODUCTION_CONCURRENCY_GROUP}")
         r2_required_patterns = {
             "D1 refresh job polling": r"SELECT COUNT\(\*\) AS pending_count FROM refresh_jobs",
             "committed seed restore": r"unzip -o .* -d data",
@@ -64,8 +88,15 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
         for label, pattern in r2_required_patterns.items():
             if not re.search(pattern, r2_seed_refresh_text):
                 problems.append(f"R2 seed refresh workflow missing {label}")
-    if "required reviewers" not in deploy_doc or "CF_WORKER_HEALTH_URL" not in deploy_doc or "cloudflare-r2-seed-refresh.yml" not in deploy_doc:
-        problems.append("Cloudflare deployment doc must mention environment reviewers, CF_WORKER_HEALTH_URL, and the R2 seed refresh workflow")
+    deploy_doc_lower = deploy_doc.lower()
+    if "CF_WORKER_HEALTH_URL" not in deploy_doc or "cloudflare-r2-seed-refresh.yml" not in deploy_doc:
+        problems.append("Cloudflare deployment doc must mention CF_WORKER_HEALTH_URL and the R2 seed refresh workflow")
+    if PRODUCTION_CONCURRENCY_GROUP not in deploy_doc:
+        problems.append(f"Cloudflare deployment doc must mention the shared {PRODUCTION_CONCURRENCY_GROUP} concurrency group")
+    if "team" not in deploy_doc_lower or "environment reviewers" not in deploy_doc_lower:
+        problems.append("Cloudflare deployment doc must describe team environment reviewer protection")
+    if "solo" not in deploy_doc_lower or "branch protection" not in deploy_doc_lower or "required status checks" not in deploy_doc_lower:
+        problems.append("Cloudflare deployment doc must describe the solo branch-protection and required-status-check alternative")
     return problems
 
 
@@ -118,7 +149,11 @@ def inspect_github_environment(repo: str, require_live: bool) -> list[str]:
         protection_rules = payload.get("protection_rules") or []
         has_reviewers = any(rule.get("type") == "required_reviewers" for rule in protection_rules)
         if not has_reviewers:
-            problems.append("GitHub production environment should require reviewers")
+            problems.append(
+                "GitHub production environment has no required reviewers; team-owned repos should require environment "
+                "reviewers, while solo-maintainer repos should document the exception and rely on branch protection "
+                "with required status checks"
+            )
     return problems
 
 

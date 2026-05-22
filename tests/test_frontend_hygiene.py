@@ -5,13 +5,13 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260520-overview-refresh"
+APP_VERSION = "20260522-cache-aware-overview"
 
 
 def test_frontend_hygiene_current_budget_passes():
     report = frontend_hygiene_report()
 
-    assert validate_frontend_hygiene(report, max_app_lines=2700, max_inner_html=19) == []
+    assert validate_frontend_hygiene(report, max_app_lines=2668, max_inner_html=19) == []
 
 
 def test_frontend_hygiene_rejects_inner_html_growth():
@@ -24,7 +24,7 @@ def test_frontend_hygiene_rejects_inner_html_growth():
         "emptyStateUsesSharedHelper": True,
     }
 
-    problems = validate_frontend_hygiene(report, max_app_lines=2700, max_inner_html=19)
+    problems = validate_frontend_hygiene(report, max_app_lines=2668, max_inner_html=19)
 
     assert any("innerHTML" in problem for problem in problems)
 

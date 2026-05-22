@@ -13,3 +13,9 @@ def test_initial_d1_migration_matches_schema_snapshot():
     migration = _normalized_sql(ROOT / "cloudflare" / "migrations" / "0001_initial_schema.sql")
 
     assert migration == schema
+
+
+def test_d1_user_children_delete_cascade():
+    schema = _normalized_sql(ROOT / "cloudflare" / "schema.sql")
+
+    assert schema.count("FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE") == 2

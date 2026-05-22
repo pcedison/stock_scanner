@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloudflare-r2-seed-refresh
+  group: cloudflare-production
   cancel-in-progress: false
 
 jobs:

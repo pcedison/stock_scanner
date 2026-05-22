@@ -8,7 +8,7 @@ const tempDir = path.join(root, ".tmp", "e2e");
 fs.rmSync(tempDir, { recursive: true, force: true });
 fs.mkdirSync(tempDir, { recursive: true });
 
-const settingsPath = path.join(tempDir, "settings.json");
+const settingsPath = path.join(tempDir, "settings.local.json");
 fs.writeFileSync(
   settingsPath,
   JSON.stringify(

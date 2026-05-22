@@ -2163,7 +2163,7 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
 }
 
 function refreshOverviewMarketScan() {
-  void refreshMarketScan({ refreshMode: "force" }).catch(() => {});
+  void refreshMarketScan({ refreshMode: "auto" }).catch(() => {});
 }
 
 async function scanHoldings() {

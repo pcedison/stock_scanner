@@ -36,6 +36,8 @@ Windows 也可以使用：
 .\start_windows.ps1
 ```
 
+Local FastAPI settings are written to `data/settings.local.json` by default (gitignored). `data/settings.example.json` is the committed default shape; set `SETTINGS_PATH` when an isolated settings file is needed.
+
 ## 驗證
 
 ```powershell

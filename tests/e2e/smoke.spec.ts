@@ -71,7 +71,9 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
   await expect(page.locator("#overview-watch-count")).not.toHaveText("--", { timeout: 15_000 });
   await expect(page.locator("#overview-excluded-count")).not.toHaveText("--", { timeout: 15_000 });
-  expect(scanBodies.some((body) => body?.refreshMode === "force")).toBeTruthy();
+  const autoCountBeforeLogin = scanBodies.filter((body) => body?.refreshMode === "auto").length;
+  expect(autoCountBeforeLogin).toBeGreaterThan(0);
+  expect(scanBodies.some((body) => body?.refreshMode === "force")).toBeFalsy();
 
   const overviewCounts = await page
     .locator("#overview-entry-count, #overview-watch-count, #overview-excluded-count")
@@ -81,12 +83,14 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   );
   expect(overviewCounts).toEqual(navCounts);
 
-  const forceCountBeforeLogin = scanBodies.filter((body) => body?.refreshMode === "force").length;
   await page.locator("#open-onboarding-btn").click();
+  await expect(page.locator("#auth-modal")).toBeVisible();
+  await expect(page.locator("#auth-modal-username")).toBeFocused();
   await page.locator("#auth-modal-username").fill(`overview-${Date.now()}@example.com`);
   await page.locator("#auth-modal-password").fill("test-password-123");
   await page.locator("#auth-modal-form").evaluate((form: HTMLFormElement) => form.requestSubmit());
-  await expect.poll(() => scanBodies.filter((body) => body?.refreshMode === "force").length).toBeGreaterThan(forceCountBeforeLogin);
+  await expect.poll(() => scanBodies.filter((body) => body?.refreshMode === "auto").length).toBeGreaterThan(autoCountBeforeLogin);
+  expect(scanBodies.some((body) => body?.refreshMode === "force")).toBeFalsy();
 });
 
 test("settings stay read-only for non-admin users and CSP is strict", async ({ page, isMobile }) => {

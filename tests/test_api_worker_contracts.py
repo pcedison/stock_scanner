@@ -150,6 +150,99 @@ def test_admin_delete_super_user_behavior_matches_fastapi_and_worker(tmp_path, m
     assert "detail" in worker_payload(worker_response)
 
 
+def test_admin_delete_user_behavior_matches_fastapi_and_worker(tmp_path, monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    auth_service = AuthService(tmp_path / "auth.sqlite3")
+    normal_user = auth_service.create_user("contract-delete@example.com", "test-password-123")
+    auth_service.replace_holdings(
+        normal_user.id,
+        [Holding(stockCode="2330", name="TSMC", shares=1000, averageCost=600)],
+    )
+    normal_session_token = auth_service.create_session(normal_user.id)
+    admin_user = auth_service.create_user("pcedison@gmail.com", "test-password-123")
+    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
+    client = TestClient(app)
+    api = worker.Api(env=None)
+    db_run_calls = []
+
+    async def fake_require_super_user(request):
+        return {"id": admin_user.id, "username": "pcedison@gmail.com", "display_name": None}
+
+    async def fake_db_first(sql, *params):
+        assert params == (normal_user.id,)
+        return {"id": normal_user.id, "username": normal_user.username}
+
+    async def fake_db_run(sql, *params):
+        db_run_calls.append((" ".join(sql.split()), params))
+
+    async def fake_admin_users_payload():
+        return {
+            "superUser": "pcedison@gmail.com",
+            "users": [
+                {
+                    "id": admin_user.id,
+                    "username": "pcedison@gmail.com",
+                    "displayName": "pcedison@gmail.com",
+                    "createdAt": None,
+                    "holdingsCount": 0,
+                    "activeSessionCount": 0,
+                    "isSuperUser": True,
+                    "canDelete": False,
+                }
+            ],
+        }
+
+    api.require_super_user = fake_require_super_user
+    api.db_first = fake_db_first
+    api.db_run = fake_db_run
+    api.admin_users_payload = fake_admin_users_payload
+
+    fastapi_response = client.delete(f"/api/admin/users/{normal_user.id}")
+    worker_response = asyncio.run(api.fetch(ContractRequest("DELETE", f"/api/admin/users/{normal_user.id}")))
+
+    assert fastapi_response.status_code == worker_status(worker_response) == 200
+    assert set(fastapi_response.json()) == set(worker_payload(worker_response)) == {"superUser", "users"}
+    assert normal_user.username not in {user["username"] for user in fastapi_response.json()["users"]}
+    assert normal_user.username not in {user["username"] for user in worker_payload(worker_response)["users"]}
+    assert db_run_calls == [("DELETE FROM users WHERE id = ?", (normal_user.id,))]
+    assert auth_service.get_user_by_session(normal_session_token) is None
+    with auth_service._connect() as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM sessions WHERE user_id = ?", (normal_user.id,)).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM holdings WHERE user_id = ?", (normal_user.id,)).fetchone()[0]
+            == 0
+        )
+
+
+def test_admin_delete_missing_user_behavior_matches_fastapi_and_worker(tmp_path, monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    auth_service = AuthService(tmp_path / "auth.sqlite3")
+    admin_user = auth_service.create_user("pcedison@gmail.com", "test-password-123")
+    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
+    client = TestClient(app)
+    api = worker.Api(env=None)
+
+    async def fake_require_super_user(request):
+        return {"id": admin_user.id, "username": "pcedison@gmail.com", "display_name": None}
+
+    async def fake_db_first(sql, *params):
+        return None
+
+    api.require_super_user = fake_require_super_user
+    api.db_first = fake_db_first
+
+    fastapi_response = client.delete("/api/admin/users/999999")
+    worker_response = asyncio.run(api.fetch(ContractRequest("DELETE", "/api/admin/users/999999")))
+
+    assert fastapi_response.status_code == worker_status(worker_response) == 404
+    assert fastapi_response.json()["detail"] == worker_payload(worker_response)["detail"] == "User not found"
+
+
 def test_holdings_roundtrip_behavior_matches_fastapi_and_worker(tmp_path, monkeypatch):
     worker = load_worker_module(monkeypatch)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
