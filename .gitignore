@@ -17,6 +17,10 @@ data/official_history_backfill_run*.log
 data/app.sqlite3*
 data/market_scan_cache.json
 data/cache_refresh_state.json
+data/official_cache_seed_*.zip
+data/official_cache_seed_*.sha256
+!data/official_cache_seed_2026-05-14.zip
+!data/official_cache_seed_2026-05-14.sha256
 cloudflare/seed/
 cloudflare/.venv-workers/
 cloudflare/.wrangler/

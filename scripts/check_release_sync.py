@@ -162,6 +162,38 @@ def run_optional_check(command: list[str]) -> dict[str, Any]:
     }
 
 
+def production_health_command(args: argparse.Namespace) -> list[str]:
+    command = [
+        sys.executable,
+        str(ROOT_DIR / "scripts" / "check_cloudflare_health.py"),
+        "--url",
+        args.health_url,
+    ]
+    if args.manifest:
+        command.extend(["--manifest", str(args.manifest)])
+    if args.max_cache_age_hours is not None:
+        command.extend(["--max-cache-age-hours", str(args.max_cache_age_hours)])
+    if not args.allow_offline_seed:
+        command.append("--reject-offline-seed")
+    return command
+
+
+def production_smoke_command(args: argparse.Namespace) -> list[str]:
+    command = [
+        sys.executable,
+        str(ROOT_DIR / "scripts" / "run_remote_smoke.py"),
+        "--health-url",
+        args.health_url,
+    ]
+    if args.manifest:
+        command.extend(["--manifest", str(args.manifest)])
+    if args.max_cache_age_hours is not None:
+        command.extend(["--max-cache-age-hours", str(args.max_cache_age_hours)])
+    if not args.allow_offline_seed:
+        command.append("--reject-offline-seed")
+    return command
+
+
 def build_summary(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo = args.repo or _gh_repo()
     git_state = collect_git_state()
@@ -185,12 +217,7 @@ def build_summary(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if args.check_production_health:
         if not args.health_url:
             raise ToolError("--health-url is required with --check-production-health")
-        health_cmd = [
-            sys.executable,
-            str(ROOT_DIR / "scripts" / "check_cloudflare_health.py"),
-            "--url",
-            args.health_url,
-        ]
+        health_cmd = production_health_command(args)
         optional_checks["productionHealth"] = run_optional_check(health_cmd)
         if not optional_checks["productionHealth"]["ok"]:
             blockers.append("Production health check failed")
@@ -198,12 +225,7 @@ def build_summary(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if args.check_production_smoke:
         if not args.health_url:
             raise ToolError("--health-url is required with --check-production-smoke")
-        smoke_cmd = [
-            sys.executable,
-            str(ROOT_DIR / "scripts" / "run_remote_smoke.py"),
-            "--health-url",
-            args.health_url,
-        ]
+        smoke_cmd = production_smoke_command(args)
         optional_checks["productionSmoke"] = run_optional_check(smoke_cmd)
         if not optional_checks["productionSmoke"]["ok"]:
             blockers.append("Production smoke check failed")
@@ -247,6 +269,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--check-production-health", action="store_true", help="Run deployed /api/health validation.")
     parser.add_argument("--check-production-smoke", action="store_true", help="Run deployed public smoke checks.")
     parser.add_argument("--health-url", help="Production Worker /api/health URL for optional checks.")
+    parser.add_argument("--manifest", type=Path, help="Local manifest whose counts must match deployed production.")
+    parser.add_argument(
+        "--max-cache-age-hours",
+        type=float,
+        default=36,
+        help="Production health/smoke checks fail when the deployed seed is older than this many hours.",
+    )
+    parser.add_argument(
+        "--allow-offline-seed",
+        action="store_true",
+        help="Allow production checks to pass when the deployed manifest reports an offline seed build.",
+    )
     return parser.parse_args(argv)
 
 

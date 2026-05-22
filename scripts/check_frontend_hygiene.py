@@ -13,6 +13,9 @@ DEFAULT_DOM = ROOT_DIR / "frontend" / "dom.js"
 DEFAULT_AUTH = ROOT_DIR / "frontend" / "auth.js"
 SAFE_HTML_HELPER_PATTERN = re.compile(r"\b(?:escapeHtml|emptyStateHtml|setSafeHtml|render[A-Z][A-Za-z0-9_]*)\s*\(")
 INNER_HTML_ASSIGNMENT_PATTERN = re.compile(r"\.innerHTML\s*=(?!=)")
+RAW_TEMPLATE_PATH_PATTERN = re.compile(
+    r"\$\{\s*[A-Za-z_$][\w$]*(?:(?:\?|\.)?\.[A-Za-z_$][\w$]*|\[[^\]]+\])+\s*\}"
+)
 
 
 def display_path(path: Path) -> str:
@@ -49,6 +52,10 @@ def is_static_html_assignment(statement: str) -> bool:
     return False
 
 
+def raw_template_path_interpolations(statement: str) -> list[str]:
+    return [match.group(0) for match in RAW_TEMPLATE_PATH_PATTERN.finditer(statement)]
+
+
 def dangerous_inner_html_assignments(source_text: str) -> list[dict[str, object]]:
     lines = source_text.splitlines()
     findings = []
@@ -56,9 +63,13 @@ def dangerous_inner_html_assignments(source_text: str) -> list[dict[str, object]
         if not INNER_HTML_ASSIGNMENT_PATTERN.search(line):
             continue
         statement = html_assignment_statement(lines, index)
-        if SAFE_HTML_HELPER_PATTERN.search(statement) or is_static_html_assignment(statement):
+        raw_interpolations = raw_template_path_interpolations(statement)
+        if (SAFE_HTML_HELPER_PATTERN.search(statement) or is_static_html_assignment(statement)) and not raw_interpolations:
             continue
-        findings.append({"line": index + 1, "statement": statement.strip()})
+        finding = {"line": index + 1, "statement": statement.strip()}
+        if raw_interpolations:
+            finding["rawTemplateInterpolations"] = raw_interpolations
+        findings.append(finding)
     return findings
 
 

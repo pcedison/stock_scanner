@@ -50,7 +50,7 @@ jobs:
           SELECT COUNT(*) AS pending_count FROM refresh_jobs
           unzip -o "$SEED_ZIP" -d data
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
-          echo market_scan_summary.json
+          python scripts/cloudflare_seed_upload_plan.py
           echo "UPDATE refresh_jobs SET status = 'success' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
           echo "UPDATE refresh_jobs SET status = 'failed' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
           python scripts/run_remote_smoke.py

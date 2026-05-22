@@ -87,11 +87,12 @@ This keeps production deploys deterministic while preventing the committed seed 
 3. Mark queued jobs as `running`.
 4. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
 5. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with a strict freshness gate.
-6. Upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and official cache artifacts to R2.
+6. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and official cache artifacts to R2.
 7. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
 8. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
 
 The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. When the Worker queues a D1 `market_scan` refresh job, this workflow performs the actual seed rebuild and R2 update on the next run.
+Seed artifact Git policy is documented in `docs/seed_artifact_policy.md`; routine refresh output belongs in R2, and new committed seed zips require an explicit forced add and review note.
 
 ## Monitoring
 

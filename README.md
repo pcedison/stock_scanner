@@ -91,9 +91,11 @@ Release synchronization gate:
 python scripts\check_release_sync.py
 python scripts\check_release_sync.py --cancel-stale-deploys
 python scripts\check_release_sync.py --check-production-health --check-production-smoke --health-url https://example.workers.dev/api/health
+python scripts\write_agent_handoff.py --repo pcedison/stock_scanner
 ```
 
 The default run is a dry run that only reports JSON. `--cancel-stale-deploys` only cancels stale `Deploy to Cloudflare` runs on `main` whose `headSha` is not `origin/main`; it never approves production deploys.
+Production health/smoke checks reject stale cache data older than 36 hours and offline-seed production payloads by default. See `docs/agent_handoff.md` for the Codex/Claude shared-state protocol.
 
 ## 資料更新
 

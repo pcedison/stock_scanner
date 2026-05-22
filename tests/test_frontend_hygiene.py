@@ -55,6 +55,27 @@ function renderSafe(target, payload) {
     assert any("dangerous innerHTML assignments" in problem for problem in problems)
 
 
+def test_frontend_hygiene_rejects_mixed_escaped_and_raw_template_assignment(tmp_path):
+    app_js = tmp_path / "app.js"
+    dom_js = tmp_path / "dom.js"
+    auth_js = tmp_path / "auth.js"
+    app_js.write_text(
+        """
+function renderMixed(target, payload) {
+  target.innerHTML = `<p>${escapeHtml(payload.name)} ${payload.raw}</p>`;
+}
+""",
+        encoding="utf-8",
+    )
+    dom_js.write_text("const StockScannerDom = {}; function escapeHtml(value) { return value; }", encoding="utf-8")
+    auth_js.write_text("const StockScannerAuth = { normalizeAuthUser() {} };", encoding="utf-8")
+
+    report = frontend_hygiene_report(app_js, dom_js, auth_js)
+
+    assert report["dangerousInnerHTMLAssignments"][0]["line"] == 3
+    assert report["dangerousInnerHTMLAssignments"][0]["rawTemplateInterpolations"] == ["${payload.raw}"]
+
+
 def test_frontend_css_cache_buster_includes_design_refresh_styles():
     index_html = (ROOT_DIR / "frontend" / "index.html").read_text(encoding="utf-8")
     styles_css = (ROOT_DIR / "frontend" / "styles.css").read_text(encoding="utf-8")
