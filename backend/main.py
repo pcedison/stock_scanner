@@ -4,7 +4,7 @@ import os
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
-from threading import Lock, RLock
+from threading import Event, Lock, RLock
 from time import monotonic
 from typing import Optional
 from urllib.parse import urlparse
@@ -174,20 +174,45 @@ SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 
 _backtest_cache: dict = {}
 _backtest_cache_lock = RLock()
+_backtest_refresh_events: dict[tuple[str, int | None, int | None], Event] = {}
 _BACKTEST_CACHE_TTL_SECONDS = 3600
 
 _SCAN_RATE_WINDOW_SECONDS = 60
 _SCAN_RATE_MAX_REQUESTS = 10
+_SCAN_RATE_MAX_SOURCES = 4096
 _scan_rate_lock = Lock()
 _scan_rate_store: dict[str, list[float]] = defaultdict(list)
+
+
+def _prune_scan_rate_store(cutoff: float) -> None:
+    for tracked_source, timestamps in list(_scan_rate_store.items()):
+        timestamps[:] = [timestamp for timestamp in timestamps if timestamp > cutoff]
+        if not timestamps:
+            _scan_rate_store.pop(tracked_source, None)
+
+
+def _evict_scan_rate_sources_for(source: str) -> None:
+    overflow = len(_scan_rate_store) - _SCAN_RATE_MAX_SOURCES + (0 if source in _scan_rate_store else 1)
+    if overflow <= 0:
+        return
+    oldest_sources = sorted(
+        (
+            (timestamps[-1] if timestamps else 0.0, tracked_source)
+            for tracked_source, timestamps in _scan_rate_store.items()
+            if tracked_source != source
+        )
+    )
+    for _, tracked_source in oldest_sources[:overflow]:
+        _scan_rate_store.pop(tracked_source, None)
 
 
 def _check_scan_rate_limit(source: str) -> None:
     now = monotonic()
     cutoff = now - _SCAN_RATE_WINDOW_SECONDS
     with _scan_rate_lock:
+        _prune_scan_rate_store(cutoff)
+        _evict_scan_rate_sources_for(source)
         timestamps = _scan_rate_store[source]
-        timestamps[:] = [t for t in timestamps if t > cutoff]
         if len(timestamps) >= _SCAN_RATE_MAX_REQUESTS:
             raise HTTPException(
                 status_code=429,
@@ -206,16 +231,33 @@ def _backtest_source_signature() -> tuple[str, int | None, int | None]:
 
 
 def _backtest_status_cached() -> dict:
-    now = monotonic()
     signature = _backtest_source_signature()
-    with _backtest_cache_lock:
-        if signature == _backtest_cache.get("signature") and now < _backtest_cache.get("expires_at", 0.0):
-            return _backtest_cache["result"]
+    while True:
+        now = monotonic()
+        with _backtest_cache_lock:
+            if signature == _backtest_cache.get("signature") and now < _backtest_cache.get("expires_at", 0.0):
+                return _backtest_cache["result"]
+            refresh_event = _backtest_refresh_events.get(signature)
+            if refresh_event is None:
+                refresh_event = Event()
+                _backtest_refresh_events[signature] = refresh_event
+                break
+        refresh_event.wait()
+        signature = _backtest_source_signature()
+
+    try:
         result = run_backtest()
-        _backtest_cache["result"] = result
-        _backtest_cache["signature"] = signature
-        _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
-    return result
+        with _backtest_cache_lock:
+            if _backtest_source_signature() == signature:
+                _backtest_cache["result"] = result
+                _backtest_cache["signature"] = signature
+                _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
+        return result
+    finally:
+        with _backtest_cache_lock:
+            event = _backtest_refresh_events.pop(signature, None)
+            if event is not None:
+                event.set()
 
 
 class AnalyzeRequest(BaseModel):
@@ -228,7 +270,7 @@ class ScanMarketRequest(BaseModel):
 
 
 class ScanHoldingsRequest(BaseModel):
-    holdings: list[Holding] = Field(default_factory=list)
+    holdings: list[Holding] = Field(default_factory=list, max_length=500)
     settings: Optional[ScannerSettings] = None
 
 
@@ -239,7 +281,7 @@ class AuthRequest(BaseModel):
 
 
 class HoldingsReplaceRequest(BaseModel):
-    holdings: list[Holding] = Field(default_factory=list)
+    holdings: list[Holding] = Field(default_factory=list, max_length=500)
 
 
 class HoldingUpsertRequest(BaseModel):
@@ -267,10 +309,13 @@ def _clear_session_cookie(response: Response) -> None:
 
 
 def _auth_source(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
         return forwarded_for.split(",", 1)[0].strip()
-    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
+    return request.client.host if request.client else "unknown"
 
 
 def _current_user(request: Request):
