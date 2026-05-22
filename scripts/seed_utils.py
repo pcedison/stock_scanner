@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import re
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -31,3 +33,32 @@ def find_seed_zip(data_dir: Path) -> Path:
         reverse=True,
     )
     return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
+
+
+def resolve_seed_zip(data_dir: Path) -> Path:
+    """Return the newest dated seed zip, or raise when none exists."""
+    seed_zip = find_seed_zip(data_dir)
+    if seed_zip.exists() and _dated_seed_key(seed_zip) is not None:
+        return seed_zip
+    raise FileNotFoundError(f"No dated seed zip found in {data_dir}: expected official_cache_seed_YYYY-MM-DD.zip")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Resolve the newest dated committed Cloudflare seed zip.")
+    parser.add_argument("data_dir", type=Path, help="Directory containing official_cache_seed_YYYY-MM-DD.zip files")
+    parser.add_argument("--print", action="store_true", dest="print_path", help="Print the resolved seed zip path")
+    args = parser.parse_args(argv)
+
+    try:
+        seed_zip = resolve_seed_zip(args.data_dir)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.print_path:
+        print(seed_zip)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -57,7 +57,7 @@ jobs:
 
       - name: Validate committed Cloudflare seed cache
         run: |
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           python scripts/validate_cloudflare_seed_inputs.py \
             --zip "$SEED_ZIP" \
             --summary-md .tmp/seed-quality.md \
@@ -67,7 +67,7 @@ jobs:
 
       - name: Rebuild Cloudflare seed dry run
         run: |
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           if [ -n "$SEED_ZIP" ]; then
             unzip -o "$SEED_ZIP" -d data
           fi

@@ -218,19 +218,19 @@ jobs:
           npx wrangler d1 execute "$CF_D1_DATABASE" \
             --remote \
             --config cloudflare/wrangler.toml \
-            --command "UPDATE refresh_jobs SET status = 'running', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
+            --command "UPDATE refresh_jobs SET status = 'running', owner_run_id = '${GITHUB_RUN_ID}', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
 
       - name: Rebuild seed from official sources
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           if [ -n "$SEED_ZIP" ]; then
             unzip -o "$SEED_ZIP" -d data
           fi
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           python scripts/validate_cloudflare_seed_inputs.py \
             --zip "$SEED_ZIP" \
             --summary-md .tmp/seed-quality.md \
@@ -261,7 +261,7 @@ jobs:
           if [ -f data/monthly_revenue_history.json ]; then
             npx wrangler r2 object put "$CF_R2_BUCKET/official/monthly_revenue_history.json" --remote --file data/monthly_revenue_history.json
           fi
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           if [ -n "$SEED_ZIP" ]; then
             npx wrangler r2 object put "$CF_R2_BUCKET/official/$(basename "$SEED_ZIP")" --remote --file "$SEED_ZIP"
           fi
@@ -290,7 +290,7 @@ jobs:
           npx wrangler d1 execute "$CF_D1_DATABASE" \
             --remote \
             --config cloudflare/wrangler.toml \
-            --command "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), updated_at = datetime('now'), error = NULL WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"
+            --command "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), updated_at = datetime('now'), error = NULL WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${GITHUB_RUN_ID}';"
 
       - name: Mark refresh jobs as failed
         if: failure() && steps.refresh-check.outputs.run_refresh == 'true'
@@ -298,4 +298,4 @@ jobs:
           npx wrangler d1 execute "$CF_D1_DATABASE" \
             --remote \
             --config cloudflare/wrangler.toml \
-            --command "UPDATE refresh_jobs SET status = 'failed', finished_at = datetime('now'), updated_at = datetime('now'), error = 'GitHub Actions run ${GITHUB_RUN_ID} failed' WHERE job_type = 'market_scan' AND status IN ('queued', 'running');"
+            --command "UPDATE refresh_jobs SET status = 'failed', finished_at = datetime('now'), updated_at = datetime('now'), error = 'GitHub Actions run ${GITHUB_RUN_ID} failed' WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${GITHUB_RUN_ID}';"

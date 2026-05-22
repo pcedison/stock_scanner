@@ -51,8 +51,8 @@ jobs:
           unzip -o "$SEED_ZIP" -d data
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           echo market_scan_summary.json
-          echo "UPDATE refresh_jobs SET status = 'success'"
-          echo "UPDATE refresh_jobs SET status = 'failed'"
+          echo "UPDATE refresh_jobs SET status = 'success' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
+          echo "UPDATE refresh_jobs SET status = 'failed' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
           python scripts/run_remote_smoke.py
 """.strip(),
         encoding="utf-8",

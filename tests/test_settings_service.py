@@ -22,6 +22,7 @@ def test_settings_path_env_override_is_used_for_load_and_save(tmp_path, monkeypa
 
     assert path.exists()
     assert not path.with_suffix(".tmp").exists()
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
     assert settings_service.load_settings().model_dump() == settings.model_dump()
 
 
@@ -44,7 +45,7 @@ def test_save_settings_keeps_existing_file_when_replace_fails(tmp_path, monkeypa
     real_replace = Path.replace
 
     def fail_replace(self, target):
-        if self == path.with_suffix(".tmp") and Path(target) == path:
+        if self.parent == path.parent and self.name.startswith(f".{path.name}.") and Path(target) == path:
             raise OSError("replace failed")
         return real_replace(self, target)
 
@@ -55,4 +56,4 @@ def test_save_settings_keeps_existing_file_when_replace_fails(tmp_path, monkeypa
 
     persisted = ScannerSettings.model_validate_json(path.read_text(encoding="utf-8"))
     assert persisted.manual_scan_enabled is True
-    assert path.with_suffix(".tmp").exists()
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
