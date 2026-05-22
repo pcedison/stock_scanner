@@ -8,6 +8,8 @@ from typing import Any, Iterable
 
 import httpx
 
+from backend.adapters._utils import to_float as _to_float
+
 _FETCH_RETRIES = 2
 _FETCH_RETRY_DELAY = 0.5
 
@@ -48,14 +50,6 @@ TWSE_VALUATION_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d"
 TPEX_VALUATION_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis"
 
 
-def _to_float(value: Any) -> float | None:
-    text = str(value or "").replace(",", "").strip()
-    if not text or text in {"-", "--", "NA", "N/A"}:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 def _roc_year(value: Any) -> int | None:
@@ -172,7 +166,7 @@ class OfficialFundamentalsAdapter:
         rows: list[dict[str, Any]] = []
         status: dict[str, Any] = {}
         url_list = list(urls)
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(url_list)))) as executor:
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(url_list)))) as executor:
             futures = {executor.submit(self._fetch_with_retry, url): url for url in url_list}
             for future in as_completed(futures):
                 url = futures[future]

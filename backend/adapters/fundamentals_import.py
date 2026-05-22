@@ -5,20 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from backend.adapters._utils import to_float as _to_float
 from backend.adapters.official_monthly_revenue import roc_month_to_ad
 
 
 DEFAULT_IMPORT_PATH = Path(__file__).resolve().parents[2] / "data" / "fundamentals_import.csv"
-
-
-def _to_float(value: Any) -> float | None:
-    text = str(value or "").replace(",", "").strip()
-    if not text or text in {"-", "--", "NA", "N/A", "null", "None"}:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 def _to_bool(value: Any) -> bool | None:

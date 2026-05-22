@@ -71,6 +71,10 @@ class ScanCacheService:
         policy = refresh_policy()
         cached = self._get_item(key)
 
+        if cached is None and refresh_mode == "cache_only":
+            empty: dict = {"entry": [], "watch": [], "excluded": [], "universeSize": 0}
+            return self._annotate(empty, key, None, False, policy, "cache_only_miss")
+
         if refresh_mode == "force" or cached is None:
             payload = build_sync() if refresh_mode != "force" or build_refresh is None else build_refresh()
             stored = self.store(key, settings, payload, policy)

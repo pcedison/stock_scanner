@@ -27,6 +27,23 @@ def test_scan_cache_returns_cached_payload_without_rebuilding(tmp_path):
     assert second["entry"][0]["stockCode"] == "2330"
 
 
+def test_cache_only_with_empty_cache_does_not_call_builder(tmp_path):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+    calls = {"count": 0}
+
+    def build():
+        calls["count"] += 1
+        return {"entry": [{"stockCode": "2330"}], "watch": [], "excluded": []}
+
+    result = service.get_or_refresh(settings, build, refresh_mode="cache_only")
+
+    assert calls["count"] == 0
+    assert result["cacheStatus"]["cacheHit"] is False
+    assert result["cacheStatus"]["refreshStatus"] == "cache_only_miss"
+    assert result["entry"] == []
+
+
 def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
     settings = ScannerSettings(use_mock_data=False)

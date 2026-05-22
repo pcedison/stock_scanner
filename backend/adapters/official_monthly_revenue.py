@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from backend.adapters._utils import to_float as _to_float
+
 
 TWSE_COMPANY_PROFILE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 TPEX_COMPANY_PROFILE_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
@@ -62,14 +64,6 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
-def _to_float(value: Any) -> float | None:
-    text = str(value or "").replace(",", "").strip()
-    if not text or text in {"-", "--"}:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 class OfficialMonthlyRevenueAdapter:

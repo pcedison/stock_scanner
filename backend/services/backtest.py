@@ -5,19 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.adapters._utils import to_float as _to_float
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_BACKTEST_PATH = ROOT_DIR / "data" / "backtest_history.csv"
-
-
-def _to_float(value: Any) -> float | None:
-    text = str(value or "").replace(",", "").strip()
-    if not text or text in {"-", "--", "NA", "N/A"}:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 @dataclass(frozen=True)
