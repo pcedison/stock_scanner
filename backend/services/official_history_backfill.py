@@ -90,7 +90,9 @@ class BackfillProgressStore:
     def save(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(self.path)
 
     def reset(self) -> None:
         if self.path.exists():
@@ -129,6 +131,8 @@ class OfficialHistoryBackfillResult:
 
 class OfficialHistoryBackfillService:
     """Backfill official historical fundamentals from MOPS APIs with resumable progress."""
+
+    _PROGRESS_SAVE_INTERVAL = 10
 
     def __init__(
         self,
@@ -193,7 +197,6 @@ class OfficialHistoryBackfillService:
         pending = 0
         income_rows = 0
         balance_rows = 0
-        _SAVE_EVERY = 10
         _saves_since_last = 0
         completed_codes = set(progress.get("completedCompanies", []))
         failed_companies = dict(progress.get("failedCompanies", {}))
@@ -301,7 +304,7 @@ class OfficialHistoryBackfillService:
                 "balanceRows": balance_rows,
             }
             _saves_since_last += 1
-            if _saves_since_last >= _SAVE_EVERY:
+            if _saves_since_last >= self._PROGRESS_SAVE_INTERVAL:
                 self.progress_store.save(progress)
                 _saves_since_last = 0
 

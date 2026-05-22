@@ -441,7 +441,7 @@ def main() -> None:
     fallback_source = None
 
     _build_analysis_for_snapshots(
-        official_provider.iter_snapshots(settings),
+        official_provider.list_snapshots(settings),
         settings,
         analysis_by_code,
         analysis_shards,

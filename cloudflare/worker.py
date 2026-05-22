@@ -427,6 +427,7 @@ class Api:
         self.env = env
         self._r2_cache: dict = {}
         self._super_user = configured_super_user_username(env)
+        self._cors_allowed_origins = self.cors_allowed_origins()
 
     async def fetch(self, request):
         if request.method == "OPTIONS":
@@ -491,7 +492,7 @@ class Api:
         return tuple(allowed)
 
     def cors_headers(self, request=None):
-        allowed_origins = self.cors_allowed_origins()
+        allowed_origins = self._cors_allowed_origins
         origin = allowed_origins[0] if allowed_origins else "null"
         if request is not None:
             req_origin = str(request.headers.get("origin") or "")

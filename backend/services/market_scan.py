@@ -55,7 +55,7 @@ def scan_market_payload(
     entry = []
     watch = []
     excluded = []
-    for snapshot in provider.iter_snapshots(settings):
+    for snapshot in provider.list_snapshots(settings):
         result = engine.evaluate_entry(snapshot, settings)
         if result.status == "ENTRY":
             entry.append(result)
