@@ -27,7 +27,8 @@ GitHub Actions repository variables:
 GitHub environment:
 
 - Create a `production` environment.
-- Add required reviewers or equivalent approval protection.
+- For team-owned repositories, require production environment reviewers before deployment.
+- For solo-maintainer repositories where reviewer approval is not practical, document that exception and keep branch protection on `main`/`master` with required status checks. Production deploys and R2 seed refreshes still share the `cloudflare-production` concurrency group so they cannot update production at the same time.
 
 Worker production CORS lives in `cloudflare/wrangler.toml`:
 
@@ -38,22 +39,20 @@ Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production
 
 ## Deploy Flow
 
-`.github/workflows/cloudflare-deploy.yml` deploys only from `main`, `master`, schedule, or manual dispatch. Feature branches validate only.
+`.github/workflows/cloudflare-deploy.yml` deploys on pushes to `main`/`master` or manual dispatch. Feature branch and pull request validation happens outside this production deploy workflow.
 
 1. Install Python and Node dependencies.
 2. Run pytest, frontend hygiene, operational readiness, pip check, and npm audit.
 3. Run deployment preflight for CORS, production environment, concurrency, D1 migration, health, remote smoke, and rollback guardrails.
-4. Run Playwright browser smoke.
-5. Validate committed seed zip, enforce freshness, and write Markdown/JSON seed quality summaries.
-6. Rebuild `cloudflare/seed/*` from the committed offline zip.
-7. Run Worker dry-run to validate the Cloudflare Python Worker bundle boundary.
-8. Upload seed payloads to R2.
-9. Export a D1 backup artifact before migrations.
-10. Apply pending D1 migrations from `cloudflare/migrations/`.
-11. Deploy Worker and Pages.
-12. Verify deployed `/api/health` and manifest counts.
-13. Run deployed public smoke against `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
-14. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
+4. Run Worker dry-run to validate the Cloudflare Python Worker bundle boundary.
+5. Run local Worker runtime smoke.
+6. Install the Playwright Chromium browser and run browser smoke tests.
+7. Export a D1 backup artifact before migrations.
+8. Apply pending D1 migrations from `cloudflare/migrations/`.
+9. Deploy Worker and Pages.
+10. Verify deployed `/api/health` freshness.
+11. Run deployed public smoke against `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
+12. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
 
 D1 restore remains an operator-reviewed recovery action. Generate a non-destructive plan with:
 
@@ -72,7 +71,7 @@ python scripts\plan_cloudflare_recovery.py --d1-backup .tmp\d1-backups\pre-deplo
 `.github/workflows/refresh-cloudflare-seed.yml` runs weekly and can also be dispatched manually.
 
 1. Rebuild seed from official sources in online mode.
-2. Repack `data/official_cache_seed_2026-05-14.zip` and its `.sha256`.
+2. Repack the newest `data/official_cache_seed_*.zip` seed artifact and its matching `.sha256`.
 3. Regenerate missing-company reports.
 4. Validate quality gates and freshness.
 5. Open or update a refresh PR when seed artifacts changed.
@@ -83,11 +82,11 @@ This keeps production deploys deterministic while preventing the committed seed 
 
 `.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. It runs every 15 minutes and can also be dispatched manually with `force=true`.
 
-1. Poll D1 `refresh_jobs` for queued or running `market_scan` jobs.
-2. Stop without touching R2 when no job is queued, unless the workflow is manually forced.
+1. Poll D1 `refresh_jobs` for queued or running `market_scan` jobs and check deployed `/api/health` freshness.
+2. Stop without touching R2 when no job is queued and the production seed is fresh, unless the workflow is manually forced.
 3. Mark queued jobs as `running`.
 4. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
-5. Package and validate `data/official_cache_seed_2026-05-14.zip` with a strict freshness gate.
+5. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with a strict freshness gate.
 6. Upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and official cache artifacts to R2.
 7. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
 8. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.

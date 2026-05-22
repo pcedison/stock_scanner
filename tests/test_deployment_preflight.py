@@ -77,9 +77,12 @@ jobs:
 
 
 def test_r2_refresh_workflow_can_self_heal_stale_production_seed():
+    deploy_text = Path(".github/workflows/cloudflare-deploy.yml").read_text(encoding="utf-8")
     text = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
 
-    assert "group: cloudflare-r2-seed-refresh" in text
+    assert "group: cloudflare-production" in deploy_text
+    assert "group: cloudflare-production" in text
+    assert "group: cloudflare-r2-seed-refresh" not in text
     assert "--max-cache-age-hours 36" in text
     assert "--reject-offline-seed" in text
     assert "stale_refresh=true" in text

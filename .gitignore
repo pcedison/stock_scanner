@@ -8,6 +8,9 @@ playwright-report/
 uvicorn*.log
 data/fundamentals_import.csv
 data/backtest_history.csv
+data/settings.json
+data/settings.local.json
+data/settings.local.tmp
 data/official_fundamentals_history.json
 data/official_history_backfill_progress.json
 data/official_history_backfill_run*.log

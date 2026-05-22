@@ -77,6 +77,10 @@ class BadRequestError(Exception):
     pass
 
 
+class NotFoundError(Exception):
+    pass
+
+
 class ValidationError(Exception):
     pass
 
@@ -442,6 +446,8 @@ class Api:
                 response = await self.route(request, path, query)
         except BadRequestError as exc:
             response = error_response(str(exc), status=400)
+        except NotFoundError as exc:
+            response = error_response(str(exc), status=404)
         except ValidationError as exc:
             response = error_response(str(exc), status=422)
         except PermissionError as exc:
@@ -871,15 +877,11 @@ class Api:
     async def delete_admin_user(self, user_id: int):
         target = await self.db_first("SELECT id, username FROM users WHERE id = ?", user_id)
         if not target:
-            return {"superUser": self._super_user, "users": [], "deleted": False, "message": "User not found"}
+            raise NotFoundError("User not found")
         if str(target["username"]).lower() == self._super_user:
             raise BadRequestError("super user cannot be deleted")
-        await self.db_run("DELETE FROM sessions WHERE user_id = ?", user_id)
-        await self.db_run("DELETE FROM holdings WHERE user_id = ?", user_id)
         await self.db_run("DELETE FROM users WHERE id = ?", user_id)
-        payload = await self.admin_users_payload()
-        payload["deleted"] = True
-        return payload
+        return await self.admin_users_payload()
 
     async def create_session(self, user_id: int):
         token = secrets.token_urlsafe(32)
