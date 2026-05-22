@@ -101,6 +101,9 @@ jobs:
       - name: Check deployment preflight guardrails
         run: python scripts/check_deployment_preflight.py --require-health-url
 
+      - name: Verify Worker secret bindings
+        run: python scripts/check_cloudflare_worker_secrets.py --config cloudflare/wrangler.toml SUPER_USER_USERNAME
+
       - name: Export D1 backup before migrations
         run: |
           mkdir -p .tmp/d1-backups

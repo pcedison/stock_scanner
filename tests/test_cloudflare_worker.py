@@ -188,6 +188,7 @@ def test_worker_cors_uses_env_allowlist_and_dev_loopback(monkeypatch):
         env=types.SimpleNamespace(
             APP_ENV="production",
             APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev,http://localhost:8787,http://bad.example",
+            SUPER_USER_USERNAME="pcedison@gmail.com",
         )
     )
     assert production_api.cors_headers(types.SimpleNamespace(headers={"origin": "https://stock-scanner-beta.pages.dev"}))[
@@ -216,9 +217,27 @@ def test_worker_options_preflight_uses_cors_and_security_headers(monkeypatch):
     assert headers["strict-transport-security"].startswith("max-age=31536000")
 
 
+def test_worker_production_requires_super_user_binding(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="SUPER_USER_USERNAME"):
+        worker.Api(
+            env=types.SimpleNamespace(
+                APP_ENV="production",
+                APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
+            )
+        )
+
+
 def test_worker_production_csrf_guard_requires_custom_header(monkeypatch):
     worker = load_worker_module(monkeypatch)
-    api = worker.Api(env=types.SimpleNamespace(APP_ENV="production", APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev"))
+    api = worker.Api(
+        env=types.SimpleNamespace(
+            APP_ENV="production",
+            APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
+            SUPER_USER_USERNAME="pcedison@gmail.com",
+        )
+    )
     missing_header = types.SimpleNamespace(
         method="POST",
         url="https://stock-scanner-beta-api.example/api/scan/market",

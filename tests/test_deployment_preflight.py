@@ -6,6 +6,7 @@ from scripts.check_deployment_preflight import (
     validate_worker_cors,
     validate_workflow_yaml,
 )
+from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
 
 
 def test_validate_worker_cors_rejects_local_or_insecure_production_origins(tmp_path):
@@ -31,6 +32,14 @@ def test_validate_deploy_workflow_accepts_current_guardrails():
     problems = validate_deploy_workflow(Path(".github/workflows/cloudflare-deploy.yml"))
 
     assert problems == []
+
+
+def test_cloudflare_worker_secret_parser_detects_missing_bindings():
+    output = '[{"name":"SUPER_USER_USERNAME","type":"secret_text"}]'
+
+    assert parse_secret_names(output) == {"SUPER_USER_USERNAME"}
+    assert missing_secret_names({"SUPER_USER_USERNAME"}, ["SUPER_USER_USERNAME"]) == []
+    assert missing_secret_names(set(), ["SUPER_USER_USERNAME"]) == ["SUPER_USER_USERNAME"]
 
 
 def test_validate_workflow_yaml_accepts_current_workflows():
