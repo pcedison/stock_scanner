@@ -71,15 +71,12 @@ def _to_month(value: Any) -> str | None:
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {str(key or "").strip().lstrip("\ufeff"): value for key, value in row.items() if key is not None}
+    return {str(key or "").strip().lstrip("\ufeff").lower(): value for key, value in row.items() if key is not None}
 
 
 def _pick(row: dict[str, Any], *keys: str) -> Any:
-    lower_map = {key.lower(): value for key, value in row.items()}
     for key in keys:
-        if key in row and row[key] not in (None, ""):
-            return row[key]
-        value = lower_map.get(key.lower())
+        value = row.get(key.lower())
         if value not in (None, ""):
             return value
     return None
@@ -166,6 +163,8 @@ class LocalFundamentalsImportAdapter:
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else DEFAULT_IMPORT_PATH
+        self._cache: ImportedFundamentalBundle | None = None
+        self._cache_mtime: float | None = None
 
     def fetch_bundle(self) -> ImportedFundamentalBundle:
         if not self.path.exists():
@@ -181,6 +180,10 @@ class LocalFundamentalsImportAdapter:
                     "skippedRows": 0,
                 }
             )
+
+        mtime = self.path.stat().st_mtime
+        if self._cache is not None and self._cache_mtime == mtime:
+            return self._cache
 
         monthly: dict[str, ImportedMonthlyRevenueMetrics] = {}
         quarterly: dict[str, ImportedQuarterlyFundamental] = {}
@@ -222,7 +225,7 @@ class LocalFundamentalsImportAdapter:
             deduped = {item.year: item for item in items}
             annuals[stock_code] = [deduped[year] for year in sorted(deduped)]
 
-        return ImportedFundamentalBundle(
+        bundle = ImportedFundamentalBundle(
             monthly=monthly,
             quarterly=quarterly,
             valuations=valuations,
@@ -238,6 +241,9 @@ class LocalFundamentalsImportAdapter:
                 "skippedRows": skipped,
             },
         )
+        self._cache = bundle
+        self._cache_mtime = mtime
+        return bundle
 
     def _parse_monthly(self, row: dict[str, Any], stock_code: str) -> ImportedMonthlyRevenueMetrics | None:
         month = _to_month(_pick(row, "month", "data_month", "資料年月", "營收年月"))
