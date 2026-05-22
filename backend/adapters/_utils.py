@@ -12,7 +12,7 @@ def to_float(value: Any, *, parenthesized_negative: bool = False) -> float | Non
         parenthesized_negative: if True, treat ``(123)`` as ``-123``.
             Used for MOPS financial statements which encode negatives this way.
     """
-    text = str(value or "").replace(",", "").strip()
+    text = "" if value is None else str(value).replace(",", "").strip()
     if not text or text in _NULL_TOKENS:
         return None
     if parenthesized_negative and text.startswith("(") and text.endswith(")"):
