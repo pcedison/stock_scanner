@@ -11,6 +11,10 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_APP = ROOT_DIR / "frontend" / "app.js"
 DEFAULT_DOM = ROOT_DIR / "frontend" / "dom.js"
 DEFAULT_AUTH = ROOT_DIR / "frontend" / "auth.js"
+DEFAULT_REFERENCE = ROOT_DIR / "frontend" / "reference_data.js"
+DEFAULT_STRATEGY = ROOT_DIR / "frontend" / "strategy_content.js"
+DEFAULT_STORAGE = ROOT_DIR / "frontend" / "storage.js"
+DEFAULT_RENDERERS = ROOT_DIR / "frontend" / "renderers.js"
 SAFE_HTML_HELPER_PATTERN = re.compile(r"\b(?:escapeHtml|emptyStateHtml|setSafeHtml|render[A-Z][A-Za-z0-9_]*)\s*\(")
 INNER_HTML_ASSIGNMENT_PATTERN = re.compile(r"\.innerHTML\s*=(?!=)")
 RAW_TEMPLATE_PATH_PATTERN = re.compile(
@@ -77,20 +81,37 @@ def frontend_hygiene_report(
     app_path: Path = DEFAULT_APP,
     dom_path: Path = DEFAULT_DOM,
     auth_path: Path = DEFAULT_AUTH,
+    reference_path: Path = DEFAULT_REFERENCE,
+    strategy_path: Path = DEFAULT_STRATEGY,
+    storage_path: Path = DEFAULT_STORAGE,
+    renderers_path: Path = DEFAULT_RENDERERS,
 ) -> dict[str, object]:
     app_text = app_path.read_text(encoding="utf-8")
     dom_text = dom_path.read_text(encoding="utf-8")
     auth_text = auth_path.read_text(encoding="utf-8") if auth_path.exists() else ""
+    reference_text = reference_path.read_text(encoding="utf-8") if reference_path.exists() else ""
+    strategy_text = strategy_path.read_text(encoding="utf-8") if strategy_path.exists() else ""
+    storage_text = storage_path.read_text(encoding="utf-8") if storage_path.exists() else ""
+    renderers_text = renderers_path.read_text(encoding="utf-8") if renderers_path.exists() else ""
     return {
         "appPath": display_path(app_path),
         "domPath": display_path(dom_path),
         "authPath": display_path(auth_path),
+        "referencePath": display_path(reference_path),
+        "strategyPath": display_path(strategy_path),
+        "storagePath": display_path(storage_path),
+        "renderersPath": display_path(renderers_path),
         "appLines": len(app_text.splitlines()),
         "innerHTMLAssignments": app_text.count("innerHTML"),
         "dangerousInnerHTMLAssignments": dangerous_inner_html_assignments(app_text),
         "insertAdjacentHTMLCalls": app_text.count("insertAdjacentHTML"),
         "hasSharedEscapeHelper": "function escapeHtml" in dom_text and "StockScannerDom" in dom_text,
         "hasSharedAuthHelper": "StockScannerAuth" in auth_text and "normalizeAuthUser" in auth_text,
+        "hasSplitReferenceData": "StockScannerReferenceData" in reference_text and "DEFAULT_COMPANIES" in reference_text,
+        "hasSplitStrategyContent": "StockScannerStrategyContent" in strategy_text and "STRATEGY_STATUS_DETAILS" in strategy_text,
+        "hasSplitStorageHelper": "StockScannerStorage" in storage_text and "loadHoldingsFromStorage" in storage_text,
+        "hasSplitRendererFactory": "StockScannerRenderers" in renderers_text and "createRenderers" in renderers_text,
+        "appOwnsStrategyContent": "const STRATEGY_STATUS_DETAILS = [" in app_text,
         "emptyStateUsesSharedHelper": "emptyStateHtml(" in app_text,
     }
 
@@ -116,6 +137,16 @@ def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max
         problems.append("frontend/dom.js must own the shared escapeHtml helper")
     if not report["hasSharedAuthHelper"]:
         problems.append("frontend/auth.js must own shared auth identity helpers")
+    if not report.get("hasSplitReferenceData", True):
+        problems.append("frontend/reference_data.js must own fallback reference data")
+    if not report.get("hasSplitStrategyContent", True):
+        problems.append("frontend/strategy_content.js must own strategy explanatory content")
+    if not report.get("hasSplitStorageHelper", True):
+        problems.append("frontend/storage.js must own local persistence helpers")
+    if not report.get("hasSplitRendererFactory", True):
+        problems.append("frontend/renderers.js must own pure HTML renderers")
+    if report.get("appOwnsStrategyContent", False):
+        problems.append("frontend/app.js must not own the large strategy content table")
     if not report["emptyStateUsesSharedHelper"]:
         problems.append("frontend/app.js should use emptyStateHtml for empty/loading placeholders")
     return problems
@@ -123,7 +154,7 @@ def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check frontend single-file and HTML-rendering hygiene budgets.")
-    parser.add_argument("--max-app-lines", type=int, default=2668)
+    parser.add_argument("--max-app-lines", type=int, default=2400)
     parser.add_argument("--max-inner-html", type=int, default=19)
     args = parser.parse_args(argv)
 

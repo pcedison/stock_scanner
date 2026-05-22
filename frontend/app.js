@@ -1,7 +1,21 @@
-const HOLDINGS_KEY = "tw_stock_scanner.holdings.v1";
-const ONBOARDING_KEY = "tw_stock_scanner.onboarding_done.v1";
 const COMPANIES_PAGE_LIMIT = 500;
 const MAX_COMPANY_PAGES = 10;
+const REFERENCE_DATA =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./reference_data.js")
+    : globalThis.StockScannerReferenceData;
+const STRATEGY_CONTENT =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./strategy_content.js")
+    : globalThis.StockScannerStrategyContent;
+const STORAGE_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./storage.js")
+    : globalThis.StockScannerStorage;
+const RENDERER_HELPERS =
+  typeof require === "function" && typeof module !== "undefined" && module.exports
+    ? require("./renderers.js")
+    : globalThis.StockScannerRenderers;
 const DOM_HELPERS =
   typeof require === "function" && typeof module !== "undefined" && module.exports
     ? require("./dom.js")
@@ -17,15 +31,8 @@ const AUTH_HELPERS =
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
 const { authValidationMessage, isSuperUserIdentity, normalizeAuthUser, normalizeAuthUsername } = AUTH_HELPERS;
-
-const DEFAULT_COMPANIES = [
-  { stockCode: "2330", name: "台積電", market: "TWSE", industryName: "半導體業", isFinancial: false },
-  { stockCode: "2357", name: "華碩", market: "TWSE", industryName: "電腦及週邊設備業", isFinancial: false },
-  { stockCode: "2454", name: "聯發科", market: "TWSE", industryName: "半導體業", isFinancial: false },
-  { stockCode: "3008", name: "大立光", market: "TWSE", industryName: "光電業", isFinancial: false },
-  { stockCode: "5274", name: "信驊", market: "TPEX", industryName: "半導體業", isFinancial: false },
-  { stockCode: "2881", name: "富邦金", market: "TWSE", industryName: "金融保險業", isFinancial: true },
-];
+const { DEFAULT_COMPANIES } = REFERENCE_DATA;
+const { STRATEGY_STATUS_DETAILS, STRATEGY_RULE_THRESHOLDS } = STRATEGY_CONTENT;
 
 const DEFAULT_SETTINGS = {
   auto_scan_full_market: true,
@@ -75,121 +82,6 @@ const state = {
   adminIsLoading: false,
   isSyncingHoldings: false,
   pendingHoldingsSync: false,
-};
-
-const STRATEGY_STATUS_DETAILS = [
-  {
-    key: "entry",
-    label: "進場 E1-E6",
-    summary: "用來判斷是否符合長期賺錢、高成長、估值不貴的初始進場門檻。",
-    items: [
-      ["E1", "近 5 年沒有虧損", "最近 5 個年度淨利都需要為正；歷史年報不足時會標示待補，不會硬判定。"],
-      ["E2", "近 3 年淨利正成長", "最近 3 個年度淨利需逐年增加，用來確認成長不是單一年度偶發。"],
-      ["E3", "今年累計營收年增率 >= 50%", "依設定採用累計營收、單月營收或近 3 個月平均年增率。"],
-      ["E4", "本益比小於 20", "採用官方估值 PER；缺資料或 PER 不適用時列為待補。"],
-      ["E5", "存貨週轉率大於 2.5", "以官方損益與資產負債表估算，確認庫存沒有明顯堆積。"],
-      ["E6", "排除金融業", "預設金融業不套用一般產業主策略，避免用存貨、毛利率等不適用指標誤判。"],
-    ],
-  },
-  {
-    key: "addWatch",
-    label: "加碼 A1-A7",
-    summary: "A1-A7 是持股續抱後是否可列入加碼觀察的確認清單：先確認原進場條件仍成立，再確認成長、估值、存貨與出場風險。",
-    items: [
-      ["A1", "原進場條件仍符合", "E1-E6 全部通過，才有資格進入加碼觀察。"],
-      ["A2", "累計營收年增率仍 >= 50%", "確認營收動能沒有退潮。"],
-      ["A3", "最新季 EPS 年增率 > 0", "確認每股盈餘仍維持正成長。"],
-      ["A4", "最新季淨利年增率 > 0", "確認獲利仍維持正成長。"],
-      ["A5", "PER 仍 < 20", "避免加碼在估值已偏貴的位置。"],
-      ["A6", "存貨週轉率仍 > 2.5", "確認存貨去化仍維持健康。"],
-      ["A7", "未觸發任何出場條件", "X1-X5 沒有觸發時，才列入加碼觀察。"],
-    ],
-  },
-  {
-    key: "exit",
-    label: "出場 X1-X5",
-    summary: "用來檢查持股是否出現營收降溫、EPS 或淨利轉弱等需要警戒或出場的訊號。",
-    items: [
-      ["X1", "月營收年增率不可低於 30%", "月營收成長低於門檻時列入警戒；春節月份會套用輔助判斷。"],
-      ["X2", "月營收年增率不可突然降溫超過 20 個百分點", "比較本月與上月年增率，避免成長斜率快速翻弱。"],
-      ["X3", "EPS 不可衰退", "最新季 EPS 年增率低於 0 時列為警戒。"],
-      ["X4", "季度 EPS 不可減少超過 10%", "EPS 年減超過 10% 時視為高優先出場風險。"],
-      ["X5", "淨利不可衰退", "最新季淨利或年度淨利轉弱時視為高優先出場風險。"],
-    ],
-  },
-  {
-    key: "grossMargin",
-    label: "T 系列追蹤",
-    summary: "T 系列是持股追蹤輔助訊號，目前正式落地的是 T3 毛利率追蹤；T1、T2 尚未建立，不參與掃描判斷。",
-    items: [
-      ["T1/T2", "尚未啟用", "目前沒有 T1、T2 的實際規則，保留給後續持股追蹤因子。"],
-      ["T3", "毛利率年增率追蹤", "最新季毛利率 YoY 低於 0 時列入警戒，表示營收成長可能沒有同步轉化為獲利品質。"],
-      ["OFFICIAL_Q", "官方最新季損益資料", "若已抓到 EPS、淨利、營收與毛利率，會在展開細節中列出官方季報訊號。"],
-      ["資料待補", "歷史同期毛利率不足時不硬判斷", "缺少去年同季毛利率時只標示待補，避免把缺資料誤當成通過或失敗。"],
-    ],
-  },
-  {
-    key: "spring",
-    label: "春節輔助營收",
-    summary: "春節落點會讓單月營收失真，因此會搭配 1+2 月合併或近 3 個月平均觀察。",
-    items: [
-      ["SPRING_FESTIVAL_WATCH", "春節月保護", "若單月營收觸發 X1 或 X2，但春節輔助營收仍健康，先列觀察而非直接出場。"],
-      ["1+2 月合併", "跨月營收平滑", "春節跨月時，用 1 月加 2 月合併營收降低工作天數差異造成的誤判。"],
-      ["近 3 個月平均", "短期趨勢輔助", "若沒有 1+2 月合併資料，改用近 3 個月平均年增率確認趨勢。"],
-    ],
-  },
-  {
-    key: "financial",
-    label: "金融業不套主策略",
-    summary: "銀行、金控、保險與證券不適合使用存貨週轉率、一般毛利率等製造/通路業指標。",
-    items: [
-      ["E6", "預設排除金融業", "市場掃描會把金融業歸到排除或專用策略區，避免主策略誤判。"],
-      ["FIN1-FIN6", "金融專用指標預留", "金融策略應改看 ROE、逾放比、資本適足率、淨利差、殖利率與淨利年增。"],
-      ["資料來源", "需金融業專用官方欄位", "金融專用欄位尚未完整自動化前，會以待補或排除顯示。"],
-    ],
-  },
-  {
-    key: "insufficient",
-    label: "待補資料不硬判斷",
-    summary: "缺官方歷史年報、季度 YoY 或存貨週轉率時，系統會明確標示待補，不把資料不足當結論。",
-    items: [
-      ["INSUFFICIENT_DATA", "資料不足", "缺少關鍵欄位時不會輸出進場或出場結論。"],
-      ["PARTIAL_DATA", "可初篩", "已公告公司若有部分官方資料，可先顯示可初篩並把缺口列在細節。"],
-      ["OFFICIAL_VALUATION", "官方估值資料", "PER、PBR、殖利率若缺漏，會標示估值待補而不是直接判定便宜或昂貴。"],
-      ["人工補洞", "fundamentals_import.csv", "需要人工授權或第三方授權資料時，可用匯入檔補齊缺口。"],
-    ],
-  },
-];
-
-const STRATEGY_RULE_THRESHOLDS = {
-  E1: ["5 年", "年度淨利皆 > 0"],
-  E2: ["3 年", "淨利逐年增加"],
-  E3: ["營收 YoY >= 50%"],
-  E4: ["PER < 20"],
-  E5: ["存貨週轉率 > 2.5"],
-  E6: ["排除金融業"],
-  A1: ["E1-E6 全通過"],
-  A2: ["營收 YoY >= 50%"],
-  A3: ["EPS YoY > 0"],
-  A4: ["淨利 YoY > 0"],
-  A5: ["PER < 20"],
-  A6: ["存貨週轉率 > 2.5"],
-  A7: ["X1-X5 = 0 項觸發"],
-  X1: ["月營收 YoY < 30%"],
-  X2: ["較上月降溫 > 20 個百分點"],
-  X3: ["EPS YoY < 0"],
-  X4: ["EPS 年減 > 10%"],
-  X5: ["淨利衰退"],
-  "T1/T2": ["尚未啟用"],
-  T3: ["毛利率 YoY < 0"],
-  OFFICIAL_Q: ["最新季報"],
-  SPRING_FESTIVAL_WATCH: ["1+2 月", "近 3 月平均"],
-  "1+2 月合併": ["跨月平滑"],
-  "近 3 個月平均": ["短期趨勢"],
-  "FIN1-FIN6": ["金融專用指標"],
-  INSUFFICIENT_DATA: ["缺資料不硬判"],
-  PARTIAL_DATA: ["可初篩"],
-  OFFICIAL_VALUATION: ["PER / PBR / 殖利率"],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -386,14 +278,7 @@ function normalizeHoldingRecords(records, companies = state.companies) {
 }
 
 function loadHoldingsFromStorage(storage = localStorage, companies = state.companies) {
-  try {
-    const parsed = JSON.parse(storage.getItem(HOLDINGS_KEY) || "[]");
-    if (!Array.isArray(parsed)) throw new Error("Holdings must be an array");
-    return normalizeHoldingRecords(parsed, companies);
-  } catch {
-    storage.setItem(HOLDINGS_KEY, "[]");
-    return [];
-  }
+  return STORAGE_HELPERS.loadHoldingsFromStorage(storage, companies, normalizeHoldingRecords);
 }
 
 function loadHoldings() {
@@ -403,7 +288,7 @@ function loadHoldings() {
 }
 
 function saveHoldingsLocalOnly(holdings = state.holdings, storage = localStorage) {
-  storage.setItem(HOLDINGS_KEY, JSON.stringify(normalizeHoldingRecords(holdings, state.companies)));
+  STORAGE_HELPERS.saveHoldingsLocalOnly(holdings, storage, state.companies, normalizeHoldingRecords);
 }
 
 function saveHoldings(holdings = state.holdings, storage = localStorage) {
@@ -458,6 +343,31 @@ function isHoldingTracked(stockCode) {
   const normalized = safeText(stockCode);
   return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
 }
+
+const {
+  applyEvidenceBarWidths,
+  displayResultStatus,
+  formatEvidenceValue,
+  renderAnalysisCard,
+  renderRule,
+  renderRuleEvidence,
+  renderStrategyRuleCards,
+  resultActionButtons,
+  ruleDisplayOrder,
+  sortRulesForDisplay,
+  statusClass,
+  statusLabel,
+  strategyThresholdsFor,
+} = RENDERER_HELPERS.createRenderers({
+  escapeHtml,
+  isHoldingTracked,
+  isPartialPublishedResult,
+  normalizeText,
+  safeCompanyName,
+  safeText,
+  strategyStatusDetails: STRATEGY_STATUS_DETAILS,
+  strategyRuleThresholds: STRATEGY_RULE_THRESHOLDS,
+});
 
 function holdingScanResultByCode(stockCode, scan = state.holdingsScan) {
   const normalized = safeText(stockCode);
@@ -724,19 +634,18 @@ function apiErrorMessage(response, text = "") {
   return normalized.length <= 240 ? normalized : fallback;
 }
 
-function onboardingStorageKey() {
-  const user = state.auth?.user;
-  const identity = user?.id || user?.username || "guest";
-  return `${ONBOARDING_KEY}.${identity}`;
+function onboardingStorageKey(user = state.auth?.user || null) {
+  return STORAGE_HELPERS.onboardingStorageKey(user);
 }
 
-function hasCompletedOnboarding() {
-  return localStorage.getItem(onboardingStorageKey()) === "true";
+function hasCompletedOnboarding(storage = localStorage, user = state.auth?.user || null) {
+  return STORAGE_HELPERS.hasCompletedOnboarding(storage, user);
 }
 
-function markOnboardingDone() {
-  localStorage.setItem(onboardingStorageKey(), "true");
+function markOnboardingDone(storage = localStorage, user = state.auth?.user || null) {
+  STORAGE_HELPERS.markOnboardingDone(storage, user);
 }
+
 
 function shouldPromptOnboarding() {
   return Boolean(state.auth?.authenticated && !hasCompletedOnboarding() && !state.holdings.length);
@@ -1051,194 +960,6 @@ async function deleteAdminUser(userId, username) {
   }
 }
 
-function statusLabel(status) {
-  const labels = {
-    ENTRY: "適合進場",
-    WATCH: "觀察",
-    HOLD: "續抱",
-    ADD_WATCH: "加碼觀察",
-    WARNING: "警戒",
-    EXIT: "建議出清",
-    EXCLUDED: "排除",
-    INSUFFICIENT_DATA: "待補資料",
-    PARTIAL_DATA: "可初篩",
-    PARTIAL_HOLDING: "可追蹤",
-  };
-  return labels[status] || "未知";
-}
-
-function statusClass(status) {
-  return `status-${String(status || "neutral").toLowerCase()}`;
-}
-
-function ruleDisplayOrder(rule = {}) {
-  const code = String(rule.code || "").toUpperCase();
-  let match = code.match(/^E([1-6])$/);
-  if (match) return 100 + Number(match[1]);
-  if (code === "OFFICIAL_Q") return 170;
-  if (code === "OFFICIAL_VALUATION") return 180;
-  match = code.match(/^X([1-5])$/);
-  if (match) return 200 + Number(match[1]);
-  if (code === "SPRING_FESTIVAL_WATCH") return 230;
-  match = code.match(/^T(\d+)$/);
-  if (match) return 240 + Number(match[1]);
-  match = code.match(/^A([1-7])$/);
-  if (match) return 300 + Number(match[1]);
-  if (code === "HOLDING") return 400;
-  match = code.match(/^FIN(\d+)$/);
-  if (match) return 110 + Number(match[1]);
-  return 900;
-}
-
-function sortRulesForDisplay(reasons = []) {
-  return reasons
-    .map((reason, index) => ({ reason, index }))
-    .sort((left, right) => ruleDisplayOrder(left.reason) - ruleDisplayOrder(right.reason) || left.index - right.index)
-    .map((item) => item.reason);
-}
-
-function formatEvidenceValue(item = {}) {
-  const value = Number(item.value);
-  if (!Number.isFinite(value)) return "待補";
-  if (item.unit === "thousand_twd") {
-    const absValue = Math.abs(value);
-    const divisor = absValue >= 100000 ? 100000 : 10;
-    const unit = absValue >= 100000 ? "億" : "萬";
-    const amount = value / divisor;
-    return `${amount.toLocaleString("zh-TW", {
-      minimumFractionDigits: absValue >= 100000 ? 2 : 0,
-      maximumFractionDigits: 2,
-    })} ${unit}`;
-  }
-  return value.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
-}
-
-function evidenceTone(item = {}) {
-  const value = Number(item.value);
-  if (!Number.isFinite(value)) return { className: "missing", label: "待補" };
-  if (value > 0) return { className: "passed", label: "獲利" };
-  if (value < 0) return { className: "failed", label: "虧損" };
-  return { className: "missing", label: "損益兩平" };
-}
-
-function renderRuleEvidence(rule = {}) {
-  const evidence = Array.isArray(rule.evidence) ? rule.evidence.filter(Boolean) : [];
-  if (!evidence.length) return "";
-  const numericValues = evidence.map((item) => Math.abs(Number(item.value))).filter((value) => Number.isFinite(value));
-  const maxAbs = numericValues.length ? Math.max(...numericValues) : 0;
-  const bars = evidence.map((item) => {
-    const value = Number(item.value);
-    const tone = evidenceTone(item);
-    const width = Number.isFinite(value) && maxAbs > 0 ? Math.max(8, Math.round((Math.abs(value) / maxAbs) * 100)) : 0;
-    return `
-      <div class="evidence-bar-row">
-        <span class="evidence-label">${escapeHtml(item.label || "")}</span>
-        <span class="evidence-track"><span class="evidence-bar ${tone.className}" data-evidence-width="${escapeHtml(width)}"></span></span>
-        <span class="evidence-value ${tone.className}">${escapeHtml(formatEvidenceValue(item))}</span>
-      </div>
-    `;
-  }).join("");
-  const rows = evidence.map((item) => {
-    const tone = evidenceTone(item);
-    return `
-      <tr>
-        <th scope="row">${escapeHtml(item.label || "")}</th>
-        <td class="${tone.className}">${escapeHtml(formatEvidenceValue(item))}</td>
-        <td class="${tone.className}">${escapeHtml(tone.label)}</td>
-      </tr>
-    `;
-  }).join("");
-  return `
-    <div class="rule-evidence" aria-label="${escapeHtml(rule.code || "")} 年度數據">
-      <div class="evidence-bars">${bars}</div>
-      <table class="evidence-table">
-        <thead>
-          <tr><th scope="col">年度</th><th scope="col">淨利</th><th scope="col">判讀</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-function applyEvidenceBarWidths(root = null) {
-  if (typeof document === "undefined" && !root) return;
-  const scope = root || document;
-  if (!scope.querySelectorAll) return;
-  scope.querySelectorAll("[data-evidence-width]").forEach((bar) => {
-    const value = Number(bar.dataset.evidenceWidth);
-    const width = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
-    bar.style.setProperty("--bar-width", `${width}%`);
-  });
-}
-
-function renderRule(rule = {}) {
-  const isMissing = rule.severity === "INSUFFICIENT_DATA";
-  const stateClass = isMissing ? "missing" : rule.passed ? "passed" : "failed";
-  const stateText = isMissing ? "待補" : rule.passed ? "通過" : "未通過";
-  return `
-    <div class="rule">
-      <div class="rule-code ${stateClass}">${escapeHtml(rule.code)} ${stateText}</div>
-      <div>
-        <strong>${escapeHtml(rule.title)}</strong>
-        <div class="muted">${escapeHtml(rule.message)}</div>
-        ${renderRuleEvidence(rule)}
-      </div>
-    </div>
-  `;
-}
-
-function displayResultStatus(result = {}, disclosureGroup = "") {
-  const partialPublished = disclosureGroup === "announced" && isPartialPublishedResult(result);
-  const partialHolding = disclosureGroup === "holding" && isPartialPublishedResult(result);
-  return {
-    status: partialHolding ? "PARTIAL_HOLDING" : partialPublished ? "PARTIAL_DATA" : result.status,
-    summary: partialHolding
-      ? "已有公開揭露資料可追蹤；完整續抱或出場結論仍待補歷史財報、季 YoY 或週轉率等欄位。"
-      : partialPublished
-        ? "已有公開揭露資料可初步掃描；完整進場結論仍待補歷史財報、PER 或週轉率等欄位。"
-        : result.summary || "已完成規則分析。",
-  };
-}
-
-function resultActionButtons(result, options = {}) {
-  const companyName = result.companyName || safeCompanyName(result);
-  const tracked = isHoldingTracked(result.stockCode);
-  const stockCode = safeText(result.stockCode, "未知代碼");
-  const exitButton =
-    options.allowExitAction && result.status === "EXIT"
-      ? `<button class="danger-btn" type="button" data-clear-from-result="${escapeHtml(stockCode)}">採用出場建議</button>`
-      : "";
-  const addButton =
-    options.allowAddAction && result.status !== "EXCLUDED"
-      ? tracked
-        ? `<button class="secondary-btn holding-state-btn" type="button" disabled>已在持股</button>`
-        : `<button class="secondary-btn" type="button" data-add-from-result="${escapeHtml(stockCode)}" data-add-name="${escapeHtml(companyName)}">加入持股</button>`
-      : "";
-  return exitButton || addButton ? `<div class="button-row">${addButton}${exitButton}</div>` : "";
-}
-
-function renderAnalysisCard(result, options = {}) {
-  result = result || {};
-  const companyName = result.companyName || safeCompanyName(result);
-  const stockCode = safeText(result.stockCode, "未知代碼");
-  const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
-  const { status: displayStatus, summary: displaySummary } = displayResultStatus(result, options.disclosureGroup);
-  return `
-    <article class="card analysis-card" data-result-status="${escapeHtml(displayStatus)}">
-      <div class="card-head">
-        <div>
-          <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</h3>
-          <p class="muted">${escapeHtml(displaySummary)}</p>
-        </div>
-        <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
-      </div>
-      <div class="rules">${reasons.map(renderRule).join("")}</div>
-      ${resultActionButtons(result, options)}
-    </article>
-  `;
-}
-
 function renderSelectedCompany() {
   const target = $("#selected-company");
   const company = normalizeCompany(state.selectedCompany);
@@ -1428,45 +1149,6 @@ function renderStrategyStatusDetail() {
     </div>
   `;
   applyEvidenceBarWidths(target);
-}
-
-function strategyThresholdsFor(code, title) {
-  const direct = STRATEGY_RULE_THRESHOLDS[code];
-  if (direct) return direct;
-  const compactTitle = normalizeText(title);
-  const matches = compactTitle.match(/(>=|>|<|≤|小於|大於)\s*\d+(?:\.\d+)?%?/g);
-  return matches?.length ? matches : ["條件檢查"];
-}
-
-function renderStrategyRuleCards(details = STRATEGY_STATUS_DETAILS) {
-  return details
-    .map(
-      (detail) => `
-        <article class="strategy-rule-card">
-          <div>
-            <h3>${escapeHtml(detail.label)}</h3>
-            <p class="strategy-rule-summary">${escapeHtml(detail.summary)}</p>
-          </div>
-          <ul class="strategy-rule-list">
-            ${detail.items
-              .map(([code, title]) => {
-                const thresholds = strategyThresholdsFor(code, title);
-                return `
-                  <li class="strategy-rule-item">
-                    <span class="strategy-rule-code">${escapeHtml(code)}</span>
-                    <p class="strategy-rule-title">${escapeHtml(title)}</p>
-                    <div class="strategy-rule-thresholds">
-                      ${thresholds.map((threshold) => `<span class="rule-threshold-pill">${escapeHtml(threshold)}</span>`).join("")}
-                    </div>
-                  </li>
-                `;
-              })
-              .join("")}
-          </ul>
-        </article>
-      `,
-    )
-    .join("");
 }
 
 function renderStrategyRulesGrid() {
