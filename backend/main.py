@@ -190,8 +190,7 @@ def _backtest_status_cached() -> dict:
     with _backtest_cache_lock:
         if signature == _backtest_cache.get("signature") and now < _backtest_cache.get("expires_at", 0.0):
             return _backtest_cache["result"]
-    result = run_backtest()
-    with _backtest_cache_lock:
+        result = run_backtest()
         _backtest_cache["result"] = result
         _backtest_cache["signature"] = signature
         _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
@@ -597,7 +596,15 @@ def scan_holdings(payload: ScanHoldingsRequest) -> dict:
 @app.post("/api/reports/market")
 def market_report(report_format: str = "markdown", payload: Optional[ReportFormatRequest] = Body(default=None)):
     settings = _effective_settings(payload.settings if payload else None)
-    scan_payload = _scan_market_payload(settings)
+    if settings.use_mock_data:
+        scan_payload = _scan_market_payload(settings)
+    else:
+        scan_payload = scan_cache_service.get_or_refresh(
+            settings,
+            build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
+            build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
+            refresh_mode="auto",
+        )
     return _report_response(scan_payload, report_format, "台股市場掃描報告", "market_scan")
 
 

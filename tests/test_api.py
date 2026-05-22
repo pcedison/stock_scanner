@@ -377,6 +377,8 @@ def test_market_scan_is_independent_from_holding_add_and_delete():
 
 
 def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
+    admin_username = "admin@example.com"
+    monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
     monkeypatch.setattr(main_module, "auth_service", auth_service)
     admin_client = TestClient(app)
@@ -396,23 +398,23 @@ def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
 
     admin_response = admin_client.post(
         "/api/auth/register",
-        json={"username": " PCEDISON@GMAIL.COM ", "password": password},
+        json={"username": f" {admin_username.upper()} ", "password": password},
     )
     assert admin_response.status_code == 200
-    assert admin_response.json()["user"]["username"] == "pcedison@gmail.com"
+    assert admin_response.json()["user"]["username"] == admin_username
     assert admin_response.json()["user"]["isSuperUser"] is True
 
     me_response = admin_client.get("/api/auth/me")
     assert me_response.status_code == 200
     assert me_response.json()["authenticated"] is True
-    assert me_response.json()["user"]["username"] == "pcedison@gmail.com"
+    assert me_response.json()["user"]["username"] == admin_username
     assert me_response.json()["user"]["isSuperUser"] is True
 
     users_response = admin_client.get("/api/admin/users")
     assert users_response.status_code == 200
     users = users_response.json()["users"]
     normal_user = next(user for user in users if user["username"] == normal_username)
-    super_user = next(user for user in users if user["username"] == "pcedison@gmail.com")
+    super_user = next(user for user in users if user["username"] == admin_username)
     assert normal_user["holdingsCount"] == 1
     assert normal_user["activeSessionCount"] == 1
     assert normal_user["canDelete"] is True
