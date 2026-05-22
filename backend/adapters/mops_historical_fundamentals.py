@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
@@ -173,7 +174,6 @@ class OfficialMopsHistoricalFundamentalsAdapter:
         return [], {"ok": False, "rows": 0}
 
     def fetch_company_period(self, stock_code: str, company_name: str, market: str, fiscal_year: int, quarter: int) -> MopsHistoricalBundle:
-        from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as executor:
             income_future = executor.submit(self._fetch_income, stock_code, company_name, market, fiscal_year, quarter)
             balance_future = executor.submit(self._fetch_balance, stock_code, company_name, market, fiscal_year, quarter)

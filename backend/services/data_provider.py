@@ -67,7 +67,7 @@ class MockDataProvider:
     def get_snapshot(self, stock_code: str) -> Optional[FundamentalSnapshot]:
         return self._fundamentals.get(stock_code)
 
-    def iter_snapshots(self, settings: ScannerSettings) -> list[FundamentalSnapshot]:
+    def list_snapshots(self, settings: ScannerSettings) -> list[FundamentalSnapshot]:
         snapshots = []
         for snapshot in self._fundamentals.values():
             if snapshot.company.market == "TWSE" and not settings.scan_twse:

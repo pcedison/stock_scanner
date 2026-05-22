@@ -378,7 +378,7 @@ class OfficialDataProvider:
         self._safe_refresh_snapshots()
         return self._snapshots.get(stock_code)
 
-    def iter_snapshots(self, settings: ScannerSettings) -> list[FundamentalSnapshot]:
+    def list_snapshots(self, settings: ScannerSettings) -> list[FundamentalSnapshot]:
         self._safe_refresh_snapshots()
         snapshots = []
         for snapshot in self._snapshots.values():

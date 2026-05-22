@@ -23,7 +23,10 @@ def load_settings() -> ScannerSettings:
         return ScannerSettings.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         recovered = ScannerSettings()
-        save_settings(recovered)
+        try:
+            save_settings(recovered)
+        except OSError:
+            pass
         return recovered
 
 
