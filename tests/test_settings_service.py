@@ -16,6 +16,7 @@ def test_default_settings_path_uses_local_runtime_file(monkeypatch):
 def test_settings_path_env_override_is_used_for_load_and_save(tmp_path, monkeypatch):
     path = tmp_path / "nested" / "custom-settings.json"
     monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
     settings = ScannerSettings(manual_scan_enabled=False, scan_tpex=False)
 
     assert settings_service.save_settings(settings) == settings
@@ -26,10 +27,28 @@ def test_settings_path_env_override_is_used_for_load_and_save(tmp_path, monkeypa
     assert settings_service.load_settings().model_dump() == settings.model_dump()
 
 
+def test_save_settings_refreshes_cache_when_file_signature_is_reused(tmp_path, monkeypatch):
+    path = tmp_path / "settings.local.json"
+    monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
+
+    original = ScannerSettings(manual_scan_enabled=True)
+    updated = ScannerSettings(manual_scan_enabled=False)
+    settings_service.save_settings(original)
+    assert settings_service.load_settings().manual_scan_enabled is True
+    cached_sig = settings_service._settings_cache["sig"]
+    monkeypatch.setattr(settings_service, "_file_sig", lambda _: cached_sig)
+
+    settings_service.save_settings(updated)
+
+    assert settings_service.load_settings().manual_scan_enabled is False
+
+
 def test_corrupt_settings_recover_to_defaults(tmp_path, monkeypatch):
     path = tmp_path / "settings.local.json"
     path.write_text("{not-json", encoding="utf-8")
     monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
 
     recovered = settings_service.load_settings()
 
@@ -42,6 +61,7 @@ def test_save_settings_keeps_existing_file_when_replace_fails(tmp_path, monkeypa
     original = ScannerSettings(manual_scan_enabled=True)
     path.write_text(original.model_dump_json(indent=2) + "\n", encoding="utf-8")
     monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
     real_replace = Path.replace
 
     def fail_replace(self, target):

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from threading import Event, Lock, Thread
 from uuid import uuid4
 
 import pytest
@@ -139,6 +140,74 @@ def test_backtest_status_cache_invalidates_when_source_file_changes(tmp_path, mo
     assert first["metrics"]["tradeCount"] == 1
     assert second["metrics"]["tradeCount"] == 1
     assert third["metrics"]["tradeCount"] == 2
+
+
+def test_backtest_status_cache_single_flights_concurrent_misses(tmp_path, monkeypatch):
+    source = tmp_path / "backtest_history.csv"
+    source.write_text("stock_code,period\n", encoding="utf-8")
+    calls = {"count": 0}
+    calls_lock = Lock()
+    started = Event()
+    release = Event()
+    results = []
+    errors = []
+
+    def fake_run_backtest():
+        with calls_lock:
+            calls["count"] += 1
+            trade_count = calls["count"]
+        started.set()
+        assert release.wait(timeout=5)
+        return {"status": "OK", "trades": [], "metrics": {"tradeCount": trade_count}}
+
+    def call_cached():
+        try:
+            results.append(main_module._backtest_status_cached())
+        except BaseException as exc:  # pragma: no cover - assertion context
+            errors.append(exc)
+
+    monkeypatch.setattr(main_module, "DEFAULT_BACKTEST_PATH", source)
+    monkeypatch.setattr(main_module, "run_backtest", fake_run_backtest)
+    main_module._backtest_cache.clear()
+    main_module._backtest_refresh_events.clear()
+
+    first = Thread(target=call_cached)
+    second = Thread(target=call_cached)
+    first.start()
+    assert started.wait(timeout=5)
+    second.start()
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert calls["count"] == 1
+    assert [result["metrics"]["tradeCount"] for result in results] == [1, 1]
+
+
+def test_scan_rate_limit_prunes_stale_sources_and_caps_store(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr(main_module, "monotonic", lambda: now)
+    monkeypatch.setattr(main_module, "_SCAN_RATE_MAX_REQUESTS", 100)
+    monkeypatch.setattr(main_module, "_SCAN_RATE_MAX_SOURCES", 3)
+    main_module._scan_rate_store.clear()
+    main_module._scan_rate_store.update(
+        {
+            "stale": [now - main_module._SCAN_RATE_WINDOW_SECONDS - 1],
+            "older": [now - 20],
+            "old": [now - 10],
+            "fresh": [now - 1],
+        }
+    )
+
+    main_module._check_scan_rate_limit("new")
+
+    assert "stale" not in main_module._scan_rate_store
+    assert "older" not in main_module._scan_rate_store
+    assert "new" in main_module._scan_rate_store
+    assert len(main_module._scan_rate_store) <= 3
 
 
 def test_companies_endpoint_is_paginated():

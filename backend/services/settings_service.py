@@ -84,4 +84,7 @@ def save_settings(settings: ScannerSettings) -> ScannerSettings:
             except OSError:
                 pass
         raise
+    with _settings_cache_lock:
+        _settings_cache["sig"] = _file_sig(path)
+        _settings_cache["result"] = settings
     return settings
