@@ -16,13 +16,13 @@ MOCK_SETTINGS = ScannerSettings(use_mock_data=True)
 
 
 @pytest.fixture(autouse=True)
-def force_mock_provider_for_api_tests():
-    original = load_settings()
-    save_settings(ScannerSettings(**{**original.model_dump(), "use_mock_data": True}))
-    try:
-        yield
-    finally:
-        save_settings(original)
+def force_mock_provider_for_api_tests(tmp_path, monkeypatch):
+    # Redirect settings I/O to a temp directory outside OneDrive to prevent
+    # Path.replace() from racing with OneDrive sync locks (WinError 5).
+    test_settings = tmp_path / "settings.json"
+    monkeypatch.setenv("SETTINGS_PATH", str(test_settings))
+    save_settings(ScannerSettings(use_mock_data=True))
+    yield
 
 
 def test_health_endpoint():

@@ -84,9 +84,13 @@ class OfficialMonthlyRevenueAdapter:
 
     def _fetch_monthly_revenue(self, url: str, market: str) -> list[OfficialMonthlyRevenueRow]:
         rows = self._fetch_json(url)
-        return [
-            OfficialMonthlyRevenueRow(
-                stockCode=str(row.get("公司代號", "")).strip(),
+        result = []
+        for row in rows:
+            stock_code = str(row.get("公司代號", "")).strip()
+            if not stock_code or not stock_code.isdigit():
+                continue
+            result.append(OfficialMonthlyRevenueRow(
+                stockCode=stock_code,
                 companyName=str(row.get("公司名稱", "")).strip(),
                 market=market,
                 industryName=str(row.get("產業別", "")).strip(),
@@ -96,9 +100,8 @@ class OfficialMonthlyRevenueAdapter:
                 monthlyRevenueYoY=_to_float(row.get("營業收入-去年同月增減(%)")),
                 cumulativeRevenue=_to_int(row.get("累計營業收入-當月累計營收")),
                 cumulativeRevenueYoY=_to_float(row.get("累計營業收入-前期比較增減(%)")),
-            )
-            for row in rows
-        ]
+            ))
+        return result
 
     def fetch_twse_monthly_revenue(self) -> list[OfficialMonthlyRevenueRow]:
         return self._fetch_monthly_revenue(TWSE_MONTHLY_REVENUE_URL, "TWSE")
