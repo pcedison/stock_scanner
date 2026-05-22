@@ -23,6 +23,7 @@ AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
 SESSION_CLEANUP_INTERVAL_SECONDS = 15 * 60
+MAX_SESSIONS_PER_USER = 10
 
 
 def _runtime_environment() -> str:
@@ -63,6 +64,7 @@ class AuthService:
         self.db_path = Path(db_path)
         self._local = threading.local()
         self._last_session_cleanup_at: datetime | None = None
+        self._cleanup_lock = threading.Lock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -290,17 +292,27 @@ class AuthService:
             connection.execute("DELETE FROM auth_attempts WHERE identifier = ?", (identifier,))
 
     def _should_cleanup_sessions(self, now: datetime) -> bool:
-        last_cleanup = self._last_session_cleanup_at
-        if last_cleanup and last_cleanup > now - timedelta(seconds=SESSION_CLEANUP_INTERVAL_SECONDS):
-            return False
-        self._last_session_cleanup_at = now
-        return True
+        with self._cleanup_lock:
+            last_cleanup = self._last_session_cleanup_at
+            if last_cleanup and last_cleanup > now - timedelta(seconds=SESSION_CLEANUP_INTERVAL_SECONDS):
+                return False
+            self._last_session_cleanup_at = now
+            return True
 
     def create_session(self, user_id: int, days: int = 30) -> str:
         token = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=days)
         with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM sessions WHERE user_id = ? AND token_hash NOT IN (
+                    SELECT token_hash FROM sessions WHERE user_id = ?
+                    ORDER BY created_at DESC LIMIT ?
+                )
+                """,
+                (user_id, user_id, MAX_SESSIONS_PER_USER - 1),
+            )
             connection.execute(
                 """
                 INSERT INTO sessions (user_id, token_hash, created_at, expires_at)

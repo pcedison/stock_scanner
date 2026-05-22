@@ -30,7 +30,7 @@ AUTH_LOCK_SECONDS = 15 * 60
 REVENUE_GROWTH_MODES = frozenset({"cumulative_ytd", "monthly", "trailing_3m_avg"})
 CSRF_HEADER_NAME = "x-stock-scanner-csrf"
 CSRF_HEADER_VALUE = "1"
-UNSAFE_API_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+UNSAFE_API_METHODS = frozenset({"POST", "PUT", "DELETE"})
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,

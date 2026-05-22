@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from backend.adapters._utils import to_float as _to_float_base
 from backend.adapters.official_fundamentals import (
     OfficialBalanceSheetRow,
     OfficialIncomeStatementRow,
@@ -25,14 +26,7 @@ MOPS_API_BALANCE_ENDPOINT = f"{MOPS_API_BASE_URL}/t164sb03"
 
 
 def _to_float(value: Any) -> float | None:
-    text = str(value or "").replace(",", "").strip()
-    if not text or text in {"-", "--", "NA", "N/A"}:
-        return None
-    text = text.replace("(", "-").replace(")", "")
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    return _to_float_base(value, parenthesized_negative=True)
 
 
 def _market_type(market: str) -> str:

@@ -1,10 +1,11 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..", "..");
 const port = Number(process.argv[2] || process.env.E2E_PORT || 8010);
-const tempDir = path.join(root, ".tmp", "e2e");
+const tempDir = path.join(os.tmpdir(), `stock-scanner-e2e-${port}`);
 fs.rmSync(tempDir, { recursive: true, force: true });
 fs.mkdirSync(tempDir, { recursive: true });
 
@@ -52,6 +53,7 @@ const shutdown = () => {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 child.on("exit", (code, signal) => {
+  fs.rmSync(tempDir, { recursive: true, force: true });
   if (signal) process.exit(0);
   process.exit(code || 0);
 });

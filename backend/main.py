@@ -108,7 +108,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -135,7 +135,7 @@ SECURITY_HEADERS = {
 
 CSRF_HEADER_NAME = "x-stock-scanner-csrf"
 CSRF_HEADER_VALUE = "1"
-UNSAFE_API_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+UNSAFE_API_METHODS = {"POST", "PUT", "DELETE"}
 
 
 def _requires_csrf_header(request: Request) -> bool:
