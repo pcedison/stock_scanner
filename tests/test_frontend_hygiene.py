@@ -5,13 +5,18 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260522-cache-aware-overview"
+APP_VERSION = "20260522-frontend-split"
 
 
 def test_frontend_hygiene_current_budget_passes():
     report = frontend_hygiene_report()
 
-    assert validate_frontend_hygiene(report, max_app_lines=2668, max_inner_html=19) == []
+    assert validate_frontend_hygiene(report, max_app_lines=2400, max_inner_html=19) == []
+    assert report["hasSplitReferenceData"] is True
+    assert report["hasSplitStrategyContent"] is True
+    assert report["hasSplitStorageHelper"] is True
+    assert report["hasSplitRendererFactory"] is True
+    assert report["appOwnsStrategyContent"] is False
 
 
 def test_frontend_hygiene_rejects_inner_html_growth():
@@ -25,7 +30,7 @@ def test_frontend_hygiene_rejects_inner_html_growth():
         "emptyStateUsesSharedHelper": True,
     }
 
-    problems = validate_frontend_hygiene(report, max_app_lines=2668, max_inner_html=19)
+    problems = validate_frontend_hygiene(report, max_app_lines=2400, max_inner_html=19)
 
     assert any("innerHTML" in problem for problem in problems)
 
@@ -49,7 +54,7 @@ function renderSafe(target, payload) {
     auth_js.write_text("const StockScannerAuth = { normalizeAuthUser() {} };", encoding="utf-8")
 
     report = frontend_hygiene_report(app_js, dom_js, auth_js)
-    problems = validate_frontend_hygiene(report, max_app_lines=2668, max_inner_html=19)
+    problems = validate_frontend_hygiene(report, max_app_lines=2400, max_inner_html=19)
 
     assert report["dangerousInnerHTMLAssignments"] == [{"line": 3, "statement": "target.innerHTML = payload.name;"}]
     assert any("dangerous innerHTML assignments" in problem for problem in problems)
@@ -83,6 +88,10 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert f'href="/styles.css?v={STYLE_VERSION}" as="style"' in index_html
     assert f'href="/styles.css?v={STYLE_VERSION}"' in index_html
     assert 'src="/auth.js?v=20260521-auth-helpers"' in index_html
+    assert 'src="/reference_data.js?v=20260522-frontend-split"' in index_html
+    assert 'src="/strategy_content.js?v=20260522-frontend-split"' in index_html
+    assert 'src="/storage.js?v=20260522-frontend-split"' in index_html
+    assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
     assert f'src="/app.js?v={APP_VERSION}"' in index_html
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css
