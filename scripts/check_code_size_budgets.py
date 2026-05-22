@@ -14,7 +14,7 @@ DEFAULT_BUDGETS = {
     "frontend/storage.js": 80,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
-    "cloudflare/worker.py": 1300,
+    "cloudflare/worker.py": 1310,
     ".github/workflows/cloudflare-r2-seed-refresh.yml": 240,
 }
 

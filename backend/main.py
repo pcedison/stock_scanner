@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from time import monotonic
 from typing import Optional
 from urllib.parse import urlparse
@@ -174,6 +175,26 @@ SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 _backtest_cache: dict = {}
 _backtest_cache_lock = RLock()
 _BACKTEST_CACHE_TTL_SECONDS = 3600
+
+_SCAN_RATE_WINDOW_SECONDS = 60
+_SCAN_RATE_MAX_REQUESTS = 10
+_scan_rate_lock = Lock()
+_scan_rate_store: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_scan_rate_limit(source: str) -> None:
+    now = monotonic()
+    cutoff = now - _SCAN_RATE_WINDOW_SECONDS
+    with _scan_rate_lock:
+        timestamps = _scan_rate_store[source]
+        timestamps[:] = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _SCAN_RATE_MAX_REQUESTS:
+            raise HTTPException(
+                status_code=429,
+                detail="掃描頻率過高，請稍後再試",
+                headers={"Retry-After": str(_SCAN_RATE_WINDOW_SECONDS)},
+            )
+        timestamps.append(now)
 
 
 def _backtest_source_signature() -> tuple[str, int | None, int | None]:
@@ -563,7 +584,8 @@ def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(defa
 
 
 @app.post("/api/scan/market")
-def scan_market(payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
+def scan_market(request: Request, payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
+    _check_scan_rate_limit(_auth_source(request))
     settings = _effective_settings(payload.settings if payload else None)
     _ensure_manual_scan_enabled(settings)
     if settings.use_mock_data:
@@ -587,7 +609,8 @@ def cache_status() -> dict:
 
 
 @app.post("/api/scan/holdings")
-def scan_holdings(payload: ScanHoldingsRequest) -> dict:
+def scan_holdings(request: Request, payload: ScanHoldingsRequest) -> dict:
+    _check_scan_rate_limit(_auth_source(request))
     settings = _effective_settings(payload.settings)
     _ensure_manual_scan_enabled(settings)
     return _scan_holdings_payload(payload.holdings, settings)
