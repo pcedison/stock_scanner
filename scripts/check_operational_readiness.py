@@ -80,7 +80,7 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
             "D1 refresh job polling": r"SELECT COUNT\(\*\) AS pending_count FROM refresh_jobs",
             "committed seed restore": r"unzip -o .* -d data",
             "online seed rebuild": r"CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed\.py",
-            "R2 market scan summary upload": r"market_scan_summary\.json",
+            "testable R2 upload plan": r"scripts/cloudflare_seed_upload_plan\.py",
             "refresh job success marker": r"status = 'success'",
             "refresh job failure marker": r"status = 'failed'",
             "remote smoke": r"scripts/run_remote_smoke\.py",

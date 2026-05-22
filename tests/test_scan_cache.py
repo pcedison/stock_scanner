@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.models.settings import ScannerSettings
 from backend.services.scan_cache import ScanCacheService, scan_cache_key
+from backend.services import scan_cache as scan_cache_module
 
 
 def test_scan_cache_returns_cached_payload_without_rebuilding(tmp_path):
@@ -63,3 +64,26 @@ def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
 
     assert calls["count"] == 1
     assert status["recentJobs"][-1]["status"] == "success"
+
+
+def test_scan_cache_write_uses_unique_atomic_temp_file(tmp_path, monkeypatch):
+    calls = []
+    original_named_temp = scan_cache_module.tempfile.NamedTemporaryFile
+
+    def recording_named_temp(*args, **kwargs):
+        calls.append(kwargs)
+        return original_named_temp(*args, **kwargs)
+
+    monkeypatch.setattr(scan_cache_module.tempfile, "NamedTemporaryFile", recording_named_temp)
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+
+    service._write_json(tmp_path / "scan.json", {"ok": True})
+
+    assert json.loads((tmp_path / "scan.json").read_text(encoding="utf-8")) == {"ok": True}
+    assert calls
+    assert calls[0]["dir"] == tmp_path
+    assert calls[0]["prefix"] == ".scan.json."
+    assert calls[0]["suffix"] == ".tmp"
+    assert calls[0]["delete"] is False
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob(".*.tmp")) == []

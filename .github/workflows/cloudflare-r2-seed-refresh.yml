@@ -33,78 +33,47 @@ jobs:
       CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
 
     steps:
-      # Lightweight pre-check: query D1 via REST API and check health URL
-      # This runs before checkout/npm/pip so empty runs exit in < 10 seconds.
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # Lightweight pre-check: query D1 via REST API and check health URL.
+      # This runs before npm/pip so empty runs still skip the heavy setup.
       - name: Early exit - check pending jobs without heavy dependencies
         id: early-check
         run: |
+          mkdir -p .tmp
+          force_args=()
+          api_args=()
+          health_args=()
           if [ "$FORCE_REFRESH" = "true" ]; then
-            echo "run_refresh=true" >> "$GITHUB_OUTPUT"
-            echo "Force refresh requested via workflow_dispatch." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+            force_args=(--force)
+          else
+            if api_result=$(curl -sf --max-time 10 -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${CF_D1_DATABASE_ID}/query" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' 2>/dev/null); then
+              printf '%s' "$api_result" > .tmp/early-d1.json
+              api_args=(--cloudflare-api-json-file .tmp/early-d1.json)
+            fi
 
-          pending=0
-          if api_result=$(curl -sf --max-time 10 -X POST \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${CF_D1_DATABASE_ID}/query" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' 2>/dev/null); then
-            pending=$(python3 - "$api_result" <<'PY'
-          import sys, json
-          try:
-              d = json.loads(sys.argv[1])
-              r = d.get('result', [{}])
-              results = r[0].get('results', [{}]) if isinstance(r, list) and r else [{}]
-              print(int(results[0].get('cnt', 0) if isinstance(results, list) and results else 0))
-          except Exception:
-              print(0)
-          PY
-            )
-          fi
-
-          stale=false
-          if [ -n "$CF_WORKER_HEALTH_URL" ]; then
-            if health=$(curl -sf --max-time 15 "$CF_WORKER_HEALTH_URL" 2>/dev/null); then
-              age_hours=$(python3 - "$health" <<'PY'
-          import sys, json
-          from datetime import datetime, timezone
-          try:
-              d = json.loads(sys.argv[1])
-              generated_at = d.get('cache', {}).get('generatedAt', '')
-              if not generated_at:
-                  print(999)
-                  sys.exit()
-              dt = datetime.fromisoformat(generated_at.replace('Z', '+00:00'))
-              age = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-              print(int(age))
-          except Exception:
-              print(999)
-          PY
-                )
-              if [ "$age_hours" -gt 36 ]; then
-                stale=true
-                echo "Production seed is stale (${age_hours}h old); R2 rebuild will run." >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "$CF_WORKER_HEALTH_URL" ]; then
+              if health=$(curl -sf --max-time 15 "$CF_WORKER_HEALTH_URL" 2>/dev/null); then
+                printf '%s' "$health" > .tmp/early-health.json
+                health_args=(--health-url-configured --health-json-file .tmp/early-health.json)
               else
-                echo "Production seed is fresh (${age_hours}h old)." >> "$GITHUB_STEP_SUMMARY"
+                health_args=(--health-url-configured --health-error "unreachable")
               fi
-            else
-              stale=true
-              echo "Health URL unreachable; treating as stale." >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
 
-          echo "pending_count=$pending" >> "$GITHUB_OUTPUT"
-          if [ "$pending" -gt 0 ] || [ "$stale" = "true" ]; then
-            echo "run_refresh=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_refresh=false" >> "$GITHUB_OUTPUT"
-            echo "No pending refresh jobs and seed is fresh; skipping heavy setup." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Check out repository
-        if: steps.early-check.outputs.run_refresh == 'true'
-        uses: actions/checkout@v6
+          python scripts/r2_refresh_decision.py early-check \
+            "${force_args[@]}" \
+            "${api_args[@]}" \
+            "${health_args[@]}" \
+            --max-cache-age-hours 36 \
+            --github-output "$GITHUB_OUTPUT" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Node.js
         if: steps.early-check.outputs.run_refresh == 'true'
@@ -152,31 +121,7 @@ jobs:
             --command "SELECT COUNT(*) AS pending_count FROM refresh_jobs WHERE job_type = 'market_scan' AND status IN ('queued', 'running');" \
             > .tmp/refresh-job-count.json
 
-          pending_count="$(python - <<'PY'
-          import json
-          from pathlib import Path
-
-          payload = json.loads(Path(".tmp/refresh-job-count.json").read_text(encoding="utf-8"))
-
-          def find_pending_count(value):
-              if isinstance(value, dict):
-                  if "pending_count" in value:
-                      return int(value.get("pending_count") or 0)
-                  for child in value.values():
-                      found = find_pending_count(child)
-                      if found is not None:
-                          return found
-              if isinstance(value, list):
-                  for child in value:
-                      found = find_pending_count(child)
-                      if found is not None:
-                          return found
-              return None
-
-          pending_count = find_pending_count(payload) or 0
-          print(pending_count)
-          PY
-          )"
+          pending_count="$(python scripts/r2_refresh_decision.py pending-count --json-file .tmp/refresh-job-count.json --fields pending_count)"
 
           stale_refresh=false
           if [ -n "$CF_WORKER_HEALTH_URL" ]; then
@@ -241,30 +186,14 @@ jobs:
       - name: Upload rebuilt seed cache to R2
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/manifest.json" --remote --file cloudflare/seed/manifest.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/companies.json" --remote --file cloudflare/seed/companies.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/data_sources_status.json" --remote --file cloudflare/seed/data_sources_status.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_latest.json" --remote --file cloudflare/seed/market_scan_latest.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/market_scan_summary.json" --remote --file cloudflare/seed/market_scan_summary.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_by_code.json" --remote --file cloudflare/seed/analysis_by_code.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_by_code.json" --remote --file cloudflare/seed/holding_analysis_by_code.json
-          for file in cloudflare/seed/analysis_shards/*.json; do
-            shard="$(basename "$file" .json)"
-            npx wrangler r2 object put "$CF_R2_BUCKET/public/analysis_shards/$shard.json" --remote --file "$file"
-          done
-          for file in cloudflare/seed/holding_analysis_shards/*.json; do
-            shard="$(basename "$file" .json)"
-            npx wrangler r2 object put "$CF_R2_BUCKET/public/holding_analysis_shards/$shard.json" --remote --file "$file"
-          done
-          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_fundamentals_history.json" --remote --file data/official_fundamentals_history.json
-          npx wrangler r2 object put "$CF_R2_BUCKET/official/official_history_backfill_progress.json" --remote --file data/official_history_backfill_progress.json
-          if [ -f data/monthly_revenue_history.json ]; then
-            npx wrangler r2 object put "$CF_R2_BUCKET/official/monthly_revenue_history.json" --remote --file data/monthly_revenue_history.json
-          fi
-          SEED_ZIP=$(python scripts/seed_utils.py data --print)
-          if [ -n "$SEED_ZIP" ]; then
-            npx wrangler r2 object put "$CF_R2_BUCKET/official/$(basename "$SEED_ZIP")" --remote --file "$SEED_ZIP"
-          fi
+          python scripts/cloudflare_seed_upload_plan.py \
+            --seed-dir cloudflare/seed \
+            --data-dir data \
+            --output-json .tmp/r2-upload-plan.json \
+            --output-tsv .tmp/r2-upload-plan.tsv
+          while IFS=$'\t' read -r object_key file_path; do
+            npx wrangler r2 object put "$CF_R2_BUCKET/$object_key" --remote --file "$file_path"
+          done < .tmp/r2-upload-plan.tsv
 
       - name: Verify refreshed production seed
         if: steps.refresh-check.outputs.run_refresh == 'true'

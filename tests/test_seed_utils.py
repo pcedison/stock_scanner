@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from scripts.seed_utils import find_seed_zip, main, resolve_seed_zip
 
 
@@ -42,3 +44,12 @@ def test_seed_utils_cli_fails_when_no_dated_artifact(tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "No dated seed zip found" in captured.err
+
+
+def test_gitignore_requires_intentional_seed_artifact_updates():
+    text = Path(".gitignore").read_text(encoding="utf-8")
+
+    assert "data/official_cache_seed_*.zip" in text
+    assert "data/official_cache_seed_*.sha256" in text
+    assert "!data/official_cache_seed_2026-05-14.zip" in text
+    assert "!data/official_cache_seed_2026-05-14.sha256" in text

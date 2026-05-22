@@ -736,7 +736,7 @@ class Api:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         existing = await self.db_first(
             """
-            SELECT id, status, reason, queued_at
+            SELECT id, status, reason, queued_at, owner_run_id
             FROM refresh_jobs
             WHERE job_type = ? AND status IN ('queued', 'running') AND queued_at > ?
             ORDER BY queued_at DESC
@@ -746,7 +746,14 @@ class Api:
             cutoff,
         )
         if existing:
-            return {"status": existing["status"], "reason": existing["reason"], "jobId": existing["id"], "queuedAt": existing["queued_at"]}
+            return {
+                "status": existing["status"],
+                "reason": existing["reason"],
+                "jobId": existing["id"],
+                "queuedAt": existing["queued_at"],
+                "ownerRunId": existing.get("owner_run_id"),
+                "ownerRunUrl": self.github_actions_run_url(existing.get("owner_run_id")),
+            }
         job_id = secrets.token_hex(16)
         now = utc_now()
         stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -769,11 +776,26 @@ class Api:
         )
         return {"status": "queued", "reason": policy["reason"], "jobId": job_id, "queuedAt": now}
 
+    def github_actions_run_url(self, owner_run_id):
+        if not owner_run_id:
+            return None
+        repository = str(env_value(self.env, "GITHUB_REPOSITORY", "") or "").strip()
+        if not repository or "/" not in repository:
+            return None
+        return f"https://github.com/{repository}/actions/runs/{owner_run_id}"
+
+    def refresh_job_payload(self, row):
+        payload = dict(row)
+        owner_run_id = payload.get("owner_run_id")
+        payload["ownerRunId"] = owner_run_id
+        payload["ownerRunUrl"] = self.github_actions_run_url(owner_run_id)
+        return payload
+
     async def cache_status(self):
         manifest = await self.r2_json("public/manifest.json", {})
         jobs = await self.db_all(
             """
-            SELECT id, job_type, cache_key, status, reason, queued_at, started_at, finished_at, updated_at, error
+            SELECT id, job_type, cache_key, status, reason, queued_at, started_at, finished_at, updated_at, error, owner_run_id
             FROM refresh_jobs
             ORDER BY queued_at DESC
             LIMIT 10
@@ -782,7 +804,7 @@ class Api:
         return {
             "marketScan": self.cache_status_from_manifest(manifest, {"status": "not_requested"}),
             "manifest": manifest,
-            "recentJobs": jobs,
+            "recentJobs": [self.refresh_job_payload(job) for job in jobs],
         }
 
     async def db_run(self, sql: str, *params):

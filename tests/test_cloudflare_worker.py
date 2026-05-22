@@ -398,6 +398,41 @@ def test_worker_r2_json_treats_pyodide_js_null_as_missing(monkeypatch):
     assert payload_without_to_py == {"ok": "fallback"}
 
 
+def test_worker_cache_status_exposes_refresh_job_owner_run(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=types.SimpleNamespace(GITHUB_REPOSITORY="pcedison/stock_scanner"))
+
+    async def fake_r2_json(key, fallback):
+        assert key == "public/manifest.json"
+        return {"generatedAt": "2026-05-22T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+
+    async def fake_db_all(sql, *params):
+        assert "owner_run_id" in sql
+        return [
+            {
+                "id": "job-1",
+                "job_type": "market_scan",
+                "cache_key": "abc",
+                "status": "running",
+                "reason": "manual",
+                "queued_at": "2026-05-22T00:00:00+00:00",
+                "started_at": "2026-05-22T00:01:00+00:00",
+                "finished_at": None,
+                "updated_at": "2026-05-22T00:01:00+00:00",
+                "error": None,
+                "owner_run_id": "26276779259",
+            }
+        ]
+
+    api.r2_json = fake_r2_json
+    api.db_all = fake_db_all
+
+    payload = asyncio.run(api.cache_status())
+
+    assert payload["recentJobs"][0]["ownerRunId"] == "26276779259"
+    assert payload["recentJobs"][0]["ownerRunUrl"] == "https://github.com/pcedison/stock_scanner/actions/runs/26276779259"
+
+
 def test_worker_market_scan_uses_precomputed_summary(monkeypatch):
     worker = load_worker_module(monkeypatch)
     cache = FakeR2Cache(

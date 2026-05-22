@@ -1,7 +1,10 @@
 import json
 import subprocess
+import sys
+from pathlib import Path
 
 from scripts import check_release_sync
+from scripts import write_agent_handoff
 
 
 ORIGIN_SHA = "b" * 40
@@ -253,3 +256,124 @@ def test_tool_error_returns_exit_code_2(monkeypatch, capsys):
 
     assert exit_code == 2
     assert output["errorType"] == "tool_or_config"
+
+
+def test_production_checks_use_strict_seed_gates_by_default(monkeypatch, capsys):
+    validate = _workflow_run(10, ORIGIN_SHA)
+    deploy = _workflow_run(20, ORIGIN_SHA)
+    optional_commands = []
+
+    def fake_run(args, **kwargs):
+        command = tuple(args)
+        if command == ("git", "rev-parse", "HEAD"):
+            return _completed(args, ORIGIN_SHA)
+        if command == ("git", "rev-parse", "origin/main"):
+            return _completed(args, ORIGIN_SHA)
+        if command == ("git", "branch", "--show-current"):
+            return _completed(args, "main\n")
+        if command == ("git", "status", "--porcelain"):
+            return _completed(args, "")
+        if command == ("git", "rev-list", "--left-right", "--count", "origin/main...HEAD"):
+            return _completed(args, "0\t0\n")
+        if command == (
+            "gh",
+            "api",
+            "/repos/acme/stock-scanner/actions/workflows/ci.yml/runs?branch=main&per_page=10",
+        ):
+            return _completed(args, _run_payload([validate]))
+        if command == (
+            "gh",
+            "api",
+            "/repos/acme/stock-scanner/actions/workflows/cloudflare-deploy.yml/runs?branch=main&per_page=10",
+        ):
+            return _completed(args, _run_payload([deploy]))
+        if command == (
+            "gh",
+            "api",
+            "/repos/acme/stock-scanner/actions/workflows/cloudflare-deploy.yml/runs?branch=main&per_page=50",
+        ):
+            return _completed(args, _run_payload([deploy]))
+        if command[0] == sys.executable:
+            optional_commands.append(command)
+            return _completed(args, "{}")
+        raise AssertionError(f"unexpected command: {command}")
+
+    exit_code, output = _run_main(
+        monkeypatch,
+        capsys,
+        fake_run,
+        [
+            "--repo",
+            "acme/stock-scanner",
+            "--check-production-health",
+            "--check-production-smoke",
+            "--health-url",
+            "https://worker.example/api/health",
+        ],
+    )
+
+    assert exit_code == 0
+    assert output["ok"] is True
+    assert len(optional_commands) == 2
+    for command in optional_commands:
+        assert "--max-cache-age-hours" in command
+        assert "36" in command
+        assert "--reject-offline-seed" in command
+
+
+def test_write_agent_handoff_outputs_shared_snapshot(monkeypatch, tmp_path, capsys):
+    validate = _workflow_run(10, ORIGIN_SHA)
+    deploy = _workflow_run(20, ORIGIN_SHA)
+
+    def fake_run(args, **kwargs):
+        command = tuple(args)
+        if command == ("git", "rev-parse", "HEAD"):
+            return _completed(args, ORIGIN_SHA)
+        if command == ("git", "rev-parse", "origin/main"):
+            return _completed(args, ORIGIN_SHA)
+        if command == ("git", "branch", "--show-current"):
+            return _completed(args, "main\n")
+        if command == ("git", "status", "--porcelain"):
+            return _completed(args, "")
+        if command == ("git", "rev-list", "--left-right", "--count", "origin/main...HEAD"):
+            return _completed(args, "0\t0\n")
+        if command == (
+            "gh",
+            "api",
+            "/repos/acme/stock-scanner/actions/workflows/ci.yml/runs?branch=main&per_page=10",
+        ):
+            return _completed(args, _run_payload([validate]))
+        if command == (
+            "gh",
+            "api",
+            "/repos/acme/stock-scanner/actions/workflows/cloudflare-deploy.yml/runs?branch=main&per_page=10",
+        ):
+            return _completed(args, _run_payload([deploy]))
+        if command == (
+            "gh",
+            "api",
+            "/repos/acme/stock-scanner/actions/workflows/cloudflare-deploy.yml/runs?branch=main&per_page=50",
+        ):
+            return _completed(args, _run_payload([deploy]))
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(check_release_sync.subprocess, "run", fake_run)
+    json_output = tmp_path / "handoff.json"
+    markdown_output = tmp_path / "handoff.md"
+
+    exit_code = write_agent_handoff.main(
+        [
+            "--repo",
+            "acme/stock-scanner",
+            "--json-output",
+            str(json_output),
+            "--markdown-output",
+            str(markdown_output),
+        ]
+    )
+    printed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert printed["releaseSync"]["ok"] is True
+    assert json.loads(json_output.read_text(encoding="utf-8"))["releaseSync"]["git"]["localHead"] == ORIGIN_SHA
+    assert "Required next-agent startup" in markdown_output.read_text(encoding="utf-8")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -226,6 +228,25 @@ class ScanCacheService:
 
     def _write_json(self, path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                tmp_path = Path(handle.name)
+                handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            tmp_path.replace(path)
+        except OSError:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
