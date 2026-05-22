@@ -585,11 +585,11 @@ def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(defa
 
 @app.post("/api/scan/market")
 def scan_market(request: Request, payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
-    _check_scan_rate_limit(_auth_source(request))
     settings = _effective_settings(payload.settings if payload else None)
     _ensure_manual_scan_enabled(settings)
     if settings.use_mock_data:
         return _scan_market_payload(settings)
+    _check_scan_rate_limit(_auth_source(request))
     refresh_mode = payload.refreshMode if payload else "auto"
     return scan_cache_service.get_or_refresh(
         settings,
@@ -610,9 +610,10 @@ def cache_status() -> dict:
 
 @app.post("/api/scan/holdings")
 def scan_holdings(request: Request, payload: ScanHoldingsRequest) -> dict:
-    _check_scan_rate_limit(_auth_source(request))
     settings = _effective_settings(payload.settings)
     _ensure_manual_scan_enabled(settings)
+    if not settings.use_mock_data:
+        _check_scan_rate_limit(_auth_source(request))
     return _scan_holdings_payload(payload.holdings, settings)
 
 

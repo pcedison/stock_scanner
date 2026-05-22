@@ -32,6 +32,7 @@ const env = {
   AUTH_DB_PATH: path.join(tempDir, "auth.sqlite3"),
   SETTINGS_PATH: settingsPath,
   SESSION_COOKIE_SECURE: "0",
+  SUPER_USER_USERNAME: process.env.SUPER_USER_USERNAME || "pcedison@gmail.com",
 };
 
 const child = spawn(
