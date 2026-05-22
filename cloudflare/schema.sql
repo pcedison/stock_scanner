@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS refresh_jobs (
     queued_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
+    owner_run_id TEXT,
     updated_at TEXT NOT NULL,
     error TEXT
 );
@@ -57,3 +58,4 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_attempts_locked_until ON auth_attempts(locked_until);
 CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status ON refresh_jobs(job_type, status, queued_at);
+CREATE INDEX IF NOT EXISTS idx_refresh_jobs_owner_run ON refresh_jobs(job_type, status, owner_run_id);

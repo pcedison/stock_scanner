@@ -9,7 +9,7 @@ This project is no longer a localStorage-only prototype. The current shape is:
 - Edge API: Python Cloudflare Worker in `cloudflare/`, backed by D1 sessions/holdings/settings and R2 cache objects.
 - Shared expectation: FastAPI and Worker responses are guarded by shape and behavior contract tests under `tests/test_api_worker_contracts.py`.
 - Deployment: feature branches run validation only; `main`, scheduled, and manual workflow runs perform the actual Cloudflare upload/deploy with a production environment gate, concurrency control, operational readiness checks, D1 pre-deploy export, D1 migrations, Worker dry-run validation, post-deploy `/api/health` checks, manifest count verification, deployed public smoke checks, and Worker rollback on failed post-deploy verification.
-- Seed data: CI/deploy use the committed `data/official_cache_seed_2026-05-14.zip` in offline mode. The zip contains both official history inputs and the generated `cloudflare_seed/*` payload, so deploy validation does not depend on live TWSE/TPEx/MOPS APIs.
+- Seed data: CI/deploy resolve the newest committed dated seed zip with `python scripts/seed_utils.py data --print` and use it in offline mode. The zip contains both official history inputs and the generated `cloudflare_seed/*` payload, so deploy validation does not depend on live TWSE/TPEx/MOPS APIs.
 - Seed refresh: `.github/workflows/refresh-cloudflare-seed.yml` can rebuild from official sources on a schedule, package the cache zip, validate quality gates, enforce manifest freshness, summarize missing-data reasons/status, write Markdown/JSON quality summaries, and open a PR.
 - Runtime health: Worker `/api/health` and app status expose cache manifest quality counts and mark undersized cache payloads as degraded. `.github/workflows/cloudflare-health-monitor.yml` can poll this endpoint on a schedule and use GitHub Actions failure notifications as the baseline alerting channel.
 - Security defaults: production FastAPI and Worker deployments must use explicit HTTPS CORS origins. FastAPI also requires secure session cookies in production. Worker production CORS is driven by `APP_CORS_ALLOW_ORIGINS` and filters localhost/non-HTTPS origins unless an explicit break-glass flag is set. Production unsafe `/api/*` methods require the frontend's `X-Stock-Scanner-CSRF: 1` header.
@@ -20,8 +20,9 @@ This project is no longer a localStorage-only prototype. The current shape is:
 Useful commands:
 
 ```powershell
-python scripts\validate_cloudflare_seed_inputs.py --zip data\official_cache_seed_2026-05-14.zip
-python scripts\validate_cloudflare_seed_inputs.py --zip data\official_cache_seed_2026-05-14.zip --summary-md .tmp\seed-quality.md --summary-json .tmp\seed-quality.json --max-age-days 45
+$seedZip = python scripts\seed_utils.py data --print
+python scripts\validate_cloudflare_seed_inputs.py --zip $seedZip
+python scripts\validate_cloudflare_seed_inputs.py --zip $seedZip --summary-md .tmp\seed-quality.md --summary-json .tmp\seed-quality.json --max-age-days 45
 $env:CLOUDFLARE_SEED_MODE='offline'; python scripts\build_cloudflare_seed.py; Remove-Item Env:\CLOUDFLARE_SEED_MODE
 python scripts\check_deployment_preflight.py
 python scripts\check_operational_readiness.py

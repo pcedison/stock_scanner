@@ -54,7 +54,8 @@ npm run test:e2e
 Cloudflare seed 驗證：
 
 ```powershell
-python scripts\validate_cloudflare_seed_inputs.py --zip data\official_cache_seed_2026-05-14.zip --summary-md .tmp\seed-quality.md --summary-json .tmp\seed-quality.json --max-age-days 45
+$seedZip = python scripts\seed_utils.py data --print
+python scripts\validate_cloudflare_seed_inputs.py --zip $seedZip --summary-md .tmp\seed-quality.md --summary-json .tmp\seed-quality.json --max-age-days 45
 $env:CLOUDFLARE_SEED_MODE='offline'; python scripts\build_cloudflare_seed.py; Remove-Item Env:\CLOUDFLARE_SEED_MODE
 ```
 
@@ -84,9 +85,19 @@ Recovery runbook 可用非破壞性方式產生：
 python scripts\plan_cloudflare_recovery.py --output .tmp\cloudflare-recovery.md
 ```
 
+Release synchronization gate:
+
+```powershell
+python scripts\check_release_sync.py
+python scripts\check_release_sync.py --cancel-stale-deploys
+python scripts\check_release_sync.py --check-production-health --check-production-smoke --health-url https://example.workers.dev/api/health
+```
+
+The default run is a dry run that only reports JSON. `--cancel-stale-deploys` only cancels stale `Deploy to Cloudflare` runs on `main` whose `headSha` is not `origin/main`; it never approves production deploys.
+
 ## 資料更新
 
-目前 committed seed 是 `data/official_cache_seed_2026-05-14.zip`。`.github/workflows/refresh-cloudflare-seed.yml` 會定期從官方來源重建 seed、封裝 zip、驗證品質、產生缺漏公司摘要，並開 PR 更新 committed seed。
+目前 committed seed 由 `python scripts\seed_utils.py data --print` 解析最新 dated seed zip。`.github/workflows/refresh-cloudflare-seed.yml` 會定期從官方來源重建 seed、封裝 zip、驗證品質、產生缺漏公司摘要，並開 PR 更新 committed seed。
 
 缺漏與人工補資料追蹤：
 

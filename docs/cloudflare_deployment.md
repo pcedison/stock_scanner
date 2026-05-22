@@ -91,7 +91,7 @@ This keeps production deploys deterministic while preventing the committed seed 
 7. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
 8. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
 
-The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. The web app sends `refreshMode: "force"` on overview load and after login; the Worker records that as a D1 refresh job, and this workflow performs the actual seed rebuild and R2 update on the next run.
+The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. When the Worker queues a D1 `market_scan` refresh job, this workflow performs the actual seed rebuild and R2 update on the next run.
 
 ## Monitoring
 

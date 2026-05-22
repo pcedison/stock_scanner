@@ -14,6 +14,7 @@ DEFAULT_WRANGLER = ROOT_DIR / "cloudflare" / "wrangler.toml"
 DEFAULT_DEPLOY_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-deploy.yml"
 DEFAULT_WORKFLOW_DIR = ROOT_DIR / ".github" / "workflows"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+SEED_RESOLVER_COMMAND = "python scripts/seed_utils.py data --print"
 
 
 def _csv(value: str | None) -> list[str]:
@@ -95,6 +96,19 @@ def validate_workflow_yaml(workflow_dir: Path = DEFAULT_WORKFLOW_DIR) -> list[st
     return problems
 
 
+def validate_seed_zip_selection(workflow_dir: Path = DEFAULT_WORKFLOW_DIR) -> list[str]:
+    problems: list[str] = []
+    for workflow_path in sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")]):
+        text = workflow_path.read_text(encoding="utf-8")
+        if "ls -t data/official_cache_seed_*.zip" in text:
+            try:
+                display_path = workflow_path.relative_to(ROOT_DIR)
+            except ValueError:
+                display_path = workflow_path
+            problems.append(f"{display_path} must use {SEED_RESOLVER_COMMAND} instead of mtime-based ls -t")
+    return problems
+
+
 def validate_health_url(require_health_url: bool) -> list[str]:
     if not require_health_url:
         return []
@@ -117,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
 
     problems = [
         *validate_workflow_yaml(args.workflow_dir),
+        *validate_seed_zip_selection(args.workflow_dir),
         *validate_worker_cors(args.wrangler),
         *validate_deploy_workflow(args.deploy_workflow),
         *validate_health_url(args.require_health_url),

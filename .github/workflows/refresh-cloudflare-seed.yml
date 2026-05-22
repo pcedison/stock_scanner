@@ -38,14 +38,14 @@ jobs:
 
       - name: Rebuild seed from official sources
         run: |
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           if [ -n "$SEED_ZIP" ]; then
             unzip -o "$SEED_ZIP" -d data
           fi
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py
-          SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)
+          SEED_ZIP=$(python scripts/seed_utils.py data --print)
           python scripts/validate_cloudflare_seed_inputs.py \
             --zip "$SEED_ZIP" \
             --summary-md .tmp/seed-quality.md \

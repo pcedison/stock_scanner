@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from scripts.check_deployment_preflight import validate_deploy_workflow, validate_worker_cors, validate_workflow_yaml
+from scripts.check_deployment_preflight import (
+    validate_deploy_workflow,
+    validate_seed_zip_selection,
+    validate_worker_cors,
+    validate_workflow_yaml,
+)
 
 
 def test_validate_worker_cors_rejects_local_or_insecure_production_origins(tmp_path):
@@ -32,6 +37,10 @@ def test_validate_workflow_yaml_accepts_current_workflows():
     assert validate_workflow_yaml(Path(".github/workflows")) == []
 
 
+def test_seed_zip_selection_uses_date_resolver_instead_of_mtime():
+    assert validate_seed_zip_selection(Path(".github/workflows")) == []
+
+
 def test_validate_workflow_yaml_rejects_invalid_workflow(tmp_path):
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()
@@ -43,6 +52,20 @@ def test_validate_workflow_yaml_rejects_invalid_workflow(tmp_path):
     problems = validate_workflow_yaml(workflow_dir)
 
     assert any("bad.yml" in problem for problem in problems)
+
+
+def test_seed_zip_selection_rejects_mtime_based_ls(tmp_path):
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "bad.yml").write_text(
+        "name: bad\njobs:\n  test:\n    steps:\n"
+        "      - run: SEED_ZIP=$(ls -t data/official_cache_seed_*.zip 2>/dev/null | head -1)\n",
+        encoding="utf-8",
+    )
+
+    problems = validate_seed_zip_selection(workflow_dir)
+
+    assert any("mtime-based ls -t" in problem for problem in problems)
 
 
 def test_validate_deploy_workflow_rejects_r2_seed_writes(tmp_path):
@@ -87,3 +110,28 @@ def test_r2_refresh_workflow_can_self_heal_stale_production_seed():
     assert "--reject-offline-seed" in text
     assert "stale_refresh=true" in text
     assert "Production seed freshness check failed; R2 seed rebuild will run." in text
+
+
+def test_r2_refresh_job_completion_is_scoped_to_claiming_run():
+    text = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+
+    assert (
+        "UPDATE refresh_jobs SET status = 'running', owner_run_id = '${GITHUB_RUN_ID}', "
+        "started_at = datetime('now'), updated_at = datetime('now') "
+        "WHERE job_type = 'market_scan' AND status = 'queued';"
+    ) in text
+    assert (
+        "UPDATE refresh_jobs SET status = 'success', finished_at = datetime('now'), "
+        "updated_at = datetime('now'), error = NULL "
+        "WHERE job_type = 'market_scan' AND status = 'running' "
+        "AND owner_run_id = '${GITHUB_RUN_ID}';"
+    ) in text
+    assert (
+        "UPDATE refresh_jobs SET status = 'failed', finished_at = datetime('now'), "
+        "updated_at = datetime('now'), error = 'GitHub Actions run ${GITHUB_RUN_ID} failed' "
+        "WHERE job_type = 'market_scan' AND status = 'running' "
+        "AND owner_run_id = '${GITHUB_RUN_ID}';"
+    ) in text
+    assert "status IN ('queued', 'running')" in text
+    assert "SET status = 'success'" in text
+    assert "SET status = 'failed'" in text

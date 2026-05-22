@@ -40,8 +40,8 @@
 
 部署用初始快取已打包為：
 
-- `data/official_cache_seed_2026-05-14.zip`
-- `data/official_cache_seed_2026-05-14.sha256`
+- `data/official_cache_seed_*.zip`
+- matching `data/official_cache_seed_*.sha256` sidecar
 
 部署到私有伺服器時，先把 zip 解壓到專案的 `data/` 目錄，讓伺服器啟動時直接讀取 `official_fundamentals_history.json` 與 `official_history_backfill_progress.json`。之後只跑增量與 pending 重試，不需要每次 deploy 都重新全量回補。
 
