@@ -1,33 +1,18 @@
 const COMPANIES_PAGE_LIMIT = 500;
 const MAX_COMPANY_PAGES = 10;
-const REFERENCE_DATA =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./reference_data.js")
-    : globalThis.StockScannerReferenceData;
-const STRATEGY_CONTENT =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./strategy_content.js")
-    : globalThis.StockScannerStrategyContent;
-const STORAGE_HELPERS =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./storage.js")
-    : globalThis.StockScannerStorage;
-const RENDERER_HELPERS =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./renderers.js")
-    : globalThis.StockScannerRenderers;
-const DOM_HELPERS =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./dom.js")
-    : globalThis.StockScannerDom;
-const HOLDING_SIGNAL_HELPERS =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./holding_signals.js")
-    : globalThis.StockScannerHoldingSignals;
-const AUTH_HELPERS =
-  typeof require === "function" && typeof module !== "undefined" && module.exports
-    ? require("./auth.js")
-    : globalThis.StockScannerAuth;
+
+const _isCjs =
+  typeof require === "function" && typeof module !== "undefined" && module.exports;
+const _mod = (globalKey, requirePath) =>
+  _isCjs ? require(requirePath) : globalThis[globalKey];
+
+const REFERENCE_DATA = _mod("StockScannerReferenceData", "./reference_data.js");
+const STRATEGY_CONTENT = _mod("StockScannerStrategyContent", "./strategy_content.js");
+const STORAGE_HELPERS = _mod("StockScannerStorage", "./storage.js");
+const RENDERER_HELPERS = _mod("StockScannerRenderers", "./renderers.js");
+const DOM_HELPERS = _mod("StockScannerDom", "./dom.js");
+const HOLDING_SIGNAL_HELPERS = _mod("StockScannerHoldingSignals", "./holding_signals.js");
+const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
 const { authValidationMessage, isSuperUserIdentity, normalizeAuthUser, normalizeAuthUsername } = AUTH_HELPERS;
