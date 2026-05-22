@@ -147,7 +147,7 @@ test("saved holdings surface X1-X5 exit alerts", async ({ page, isMobile }) => {
 test("super user can save settings and cache status is visible", async ({ page, isMobile }) => {
   await page.goto("/");
   await closeBlockingModals(page);
-  await registerViaApi(page, "pcedison@gmail.com");
+  await registerViaApi(page, "test-admin@example.com");
   await page.reload();
   await closeBlockingModals(page);
 

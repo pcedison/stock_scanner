@@ -188,6 +188,9 @@ def _check_scan_rate_limit(source: str) -> None:
     with _scan_rate_lock:
         timestamps = _scan_rate_store[source]
         timestamps[:] = [t for t in timestamps if t > cutoff]
+        if not timestamps:
+            del _scan_rate_store[source]
+            timestamps = _scan_rate_store[source]
         if len(timestamps) >= _SCAN_RATE_MAX_REQUESTS:
             raise HTTPException(
                 status_code=429,
@@ -211,10 +214,14 @@ def _backtest_status_cached() -> dict:
     with _backtest_cache_lock:
         if signature == _backtest_cache.get("signature") and now < _backtest_cache.get("expires_at", 0.0):
             return _backtest_cache["result"]
-        result = run_backtest()
-        _backtest_cache["result"] = result
-        _backtest_cache["signature"] = signature
-        _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
+    result = run_backtest()
+    with _backtest_cache_lock:
+        if _backtest_cache.get("signature") != signature or monotonic() >= _backtest_cache.get("expires_at", 0.0):
+            _backtest_cache["result"] = result
+            _backtest_cache["signature"] = signature
+            _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
+        else:
+            result = _backtest_cache["result"]
     return result
 
 
@@ -228,7 +235,7 @@ class ScanMarketRequest(BaseModel):
 
 
 class ScanHoldingsRequest(BaseModel):
-    holdings: list[Holding] = Field(default_factory=list)
+    holdings: list[Holding] = Field(default_factory=list, max_length=500)
     settings: Optional[ScannerSettings] = None
 
 
@@ -239,7 +246,7 @@ class AuthRequest(BaseModel):
 
 
 class HoldingsReplaceRequest(BaseModel):
-    holdings: list[Holding] = Field(default_factory=list)
+    holdings: list[Holding] = Field(default_factory=list, max_length=500)
 
 
 class HoldingUpsertRequest(BaseModel):
@@ -267,10 +274,13 @@ def _clear_session_cookie(response: Response) -> None:
 
 
 def _auth_source(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
         return forwarded_for.split(",", 1)[0].strip()
-    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "unknown")
+    return request.client.host if request.client else "unknown"
 
 
 def _current_user(request: Request):

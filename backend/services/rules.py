@@ -486,7 +486,8 @@ def _add_watch_rules(entry_reasons: list[RuleResult], exit_reasons: list[RuleRes
 
 class RuleEngine:
     def evaluate_entry(self, snapshot: FundamentalSnapshot, settings: ScannerSettings) -> AnalysisResult:
-        reasons = _healthy_entry_rules(snapshot, settings)
+        sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
+        reasons = _healthy_entry_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         company = snapshot.company
         if any(reason.code == "E6" and not reason.passed for reason in reasons):
             status = "EXCLUDED"
@@ -523,7 +524,6 @@ class RuleEngine:
         exit_reasons = _exit_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         add_reasons = _add_watch_rules(entry_reasons, exit_reasons, snapshot)
         x_reasons = [reason for reason in exit_reasons if reason.code.startswith("X")]
-        failed_exit = [reason for reason in x_reasons if not reason.passed]
         high_priority_exit = any(reason.code in {"X4", "X5"} and not reason.passed for reason in exit_reasons)
         failed_warning = [
             reason
