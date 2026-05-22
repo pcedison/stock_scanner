@@ -21,7 +21,6 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
-_DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME = "pcedison@gmail.com"
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
 LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
@@ -135,12 +134,7 @@ def is_production_environment(env) -> bool:
 
 
 def configured_super_user_username(env) -> str:
-    configured = str(env_value(env, "SUPER_USER_USERNAME", "") or "").strip().lower()
-    if configured:
-        return configured
-    if is_production_environment(env):
-        return ""
-    return _DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
+    return str(env_value(env, "SUPER_USER_USERNAME", "") or "").strip().lower()
 
 
 def origin_host(origin: str) -> str:
@@ -385,7 +379,7 @@ def js_to_py(value):
 def public_user(row, super_user: str | None = None):
     if not row:
         return None
-    resolved_super_user = super_user if super_user is not None else _DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
+    resolved_super_user = super_user or ""
     return {
         "id": row["id"],
         "username": row["username"],

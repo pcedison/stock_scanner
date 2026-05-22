@@ -38,14 +38,14 @@
   "publicUser": {
     "input": {
       "id": 7,
-      "username": "pcedison@gmail.com",
+      "username": "testadmin@example.com",
       "display_name": ""
     },
     "response": {
       "id": 7,
-      "username": "pcedison@gmail.com",
-      "displayName": "pcedison@gmail.com",
-      "isSuperUser": true
+      "username": "testadmin@example.com",
+      "displayName": "testadmin@example.com",
+      "isSuperUser": false
     }
   },
   "appStatusKeys": [

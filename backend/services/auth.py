@@ -19,7 +19,6 @@ DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
-DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME = "pcedison@gmail.com"
 AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
 AUTH_LOCK_SECONDS = 15 * 60
@@ -34,9 +33,7 @@ def super_user_username() -> str:
     configured = os.getenv("SUPER_USER_USERNAME", "").strip().lower()
     if configured:
         return configured
-    if _runtime_environment() in {"prod", "production"}:
-        return ""
-    return DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
+    return ""
 
 
 class AuthRateLimitError(Exception):
@@ -87,6 +84,7 @@ class AuthService:
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS users (
