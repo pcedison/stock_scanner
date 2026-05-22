@@ -21,7 +21,6 @@ PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 210_000
 USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
-_DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME = "pcedison@gmail.com"
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
 LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
@@ -135,12 +134,7 @@ def is_production_environment(env) -> bool:
 
 
 def configured_super_user_username(env) -> str:
-    configured = str(env_value(env, "SUPER_USER_USERNAME", "") or "").strip().lower()
-    if configured:
-        return configured
-    if is_production_environment(env):
-        return ""
-    return _DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
+    return str(env_value(env, "SUPER_USER_USERNAME", "") or "").strip().lower()
 
 
 def origin_host(origin: str) -> str:
@@ -385,7 +379,7 @@ def js_to_py(value):
 def public_user(row, super_user: str | None = None):
     if not row:
         return None
-    resolved_super_user = super_user if super_user is not None else _DEFAULT_DEVELOPMENT_SUPER_USER_USERNAME
+    resolved_super_user = super_user or ""
     return {
         "id": row["id"],
         "username": row["username"],
@@ -507,7 +501,30 @@ class Api:
         }
 
     async def route(self, request, path: str, query: dict[str, list[str]]):
-        if path == "/api/health" and request.method == "GET":
+        method = request.method.upper()
+
+        if path.startswith("/api/auth/"):
+            return await self._route_auth(request, method, path)
+        if path.startswith("/api/me/"):
+            return await self._route_me(request, method, path)
+        if path.startswith("/api/admin/"):
+            return await self._route_admin(request, method, path)
+        if path.startswith("/api/scan/") or path.startswith("/api/analyze/"):
+            return await self._route_scan(request, method, path)
+        if path.startswith("/api/reports/"):
+            return await self._route_reports(request, method, path, query)
+        if path.startswith("/api/cache/"):
+            return await self._route_cache(request, method, path)
+        if path.startswith("/api/scheduler/"):
+            return await self._route_scheduler(method, path)
+        if path.startswith("/api/data-sources/"):
+            return await self._route_data_sources(method, path)
+        if path.startswith("/api/calendar/"):
+            return await self._route_calendar(method, path)
+        if path.startswith("/api/companies"):
+            return await self._route_companies(method, path, query)
+
+        if path == "/api/health" and method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
             quality = manifest_quality(manifest)
             return json_response({
@@ -518,17 +535,7 @@ class Api:
                 "cacheQuality": quality,
             }, public_cache_seconds=60)
 
-        if path == "/api/cache/status" and request.method == "GET":
-            return json_response(await self.cache_status())
-
-        if path == "/api/cache/refresh" and request.method == "POST":
-            manifest = await self.r2_json("public/manifest.json", {})
-            return json_response(await self.ensure_refresh_job(manifest, force=True))
-
-        if path == "/api/data-sources/status" and request.method == "GET":
-            return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}), public_cache_seconds=300)
-
-        if path == "/api/app-status" and request.method == "GET":
+        if path == "/api/app-status" and method == "GET":
             data_source, settings = await asyncio.gather(
                 self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}),
                 self.get_settings(),
@@ -541,13 +548,72 @@ class Api:
                 "backtestStatus": empty_backtest_status(),
             })
 
-        if path == "/api/companies" and request.method == "GET":
-            return await self.list_companies(query)
+        if path == "/api/settings" and method == "GET":
+            return json_response(await self.get_settings())
 
-        if path == "/api/companies/search" and request.method == "GET":
-            return await self.search_companies(query)
+        if path == "/api/settings" and method == "PUT":
+            await self.require_super_user(request)
+            payload = await self.request_json(request)
+            return json_response(await self.put_settings(payload))
 
-        if path == "/api/scan/market" and request.method == "POST":
+        if path == "/api/integrations/status" and method == "GET":
+            return json_response({"line": False, "telegram": False, "email": False, "broker": False}, public_cache_seconds=600)
+
+        if path == "/api/backtest" and method == "GET":
+            return json_response(empty_backtest_status(), public_cache_seconds=3600)
+
+        return error_response("Not found", status=404)
+
+    async def _route_auth(self, request, method: str, path: str):
+        if path == "/api/auth/register" and method == "POST":
+            return await self.register(request)
+        if path == "/api/auth/login" and method == "POST":
+            return await self.login(request)
+        if path == "/api/auth/logout" and method == "POST":
+            token = self.session_token(request)
+            if token:
+                await self.db_run("DELETE FROM sessions WHERE token_hash = ?", token_hash(token))
+            return json_response({"authenticated": False}, headers={"set-cookie": clear_session_cookie()})
+        if path == "/api/auth/me" and method == "GET":
+            user = await self.current_user(request)
+            holdings = await self.list_holdings(user["id"]) if user else []
+            return json_response({"authenticated": bool(user), "user": public_user(user, self._super_user), "holdings": holdings})
+        return error_response("Not found", status=404)
+
+    async def _route_me(self, request, method: str, path: str):
+        if path == "/api/me/holdings" and method == "GET":
+            user = await self.require_user(request)
+            return json_response({"holdings": await self.list_holdings(user["id"])})
+        if path == "/api/me/holdings" and method == "PUT":
+            user = await self.require_user(request)
+            payload = await self.request_json(request)
+            holdings = [normalize_holding(item) for item in payload.get("holdings", [])]
+            return json_response({"holdings": await self.replace_holdings(user["id"], holdings)})
+        if path == "/api/me/holdings" and method == "POST":
+            user = await self.require_user(request)
+            payload = await self.request_json(request)
+            holding = normalize_holding(payload.get("holding", payload))
+            await self.upsert_holding(user["id"], holding)
+            return json_response({"holdings": await self.list_holdings(user["id"])})
+        if path.startswith("/api/me/holdings/") and method == "DELETE":
+            user = await self.require_user(request)
+            stock_code = path.rsplit("/", 1)[-1]
+            await self.db_run("DELETE FROM holdings WHERE user_id = ? AND stock_code = ?", user["id"], stock_code)
+            return json_response({"holdings": await self.list_holdings(user["id"])})
+        return error_response("Not found", status=404)
+
+    async def _route_admin(self, request, method: str, path: str):
+        if path == "/api/admin/users" and method == "GET":
+            await self.require_super_user(request)
+            return json_response(await self.admin_users_payload())
+        if path.startswith("/api/admin/users/") and method == "DELETE":
+            await self.require_super_user(request)
+            user_id = int(path.rsplit("/", 1)[-1])
+            return json_response(await self.delete_admin_user(user_id))
+        return error_response("Not found", status=404)
+
+    async def _route_scan(self, request, method: str, path: str):
+        if path == "/api/scan/market" and method == "POST":
             payload = await self.request_json(request)
             refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()
             manifest = await self.r2_json("public/manifest.json", {})
@@ -558,89 +624,32 @@ class Api:
             scan = self.compact_market_scan(scan)
             scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
             return json_response(scan)
-
-        if path.startswith("/api/analyze/") and request.method == "POST":
+        if path == "/api/scan/holdings" and method == "POST":
+            return await self.scan_holdings(request)
+        if path.startswith("/api/analyze/") and method == "POST":
             stock_code = path.rsplit("/", 1)[-1]
             return await self.analyze_stock(stock_code)
+        return error_response("Not found", status=404)
 
-        if path == "/api/scan/holdings" and request.method == "POST":
-            return await self.scan_holdings(request)
-
-        if path == "/api/reports/market" and request.method == "POST":
+    async def _route_reports(self, request, method: str, path: str, query):
+        if path == "/api/reports/market" and method == "POST":
             return await self.market_report(query)
-
-        if path == "/api/reports/holdings" and request.method == "POST":
+        if path == "/api/reports/holdings" and method == "POST":
             return await self.holdings_report(request, query)
+        return error_response("Not found", status=404)
 
-        if path == "/api/settings" and request.method == "GET":
-            return json_response(await self.get_settings())
+    async def _route_cache(self, request, method: str, path: str):
+        if path == "/api/cache/status" and method == "GET":
+            return json_response(await self.cache_status())
+        if path == "/api/cache/refresh" and method == "POST":
+            manifest = await self.r2_json("public/manifest.json", {})
+            return json_response(await self.ensure_refresh_job(manifest, force=True))
+        return error_response("Not found", status=404)
 
-        if path == "/api/settings" and request.method == "PUT":
-            await self.require_super_user(request)
-            payload = await self.request_json(request)
-            return json_response(await self.put_settings(payload))
-
-        if path == "/api/auth/register" and request.method == "POST":
-            return await self.register(request)
-
-        if path == "/api/auth/login" and request.method == "POST":
-            return await self.login(request)
-
-        if path == "/api/auth/logout" and request.method == "POST":
-            token = self.session_token(request)
-            if token:
-                await self.db_run("DELETE FROM sessions WHERE token_hash = ?", token_hash(token))
-            return json_response({"authenticated": False}, headers={"set-cookie": clear_session_cookie()})
-
-        if path == "/api/auth/me" and request.method == "GET":
-            user = await self.current_user(request)
-            holdings = await self.list_holdings(user["id"]) if user else []
-            return json_response({"authenticated": bool(user), "user": public_user(user, self._super_user), "holdings": holdings})
-
-        if path == "/api/admin/users" and request.method == "GET":
-            await self.require_super_user(request)
-            return json_response(await self.admin_users_payload())
-
-        if path.startswith("/api/admin/users/") and request.method == "DELETE":
-            await self.require_super_user(request)
-            user_id = int(path.rsplit("/", 1)[-1])
-            return json_response(await self.delete_admin_user(user_id))
-
-        if path == "/api/me/holdings" and request.method == "GET":
-            user = await self.require_user(request)
-            return json_response({"holdings": await self.list_holdings(user["id"])})
-
-        if path == "/api/me/holdings" and request.method == "PUT":
-            user = await self.require_user(request)
-            payload = await self.request_json(request)
-            holdings = [normalize_holding(item) for item in payload.get("holdings", [])]
-            return json_response({"holdings": await self.replace_holdings(user["id"], holdings)})
-
-        if path == "/api/me/holdings" and request.method == "POST":
-            user = await self.require_user(request)
-            payload = await self.request_json(request)
-            holding = normalize_holding(payload.get("holding", payload))
-            await self.upsert_holding(user["id"], holding)
-            return json_response({"holdings": await self.list_holdings(user["id"])})
-
-        if path.startswith("/api/me/holdings/") and request.method == "DELETE":
-            user = await self.require_user(request)
-            stock_code = path.rsplit("/", 1)[-1]
-            await self.db_run("DELETE FROM holdings WHERE user_id = ? AND stock_code = ?", user["id"], stock_code)
-            return json_response({"holdings": await self.list_holdings(user["id"])})
-
-        if path == "/api/data-sources/backfill-history" and request.method == "POST":
-            progress = await self.r2_json("official/official_history_backfill_progress.json", {})
-            return json_response({
-                "status": "cloudflare_cache_seeded",
-                "mode": "incremental backfill is prepared for scheduled implementation",
-                "progress": progress,
-            })
-
-        if path == "/api/scheduler/wakeup" and request.method == "GET":
+    async def _route_scheduler(self, method: str, path: str):
+        if path == "/api/scheduler/wakeup" and method == "GET":
             return json_response({"status": "SLEEP", "reason": "Cloudflare deployment uses cached official data and scheduled increments."})
-
-        if path == "/api/scheduler/auto-scan" and request.method == "GET":
+        if path == "/api/scheduler/auto-scan" and method == "GET":
             settings = await self.get_settings()
             return json_response({
                 "action": "ready",
@@ -648,17 +657,31 @@ class Api:
                 "manualScanEnabled": settings.get("manual_scan_enabled", True),
                 "scan": None,
             })
+        return error_response("Not found", status=404)
 
-        if path.startswith("/api/calendar/") and request.method == "GET":
+    async def _route_data_sources(self, method: str, path: str):
+        if path == "/api/data-sources/status" and method == "GET":
+            return json_response(await self.r2_json("public/data_sources_status.json", {"activeProvider": "CloudflareR2Seed"}), public_cache_seconds=300)
+        if path == "/api/data-sources/backfill-history" and method == "POST":
+            progress = await self.r2_json("official/official_history_backfill_progress.json", {})
+            return json_response({
+                "status": "cloudflare_cache_seeded",
+                "mode": "incremental backfill is prepared for scheduled implementation",
+                "progress": progress,
+            })
+        return error_response("Not found", status=404)
+
+    async def _route_calendar(self, method: str, path: str):
+        if path.startswith("/api/calendar/") and method == "GET":
             year = path.rsplit("/", 1)[-1]
             return json_response({"year": int(year), "source": "cloudflare-cache", "closedDates": [], "springFestivalDates": []})
+        return error_response("Not found", status=404)
 
-        if path == "/api/integrations/status" and request.method == "GET":
-            return json_response({"line": False, "telegram": False, "email": False, "broker": False}, public_cache_seconds=600)
-
-        if path == "/api/backtest" and request.method == "GET":
-            return json_response(empty_backtest_status(), public_cache_seconds=3600)
-
+    async def _route_companies(self, method: str, path: str, query):
+        if path == "/api/companies" and method == "GET":
+            return await self.list_companies(query)
+        if path == "/api/companies/search" and method == "GET":
+            return await self.search_companies(query)
         return error_response("Not found", status=404)
 
     async def request_json(self, request):

@@ -48,12 +48,11 @@ def _annual_net_income_message(rows: list[AnnualFinancial], years: int, *, growt
     return f"近 {years} 年年度淨利有 {loss_count} 年虧損；詳見年度表格。" if loss_count else f"近 {years} 年年度淨利皆為正；詳見年度表格。"
 
 
-def _annual_net_income_yoy(snapshot: FundamentalSnapshot) -> float | None:
-    ordered = sorted(snapshot.annualFinancials, key=lambda item: item.year)
-    if len(ordered) < 2:
+def _annual_net_income_yoy(sorted_annuals: list[AnnualFinancial]) -> float | None:
+    if len(sorted_annuals) < 2:
         return None
-    previous = ordered[-2].netIncome
-    latest = ordered[-1].netIncome
+    previous = sorted_annuals[-2].netIncome
+    latest = sorted_annuals[-1].netIncome
     if previous is None or latest is None or previous == 0:
         return None
     return ((latest - previous) / abs(previous)) * 100
@@ -162,9 +161,10 @@ def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
     return rules
 
 
-def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> list[RuleResult]:
+def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted_annuals: list[AnnualFinancial] | None = None) -> list[RuleResult]:
     company = snapshot.company
-    sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
+    if sorted_annuals is None:
+        sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
     annual_5_rows = _latest_annual_financials(sorted_annuals, 5)
     annual_3_rows = _latest_annual_financials(sorted_annuals, 3)
     annual_5y = _latest_annual_net_incomes(sorted_annuals, 5)
@@ -297,11 +297,13 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
     return rules
 
 
-def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings) -> list[RuleResult]:
+def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted_annuals: list[AnnualFinancial] | None = None) -> list[RuleResult]:
     monthly = snapshot.monthlyRevenue
     quarterly = snapshot.quarterlyFinancial
     spring_guard = _is_spring_month(snapshot, settings)
-    ann_yoy = _annual_net_income_yoy(snapshot)
+    if sorted_annuals is None:
+        sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
+    ann_yoy = _annual_net_income_yoy(sorted_annuals)
     yoy_drop = None
     if monthly.previousMonthRevenueYoY is not None and monthly.monthlyRevenueYoY is not None:
         yoy_drop = monthly.previousMonthRevenueYoY - monthly.monthlyRevenueYoY
@@ -516,20 +518,22 @@ class RuleEngine:
         settings: ScannerSettings,
     ) -> AnalysisResult:
         company = snapshot.company
-        entry_reasons = _healthy_entry_rules(snapshot, settings)
-        exit_reasons = _exit_rules(snapshot, settings)
+        sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
+        entry_reasons = _healthy_entry_rules(snapshot, settings, sorted_annuals=sorted_annuals)
+        exit_reasons = _exit_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         add_reasons = _add_watch_rules(entry_reasons, exit_reasons, snapshot)
         x_reasons = [reason for reason in exit_reasons if reason.code.startswith("X")]
         failed_exit = [reason for reason in x_reasons if not reason.passed]
+        high_priority_exit = any(reason.code in {"X4", "X5"} and not reason.passed for reason in exit_reasons)
         failed_warning = [
             reason
             for reason in exit_reasons
-            if reason.code in {"X1", "X2", "X3", "T3"} and not reason.passed
+            if reason.code in {"X1", "X2", "T3"} and not reason.passed
+            or (reason.code == "X3" and not reason.passed and not high_priority_exit)
         ]
         entry_excluded = any(reason.code == "E6" and not reason.passed for reason in entry_reasons)
         entry_insufficient = any(reason.severity == "INSUFFICIENT_DATA" for reason in entry_reasons)
         exit_insufficient = any(reason.severity == "INSUFFICIENT_DATA" for reason in x_reasons)
-        high_priority_exit = any(reason.code in {"X4", "X5"} and not reason.passed for reason in exit_reasons)
         mild_warning = bool(failed_warning)
 
         if high_priority_exit:
@@ -561,11 +565,12 @@ class RuleEngine:
             passed=True,
             message=f"本地持股為 {holding.shares} 股，平均成本 {holding.averageCost if holding.averageCost is not None else '未填'}。",
         )
+        watch_rules = [] if entry_excluded else add_reasons
         return AnalysisResult(
             stockCode=company.stockCode,
             companyName=company.name,
             status=status,
             summary=summary,
-            reasons=[*entry_reasons, *exit_reasons, *add_reasons, holding_note],
+            reasons=[*entry_reasons, *exit_reasons, *watch_rules, holding_note],
             company=company,
         )

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from time import monotonic
 from typing import Optional
 from urllib.parse import urlparse
@@ -175,6 +176,26 @@ _backtest_cache: dict = {}
 _backtest_cache_lock = RLock()
 _BACKTEST_CACHE_TTL_SECONDS = 3600
 
+_SCAN_RATE_WINDOW_SECONDS = 60
+_SCAN_RATE_MAX_REQUESTS = 10
+_scan_rate_lock = Lock()
+_scan_rate_store: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_scan_rate_limit(source: str) -> None:
+    now = monotonic()
+    cutoff = now - _SCAN_RATE_WINDOW_SECONDS
+    with _scan_rate_lock:
+        timestamps = _scan_rate_store[source]
+        timestamps[:] = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _SCAN_RATE_MAX_REQUESTS:
+            raise HTTPException(
+                status_code=429,
+                detail="掃描頻率過高，請稍後再試",
+                headers={"Retry-After": str(_SCAN_RATE_WINDOW_SECONDS)},
+            )
+        timestamps.append(now)
+
 
 def _backtest_source_signature() -> tuple[str, int | None, int | None]:
     try:
@@ -190,8 +211,7 @@ def _backtest_status_cached() -> dict:
     with _backtest_cache_lock:
         if signature == _backtest_cache.get("signature") and now < _backtest_cache.get("expires_at", 0.0):
             return _backtest_cache["result"]
-    result = run_backtest()
-    with _backtest_cache_lock:
+        result = run_backtest()
         _backtest_cache["result"] = result
         _backtest_cache["signature"] = signature
         _backtest_cache["expires_at"] = monotonic() + _BACKTEST_CACHE_TTL_SECONDS
@@ -564,11 +584,12 @@ def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(defa
 
 
 @app.post("/api/scan/market")
-def scan_market(payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
+def scan_market(request: Request, payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
     settings = _effective_settings(payload.settings if payload else None)
     _ensure_manual_scan_enabled(settings)
     if settings.use_mock_data:
         return _scan_market_payload(settings)
+    _check_scan_rate_limit(_auth_source(request))
     refresh_mode = payload.refreshMode if payload else "auto"
     return scan_cache_service.get_or_refresh(
         settings,
@@ -588,16 +609,26 @@ def cache_status() -> dict:
 
 
 @app.post("/api/scan/holdings")
-def scan_holdings(payload: ScanHoldingsRequest) -> dict:
+def scan_holdings(request: Request, payload: ScanHoldingsRequest) -> dict:
     settings = _effective_settings(payload.settings)
     _ensure_manual_scan_enabled(settings)
+    if not settings.use_mock_data:
+        _check_scan_rate_limit(_auth_source(request))
     return _scan_holdings_payload(payload.holdings, settings)
 
 
 @app.post("/api/reports/market")
 def market_report(report_format: str = "markdown", payload: Optional[ReportFormatRequest] = Body(default=None)):
     settings = _effective_settings(payload.settings if payload else None)
-    scan_payload = _scan_market_payload(settings)
+    if settings.use_mock_data:
+        scan_payload = _scan_market_payload(settings)
+    else:
+        scan_payload = scan_cache_service.get_or_refresh(
+            settings,
+            build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
+            build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
+            refresh_mode="auto",
+        )
     return _report_response(scan_payload, report_format, "台股市場掃描報告", "market_scan")
 
 

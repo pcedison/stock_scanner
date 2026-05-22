@@ -188,7 +188,7 @@ def contract_settings_validation(monkeypatch, worker):
     api = make_worker_api(worker)
 
     async def fake_require_super_user(request):
-        return {"id": 1, "username": "pcedison@gmail.com", "display_name": None}
+        return {"id": 1, "username": "contract-settings@example.com", "display_name": None}
 
     api.require_super_user = fake_require_super_user
 
@@ -224,18 +224,21 @@ def contract_reports(monkeypatch, worker):
 
 
 def contract_admin_delete(monkeypatch, worker, tmp_path):
+    admin_username = "contract-admin@example.com"
+    monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
-    super_user = auth_service.create_user("pcedison@gmail.com", "test-password-123")
+    super_user = auth_service.create_user(admin_username, "test-password-123")
     monkeypatch.setattr(main_module, "auth_service", auth_service)
     monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
     client = TestClient(app)
     api = make_worker_api(worker)
+    api._super_user = admin_username
 
     async def fake_require_super_user(request):
-        return {"id": super_user.id, "username": "pcedison@gmail.com", "display_name": None}
+        return {"id": super_user.id, "username": admin_username, "display_name": None}
 
     async def fake_db_first(sql, *params):
-        return {"id": super_user.id, "username": "pcedison@gmail.com"}
+        return {"id": super_user.id, "username": admin_username}
 
     api.require_super_user = fake_require_super_user
     api.db_first = fake_db_first
@@ -344,7 +347,9 @@ def test_admin_delete_user_behavior_matches_fastapi_and_worker(tmp_path, monkeyp
         [Holding(stockCode="2330", name="TSMC", shares=1000, averageCost=600)],
     )
     normal_session_token = auth_service.create_session(normal_user.id)
-    admin_user = auth_service.create_user("pcedison@gmail.com", "test-password-123")
+    admin_username = "contract-admin@example.com"
+    monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
+    admin_user = auth_service.create_user(admin_username, "test-password-123")
     monkeypatch.setattr(main_module, "auth_service", auth_service)
     monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
     client = TestClient(app)
@@ -352,7 +357,7 @@ def test_admin_delete_user_behavior_matches_fastapi_and_worker(tmp_path, monkeyp
     db_run_calls = []
 
     async def fake_require_super_user(request):
-        return {"id": admin_user.id, "username": "pcedison@gmail.com", "display_name": None}
+        return {"id": admin_user.id, "username": admin_username, "display_name": None}
 
     async def fake_db_first(sql, *params):
         assert params == (normal_user.id,)
@@ -363,12 +368,12 @@ def test_admin_delete_user_behavior_matches_fastapi_and_worker(tmp_path, monkeyp
 
     async def fake_admin_users_payload():
         return {
-            "superUser": "pcedison@gmail.com",
+            "superUser": admin_username,
             "users": [
                 {
                     "id": admin_user.id,
-                    "username": "pcedison@gmail.com",
-                    "displayName": "pcedison@gmail.com",
+                    "username": admin_username,
+                    "displayName": admin_username,
                     "createdAt": None,
                     "holdingsCount": 0,
                     "activeSessionCount": 0,
@@ -405,15 +410,17 @@ def test_admin_delete_user_behavior_matches_fastapi_and_worker(tmp_path, monkeyp
 
 def test_admin_delete_missing_user_behavior_matches_fastapi_and_worker(tmp_path, monkeypatch):
     worker = load_worker_module(monkeypatch)
+    admin_username = "contract-admin@example.com"
+    monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
-    admin_user = auth_service.create_user("pcedison@gmail.com", "test-password-123")
+    admin_user = auth_service.create_user(admin_username, "test-password-123")
     monkeypatch.setattr(main_module, "auth_service", auth_service)
     monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
     client = TestClient(app)
     api = worker.Api(env=None)
 
     async def fake_require_super_user(request):
-        return {"id": admin_user.id, "username": "pcedison@gmail.com", "display_name": None}
+        return {"id": admin_user.id, "username": admin_username, "display_name": None}
 
     async def fake_db_first(sql, *params):
         return None

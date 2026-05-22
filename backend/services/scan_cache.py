@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -11,6 +12,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Callable
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from backend.models.settings import ScannerSettings
 from backend.services.cache_policy import refresh_policy  # noqa: F401 — re-exported for callers
@@ -153,6 +156,7 @@ class ScanCacheService:
                 excludedCount=len(payload.get("excluded", [])),
             )
         except Exception as exc:  # pragma: no cover - depends on network/runtime timing
+            logger.exception("Background scan cache refresh failed for key=%s: %s", key, exc)
             self._update_job(job_id, status="failed", finishedAt=utc_now(), error=str(exc))
         finally:
             with self._lock:
@@ -239,7 +243,7 @@ class ScanCacheService:
                 delete=False,
             ) as handle:
                 tmp_path = Path(handle.name)
-                handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
                 handle.flush()
                 os.fsync(handle.fileno())
             tmp_path.replace(path)
