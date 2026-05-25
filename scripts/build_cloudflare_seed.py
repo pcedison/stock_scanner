@@ -57,6 +57,7 @@ def _data_sources_status_payload() -> dict:
     return data_sources_status_payload(settings, official_provider)
 
 
+MIN_SEED_COMPANY_SIZE = int(os.getenv("MIN_SEED_COMPANY_SIZE", "1000"))
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
 MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
 MARKET_SCAN_SUMMARY_FILE = "market_scan_summary.json"
@@ -321,6 +322,11 @@ def seed_diagnostics(scan_payload: dict, companies: list, analysis_by_code: dict
 
 def assert_seed_quality(scan_payload: dict, companies: list, analysis_by_code: dict, fallback_source: str | None) -> None:
     diagnostics = seed_diagnostics(scan_payload, companies, analysis_by_code, fallback_source)
+    if diagnostics["companies"] < MIN_SEED_COMPANY_SIZE:
+        raise RuntimeError(
+            "Refusing to publish an undersized company seed: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        )
     if diagnostics["universeSize"] < MIN_SEED_UNIVERSE_SIZE:
         raise RuntimeError(
             "Refusing to publish an undersized market scan seed: "
@@ -512,6 +518,7 @@ def main() -> None:
             "holdingAnalysisShards": len(holding_analysis_shards),
         },
         "qualityGates": {
+            "minimumCompanySize": MIN_SEED_COMPANY_SIZE,
             "minimumUniverseSize": MIN_SEED_UNIVERSE_SIZE,
             "minimumAnalysisSize": MIN_SEED_ANALYSIS_SIZE,
             "fallbackSource": fallback_source,
