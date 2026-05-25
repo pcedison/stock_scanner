@@ -132,7 +132,7 @@ def data_sources_status_payload(
                 "when a licensed/manual source is preferred."
             ),
         },
-        "marketScanCache": scan_cache_status,
+        "marketScanCache": _public_status(scan_cache_status),
         "officialMonthlyRevenueAdapters": _OFFICIAL_MONTHLY_REVENUE_ADAPTERS,
         "officialFundamentalsAdapters": _OFFICIAL_FUNDAMENTALS_ADAPTERS,
         "thirdPartyDataPlatforms": _THIRD_PARTY_PLATFORMS,

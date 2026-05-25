@@ -819,6 +819,7 @@ class Api:
     def refresh_job_payload(self, row):
         payload = dict(row)
         owner_run_id = payload.get("owner_run_id")
+        payload["hasError"] = payload.pop("error", None) is not None
         payload["ownerRunId"] = owner_run_id
         payload["ownerRunUrl"] = self.github_actions_run_url(owner_run_id)
         return payload
