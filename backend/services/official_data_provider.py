@@ -142,15 +142,15 @@ class OfficialDataProvider:
             imported = self.import_adapter.fetch_bundle()
             try:
                 history_status = self.history_store.merge_latest(fundamentals.incomes, fundamentals.balances)
-            except Exception as exc:  # pragma: no cover - depends on local filesystem state
-                history_status = {"enabled": False, "path": str(self.history_store.path), "error": str(exc)}
+            except Exception:  # pragma: no cover - depends on local filesystem state
+                history_status = {"enabled": False, "path": str(self.history_store.path), "hasError": True}
             try:
                 monthly_history_status = self.monthly_revenue_history.merge_rows(revenue_rows)
-            except Exception as exc:  # pragma: no cover - depends on local filesystem state
+            except Exception:  # pragma: no cover - depends on local filesystem state
                 monthly_history_status = {
                     "enabled": False,
                     "path": str(self.monthly_revenue_history.path),
-                    "error": str(exc),
+                    "hasError": True,
                 }
             revenue_by_code = {row.stockCode: row for row in revenue_rows if row.stockCode}
             companies: list[Company] = []
@@ -336,8 +336,8 @@ class OfficialDataProvider:
     def _safe_refresh_companies(self) -> None:
         try:
             self.refresh_companies()
-        except Exception as exc:  # pragma: no cover - depends on official network availability
-            self._last_error = str(exc)
+        except Exception:  # pragma: no cover - depends on official network availability
+            self._last_error = "official company profile refresh failed"
             if not self._companies:
                 self._companies = []
                 self._source_status = {**self._source_status, "companyProfiles": 0}
@@ -345,8 +345,8 @@ class OfficialDataProvider:
     def _safe_refresh_snapshots(self) -> None:
         try:
             self.refresh()
-        except Exception as exc:  # pragma: no cover - depends on official network availability
-            self._last_error = str(exc)
+        except Exception:  # pragma: no cover - depends on official network availability
+            self._last_error = "official snapshot refresh failed"
             if not self._snapshots:
                 self._snapshots = {}
 
