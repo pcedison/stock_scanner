@@ -65,6 +65,7 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "health URL variable": r"CF_WORKER_HEALTH_URL",
         "Python dependency audit": r"pip_audit\s+-r\s+constraints\.txt",
         "medium static security scan": r"bandit .*--severity-level medium",
+        "Pages production metadata guard": r"check_pages_frontend\.py[\s\S]*--project[\s\S]*--expected-branch[\s\S]*--expected-source",
     }
     for label, pattern in required_patterns.items():
         if not re.search(pattern, text):

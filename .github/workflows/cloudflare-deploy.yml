@@ -139,7 +139,12 @@ jobs:
         run: ../node_modules/.bin/wrangler pages deploy . --project-name "$CF_PAGES_PROJECT" --branch "$CF_PAGES_PRODUCTION_BRANCH"
 
       - name: Verify deployed Pages frontend
-        run: python scripts/check_pages_frontend.py --url "https://${CF_PAGES_PROJECT}.pages.dev/"
+        run: |
+          python scripts/check_pages_frontend.py \
+            --url "https://${CF_PAGES_PROJECT}.pages.dev/" \
+            --project "$CF_PAGES_PROJECT" \
+            --expected-branch "$CF_PAGES_PRODUCTION_BRANCH" \
+            --expected-source "$GITHUB_SHA"
 
       - name: Verify deployed health freshness
         run: |
