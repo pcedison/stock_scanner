@@ -120,7 +120,7 @@ jobs:
             --config cloudflare/wrangler.toml
 
       - name: Upload D1 pre-deploy backup artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: d1-pre-deploy-backup-${{ github.run_id }}
           path: .tmp/d1-backups/*.sql
