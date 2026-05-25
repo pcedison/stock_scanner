@@ -1,7 +1,6 @@
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 from scripts import check_release_sync
 from scripts import write_agent_handoff

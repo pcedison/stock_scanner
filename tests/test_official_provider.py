@@ -276,7 +276,8 @@ def test_official_provider_surfaces_monthly_history_persistence_errors(tmp_path)
 
     assert snapshot.company.stockCode == "9999"
     assert status["enabled"] is False
-    assert "read-only" in status["error"]
+    assert status["hasError"] is True
+    assert "error" not in status
 
 
 def test_official_provider_uses_official_history_for_yoy_annuals_and_inventory(tmp_path):

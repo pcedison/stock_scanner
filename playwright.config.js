@@ -1,4 +1,3 @@
-const path = require("node:path");
 const { defineConfig, devices } = require("@playwright/test");
 
 const port = Number(process.env.E2E_PORT || 8010);

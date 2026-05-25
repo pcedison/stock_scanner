@@ -46,6 +46,13 @@ def scan_cache_key(settings: ScannerSettings) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _public_job(job: dict) -> dict:
+    public = {str(key): copy.deepcopy(value) for key, value in job.items() if str(key) != "error"}
+    if job.get("error") is not None:
+        public["hasError"] = True
+    return public
+
+
 class ScanCacheService:
     def __init__(
         self,
@@ -125,7 +132,7 @@ class ScanCacheService:
             "selectedStoredAt": selected.get("storedAt") if selected else None,
             "selectedIsStale": self._is_due(selected.get("storedAt"), refresh_policy()) if selected else None,
             "runningKeys": sorted(self._running.keys()),
-            "recentJobs": jobs[-10:],
+            "recentJobs": [_public_job(job) for job in jobs[-10:]],
         }
 
     def _queue_refresh(self, key: str, settings: ScannerSettings, builder: Callable[[], dict], policy: dict) -> str:
@@ -161,7 +168,7 @@ class ScanCacheService:
             )
         except Exception as exc:  # pragma: no cover - depends on network/runtime timing
             logger.exception("Background scan cache refresh failed for key=%s: %s", key, exc)
-            self._update_job(job_id, status="failed", finishedAt=utc_now(), error=str(exc))
+            self._update_job(job_id, status="failed", finishedAt=utc_now(), hasError=True)
         finally:
             with self._lock:
                 self._running.pop(key, None)
@@ -255,6 +262,6 @@ class ScanCacheService:
             if tmp_path is not None:
                 try:
                     tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("Unable to remove temporary scan cache file %s: %s", tmp_path, exc)
             raise

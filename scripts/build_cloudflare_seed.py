@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
