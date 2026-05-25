@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-import csv
 import hashlib
 import hmac
-import io
 import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from js import Object, Response
 from pyodide.ffi import to_js
