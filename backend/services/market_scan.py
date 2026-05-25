@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from backend.services.filing_calendar import filing_context
 
@@ -44,6 +44,24 @@ _THIRD_PARTY_PLATFORMS = {
         "note": "MacroMicro API/data downloads are subscription or enterprise-licensed services. Do not scrape without explicit written authorization.",
     }
 }
+_PUBLIC_STATUS_ERROR_KEYS = frozenset({"error", "exception", "traceback", "lastError"})
+
+
+def _public_status(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        has_error = False
+        for key, item in value.items():
+            if str(key) in _PUBLIC_STATUS_ERROR_KEYS:
+                has_error = has_error or bool(item)
+                continue
+            redacted[str(key)] = _public_status(item)
+        if has_error:
+            redacted["hasError"] = True
+        return redacted
+    if isinstance(value, list):
+        return [_public_status(item) for item in value]
+    return value
 
 
 def scan_market_payload(
@@ -86,6 +104,9 @@ def data_sources_status_payload(
 ) -> dict:
     official_status = official_provider.status(refresh=False) if not settings.use_mock_data else None
     src = official_status.get("sourceStatus", {}) if official_status else {}
+    public_src = _public_status(src)
+    fundamentals_import = public_src.get("fundamentalsImport", {}) if isinstance(public_src, dict) else {}
+    official_history = public_src.get("officialFundamentalsHistory", {}) if isinstance(public_src, dict) else {}
     return {
         "activeProvider": "MockDataProvider" if settings.use_mock_data else "OfficialDataProvider",
         "activeProviderIsRealtime": False,
@@ -94,16 +115,16 @@ def data_sources_status_payload(
         "mockUniverseSize": mock_universe_size,
         "officialUniverseSize": official_status["companies"] if official_status else None,
         "officialMonthlySnapshotSize": official_status["monthlySnapshots"] if official_status else None,
-        "officialIncomeStatementSize": src.get("incomeRows"),
-        "officialBalanceSheetSize": src.get("balanceRows"),
-        "officialValuationSize": src.get("valuationRows"),
-        "fundamentalsImportRows": src.get("fundamentalsImport", {}).get("rows"),
-        "fundamentalsImportPath": src.get("fundamentalsImport", {}).get("path"),
-        "officialHistoryRows": src.get("officialFundamentalsHistory", {}).get("rows"),
-        "officialHistoryPath": src.get("officialFundamentalsHistory", {}).get("path"),
+        "officialIncomeStatementSize": public_src.get("incomeRows") if isinstance(public_src, dict) else None,
+        "officialBalanceSheetSize": public_src.get("balanceRows") if isinstance(public_src, dict) else None,
+        "officialValuationSize": public_src.get("valuationRows") if isinstance(public_src, dict) else None,
+        "fundamentalsImportRows": fundamentals_import.get("rows"),
+        "fundamentalsImportPath": fundamentals_import.get("path"),
+        "officialHistoryRows": official_history.get("rows"),
+        "officialHistoryPath": official_history.get("path"),
         "officialHistoricalFundamentals": {
             "status": "official_cache_enabled",
-            "cache": src.get("officialFundamentalsHistory"),
+            "cache": official_history,
             "note": (
                 "TWSE/TPEx OpenAPI latest statement rows are persisted locally. "
                 "Historical gaps can be backfilled from the official MOPS JSON APIs via "

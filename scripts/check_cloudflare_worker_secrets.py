@@ -57,10 +57,10 @@ def main(argv: list[str] | None = None) -> int:
 
     missing = missing_secret_names(available, args.names)
     if missing:
-        print("Missing Cloudflare Worker secret bindings: " + ", ".join(missing), file=sys.stderr)
+        print(f"Missing {len(missing)} required Cloudflare Worker secret binding(s).", file=sys.stderr)
         return 1
 
-    print("Cloudflare Worker secret bindings present: " + ", ".join(args.names))
+    print(f"Cloudflare Worker secret bindings present: {len(args.names)} required binding(s).")
     return 0
 
 
