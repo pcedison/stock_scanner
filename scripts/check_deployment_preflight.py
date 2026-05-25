@@ -63,6 +63,8 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "rollback": r"wrangler rollback",
         "non-interactive rollback": r"wrangler rollback .*--yes",
         "health URL variable": r"CF_WORKER_HEALTH_URL",
+        "Python dependency audit": r"pip_audit\s+-r\s+constraints\.txt",
+        "medium static security scan": r"bandit .*--severity-level medium",
     }
     for label, pattern in required_patterns.items():
         if not re.search(pattern, text):

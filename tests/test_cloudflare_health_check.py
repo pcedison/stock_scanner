@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from scripts.check_cloudflare_health import validate_health_payload
+from scripts.check_cloudflare_health import validate_health_payload, validate_health_url
 
 
 def test_validate_health_payload_accepts_matching_manifest_counts():
@@ -72,3 +72,16 @@ def test_validate_health_payload_accepts_fresh_online_seed():
     )
 
     assert summary["cacheAgeHours"] == pytest.approx(0.5)
+
+
+def test_validate_health_url_rejects_non_https_or_wrong_path():
+    with pytest.raises(RuntimeError, match="https URL"):
+        validate_health_url("file:///tmp/health.json")
+
+    with pytest.raises(RuntimeError, match="/api/health"):
+        validate_health_url("https://stock-scanner-beta-api.pcedison.workers.dev/status")
+
+    assert (
+        validate_health_url("https://stock-scanner-beta-api.pcedison.workers.dev/api/health")
+        == "https://stock-scanner-beta-api.pcedison.workers.dev/api/health"
+    )

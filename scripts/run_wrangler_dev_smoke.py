@@ -10,12 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT_DIR / ".tmp" / "wrangler-dev-smoke.log"
 DEFAULT_SMOKE_SUPER_USER = "wrangler-smoke-admin@example.com"
+LOCAL_SMOKE_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def validate_worker_smoke_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -37,16 +39,25 @@ def validate_worker_smoke_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_local_smoke_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname not in LOCAL_SMOKE_HOSTS:
+        raise RuntimeError("Wrangler dev smoke URL must be an http loopback URL")
+    return url
+
+
 def _fetch_json(url: str) -> dict[str, Any]:
-    request = Request(url, headers={"Origin": "https://stock-scanner-beta.pages.dev"})
+    safe_url = validate_local_smoke_url(url)
+    request = Request(safe_url, headers={"Origin": "https://stock-scanner-beta.pages.dev"})
     try:
-        with urlopen(request, timeout=5) as response:
+        # validate_local_smoke_url restricts requests to loopback HTTP.
+        with urlopen(request, timeout=5) as response:  # nosec B310
             if response.status != 200:
-                raise RuntimeError(f"{url} returned HTTP {response.status}")
+                raise RuntimeError(f"{safe_url} returned HTTP {response.status}")
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{url} returned HTTP {exc.code}: {body[:1000]}") from exc
+        raise RuntimeError(f"{safe_url} returned HTTP {exc.code}: {body[:1000]}") from exc
 
 
 def _stop_process(process: subprocess.Popen) -> None:

@@ -49,6 +49,12 @@ jobs:
           python -m pip check
           npm audit --audit-level=low
 
+      - name: Run security scans
+        run: |
+          python -m pip install pip-audit bandit
+          python -m pip_audit -r constraints.txt
+          python -m bandit -q -r backend cloudflare scripts -x .tmp,.venv,node_modules,tests --severity-level medium
+
       - name: Check deployment preflight guardrails
         run: python scripts/check_deployment_preflight.py
 

@@ -121,6 +121,22 @@ class FakeEmptyImportAdapter:
         return ImportedFundamentalBundle(status={"rows": 0})
 
 
+class ExplodingMonthlyRevenueHistory:
+    path = "monthly_revenue_history.json"
+
+    def merge_rows(self, rows):
+        raise OSError("history store is read-only")
+
+    def previous_month_yoy(self, stock_code, current_month):
+        return None
+
+    def trailing_three_month_avg_yoy(self, stock_code, current_month):
+        return None
+
+    def jan_feb_combined_yoy(self, stock_code, current_year):
+        return None
+
+
 class FakeFundamentalsAdapterWithInventory(FakeFundamentalsAdapter):
     def fetch_bundle(self):
         bundle = super().fetch_bundle()
@@ -244,6 +260,23 @@ def test_official_provider_merges_csv_import_fundamentals(tmp_path):
     assert snapshot.valuation.inventoryTurnover == 4.2
     assert [row.year for row in snapshot.annualFinancials] == [2023, 2024, 2025]
     assert provider.status()["sourceStatus"]["fundamentalsImport"]["rows"] == 6
+
+
+def test_official_provider_surfaces_monthly_history_persistence_errors(tmp_path):
+    provider = OfficialDataProvider(
+        adapter=FakeOfficialAdapter(),
+        fundamentals_adapter=FakeFundamentalsAdapter(),
+        import_adapter=FakeEmptyImportAdapter(),
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        monthly_revenue_history=ExplodingMonthlyRevenueHistory(),
+    )
+
+    snapshot = provider.get_snapshot("9999")
+    status = provider.status()["sourceStatus"]["monthlyRevenueHistory"]
+
+    assert snapshot.company.stockCode == "9999"
+    assert status["enabled"] is False
+    assert "read-only" in status["error"]
 
 
 def test_official_provider_uses_official_history_for_yoy_annuals_and_inventory(tmp_path):

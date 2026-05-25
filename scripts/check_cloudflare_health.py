@@ -7,20 +7,30 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
+def validate_health_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc or not parsed.path.endswith("/api/health"):
+        raise RuntimeError("Health URL must be an https URL ending in /api/health")
+    return url
+
+
 def _load_json_url(url: str, timeout: int) -> dict[str, Any]:
-    request = Request(url, headers={"User-Agent": "stock-scanner-health-check/1.0"})
+    safe_url = validate_health_url(url)
+    request = Request(safe_url, headers={"User-Agent": "stock-scanner-health-check/1.0"})
     try:
-        with urlopen(request, timeout=timeout) as response:
+        # validate_health_url restricts scheme/shape before urlopen.
+        with urlopen(request, timeout=timeout) as response:  # nosec B310
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        raise RuntimeError(f"Health check returned HTTP {exc.code}: {url}") from exc
+        raise RuntimeError(f"Health check returned HTTP {exc.code}: {safe_url}") from exc
     except URLError as exc:
         raise RuntimeError(f"Health check failed to connect: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Health check did not return valid JSON: {url}") from exc
+        raise RuntimeError(f"Health check did not return valid JSON: {safe_url}") from exc
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:

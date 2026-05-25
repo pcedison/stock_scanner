@@ -145,9 +145,13 @@ class OfficialDataProvider:
             except Exception as exc:  # pragma: no cover - depends on local filesystem state
                 history_status = {"enabled": False, "path": str(self.history_store.path), "error": str(exc)}
             try:
-                self.monthly_revenue_history.merge_rows(revenue_rows)
-            except Exception:  # pragma: no cover - filesystem state
-                pass
+                monthly_history_status = self.monthly_revenue_history.merge_rows(revenue_rows)
+            except Exception as exc:  # pragma: no cover - depends on local filesystem state
+                monthly_history_status = {
+                    "enabled": False,
+                    "path": str(self.monthly_revenue_history.path),
+                    "error": str(exc),
+                }
             revenue_by_code = {row.stockCode: row for row in revenue_rows if row.stockCode}
             companies: list[Company] = []
             snapshots: dict[str, FundamentalSnapshot] = {}
@@ -326,7 +330,7 @@ class OfficialDataProvider:
                 **fundamentals.status,
                 "fundamentalsImport": imported.status,
                 "officialFundamentalsHistory": history_status,
-                "monthlyRevenueHistory": self.monthly_revenue_history.status(),
+                "monthlyRevenueHistory": monthly_history_status,
             }
 
     def _safe_refresh_companies(self) -> None:
