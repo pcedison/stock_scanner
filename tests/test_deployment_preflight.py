@@ -144,3 +144,11 @@ def test_r2_refresh_job_completion_is_scoped_to_claiming_run():
     assert "status IN ('queued', 'running')" in text
     assert "SET status = 'success'" in text
     assert "SET status = 'failed'" in text
+
+
+def test_seed_refresh_workflow_surfaces_manual_pr_when_actions_cannot_create_one():
+    text = Path(".github/workflows/refresh-cloudflare-seed.yml").read_text(encoding="utf-8")
+
+    assert "manual_pr_url=" in text
+    assert "GitHub Actions is not permitted to create the PR automatically" in text
+    assert "Seed rebuild and validation completed before PR creation" in text

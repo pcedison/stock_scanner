@@ -90,12 +90,31 @@ jobs:
             echo "- Revalidated seed quality gates"
           } > .tmp/seed-pr-body.md
           existing_pr="$(gh pr list --head "$branch" --json url --jq '.[0].url')"
+          manual_pr_url="https://github.com/${GITHUB_REPOSITORY}/compare/${GITHUB_REF_NAME}...${branch}?expand=1"
           if [ -n "$existing_pr" ]; then
-            gh pr edit "$existing_pr" --body-file .tmp/seed-pr-body.md
+            if ! gh pr edit "$existing_pr" --body-file .tmp/seed-pr-body.md; then
+              echo "::warning::Seed refresh branch was pushed, but the existing PR body could not be updated."
+              {
+                echo "Seed refresh branch was pushed, but the existing PR body could not be updated."
+                echo
+                echo "- Existing PR: $existing_pr"
+                echo "- Branch: \`$branch\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
-            gh pr create \
+            if ! gh pr create \
               --title "Refresh Cloudflare seed cache $(date -u +%Y-%m-%d)" \
               --body-file .tmp/seed-pr-body.md \
               --base "${GITHUB_REF_NAME}" \
-              --head "$branch"
+              --head "$branch"; then
+              echo "::warning::Seed refresh branch was pushed, but GitHub Actions is not permitted to create the PR automatically."
+              {
+                echo "Seed refresh branch was pushed, but GitHub Actions could not create the PR automatically."
+                echo
+                echo "- Branch: \`$branch\`"
+                echo "- Manual PR: $manual_pr_url"
+                echo
+                echo "Seed rebuild and validation completed before PR creation."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
