@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from time import sleep
 from typing import Any
 
 import httpx
@@ -67,14 +68,26 @@ def _to_int(value: Any) -> int | None:
 
 
 class OfficialMonthlyRevenueAdapter:
-    def __init__(self, timeout: float = 15) -> None:
+    def __init__(self, timeout: float = 15, retry_attempts: int = 3, retry_backoff_seconds: float = 1) -> None:
         self.timeout = timeout
+        self.retry_attempts = max(1, retry_attempts)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
     def _fetch_json(self, url: str) -> list[dict[str, Any]]:
-        response = httpx.get(url, timeout=self.timeout)
-        response.raise_for_status()
-        rows = response.json()
-        return rows if isinstance(rows, list) else []
+        last_error: Exception | None = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                response = httpx.get(url, timeout=self.timeout)
+                response.raise_for_status()
+                rows = response.json()
+                if not isinstance(rows, list):
+                    raise ValueError(f"official endpoint returned {type(rows).__name__}, expected list")
+                return rows
+            except (httpx.HTTPError, ValueError) as exc:
+                last_error = exc
+                if attempt < self.retry_attempts and self.retry_backoff_seconds:
+                    sleep(self.retry_backoff_seconds * attempt)
+        raise RuntimeError(f"Failed to fetch official endpoint after {self.retry_attempts} attempts: {url}") from last_error
 
     def _fetch_monthly_revenue(self, url: str, market: str) -> list[OfficialMonthlyRevenueRow]:
         rows = self._fetch_json(url)

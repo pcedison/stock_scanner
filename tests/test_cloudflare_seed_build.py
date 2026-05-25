@@ -1,4 +1,8 @@
+import pytest
+
+import scripts.build_cloudflare_seed as seed_build
 from scripts.build_cloudflare_seed import (
+    assert_seed_quality,
     compact_market_scan_payload,
     rebuild_scan_from_analysis,
     scan_payload_needs_rebuild,
@@ -8,6 +12,11 @@ from scripts.build_cloudflare_seed import (
 class ObjectResult:
     def __init__(self, **values):
         self.__dict__.update(values)
+
+
+class FakeProvider:
+    def status(self, refresh=False):
+        return {"companies": 0, "monthlySnapshots": 1000, "lastError": "profile endpoint returned no companies"}
 
 
 def test_compact_market_scan_payload_strips_heavy_evidence():
@@ -112,3 +121,17 @@ def test_object_market_scan_payload_is_compacted_without_losing_identity():
     assert compact["entry"][0]["companyName"] == "Object Co"
     assert compact["entry"][0]["status"] == "ENTRY"
     assert compact["entry"][0]["reasons"][0]["code"] == "OFFICIAL_Q"
+
+
+def test_seed_quality_rejects_empty_companies_when_analysis_is_present(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    scan_payload = {
+        "universeSize": 1000,
+        "entry": [],
+        "watch": [{} for _ in range(1000)],
+        "excluded": [],
+    }
+    analysis_by_code = {str(index): {} for index in range(1000)}
+
+    with pytest.raises(RuntimeError, match="undersized company seed"):
+        assert_seed_quality(scan_payload, [], analysis_by_code, fallback_source=None)
