@@ -138,6 +138,9 @@ jobs:
         working-directory: frontend
         run: ../node_modules/.bin/wrangler pages deploy . --project-name "$CF_PAGES_PROJECT" --branch "$CF_PAGES_PRODUCTION_BRANCH"
 
+      - name: Verify deployed Pages frontend
+        run: python scripts/check_pages_frontend.py --url "https://${CF_PAGES_PROJECT}.pages.dev/"
+
       - name: Verify deployed health freshness
         run: |
           if [ -z "$CF_WORKER_HEALTH_URL" ]; then
