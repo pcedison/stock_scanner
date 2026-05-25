@@ -255,6 +255,6 @@ class ScanCacheService:
             if tmp_path is not None:
                 try:
                     tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("Unable to remove temporary scan cache file %s: %s", tmp_path, exc)
             raise
