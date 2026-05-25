@@ -17,6 +17,8 @@ DEFAULT_STORAGE = ROOT_DIR / "frontend" / "storage.js"
 DEFAULT_RENDERERS = ROOT_DIR / "frontend" / "renderers.js"
 SAFE_HTML_HELPER_PATTERN = re.compile(r"\b(?:escapeHtml|emptyStateHtml|setSafeHtml|render[A-Z][A-Za-z0-9_]*)\s*\(")
 INNER_HTML_ASSIGNMENT_PATTERN = re.compile(r"\.innerHTML\s*=(?!=)")
+HTML_SINK_PATTERN = re.compile(r"(?:\.innerHTML\s*=(?!=)|\bsetSafeHtml\s*\()")
+SAFE_HTML_CALL_PATTERN = re.compile(r"\bsetSafeHtml\s*\(")
 RAW_TEMPLATE_PATH_PATTERN = re.compile(
     r"\$\{\s*[A-Za-z_$][\w$]*(?:(?:\?|\.)?\.[A-Za-z_$][\w$]*|\[[^\]]+\])+\s*\}"
 )
@@ -64,7 +66,7 @@ def dangerous_inner_html_assignments(source_text: str) -> list[dict[str, object]
     lines = source_text.splitlines()
     findings = []
     for index, line in enumerate(lines):
-        if not INNER_HTML_ASSIGNMENT_PATTERN.search(line):
+        if not HTML_SINK_PATTERN.search(line):
             continue
         statement = html_assignment_statement(lines, index)
         raw_interpolations = raw_template_path_interpolations(statement)
@@ -102,7 +104,8 @@ def frontend_hygiene_report(
         "storagePath": display_path(storage_path),
         "renderersPath": display_path(renderers_path),
         "appLines": len(app_text.splitlines()),
-        "innerHTMLAssignments": app_text.count("innerHTML"),
+        "innerHTMLAssignments": len(INNER_HTML_ASSIGNMENT_PATTERN.findall(app_text)),
+        "safeHtmlCalls": len(SAFE_HTML_CALL_PATTERN.findall(app_text)),
         "dangerousInnerHTMLAssignments": dangerous_inner_html_assignments(app_text),
         "insertAdjacentHTMLCalls": app_text.count("insertAdjacentHTML"),
         "hasSharedEscapeHelper": "function escapeHtml" in dom_text and "StockScannerDom" in dom_text,
@@ -128,7 +131,7 @@ def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max
     if dangerous_assignments:
         lines = ", ".join(str(item["line"]) for item in dangerous_assignments)
         problems.append(
-            "frontend/app.js has dangerous innerHTML assignments without escapeHtml/render helper "
+            "frontend/app.js has dangerous HTML sinks without escapeHtml/render helper "
             f"or whitelist coverage on lines: {lines}"
         )
     if int(report["insertAdjacentHTMLCalls"]) > 0:
@@ -155,7 +158,7 @@ def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check frontend single-file and HTML-rendering hygiene budgets.")
     parser.add_argument("--max-app-lines", type=int, default=2400)
-    parser.add_argument("--max-inner-html", type=int, default=19)
+    parser.add_argument("--max-inner-html", type=int, default=0)
     args = parser.parse_args(argv)
 
     report = frontend_hygiene_report()

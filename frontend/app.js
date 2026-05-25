@@ -169,6 +169,18 @@ function setEmptyState(target, message) {
   DOM_HELPERS.setEmptyState(target, message);
 }
 
+function setFormError(target, message) {
+  DOM_HELPERS.setFormError(target, message);
+}
+
+function setSafeHtml(target, html) {
+  DOM_HELPERS.setSafeHtml(target, html);
+}
+
+function clearElement(target) {
+  DOM_HELPERS.clearElement(target);
+}
+
 function safeCompanyName(companyOrHolding) {
   if (!companyOrHolding) return "未知公司";
   const directName = safeText(companyOrHolding.name || companyOrHolding.companyName);
@@ -565,7 +577,7 @@ async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = fal
     });
   } catch (error) {
     if (renderResults && target) {
-      target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "持股掃描失敗")}</p>`;
+      setFormError(target, error.message || "持股掃描失敗");
     }
     return false;
   } finally {
@@ -849,7 +861,7 @@ function renderAdminUsers() {
   if (!target || !message) return;
   if (!isSuperUser()) {
     message.textContent = "此頁面僅限 super user 使用。";
-    target.innerHTML = "";
+    clearElement(target);
     return;
   }
   message.textContent = state.adminIsLoading ? "讀取使用者清單中..." : state.adminError || state.adminMessage || "";
@@ -865,7 +877,7 @@ function renderAdminUsers() {
     setEmptyState(target, "目前沒有其他使用者");
     return;
   }
-  target.innerHTML = state.adminUsers
+  setSafeHtml(target, state.adminUsers
     .map((user) => {
       const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
       const badge = user.isSuperUser ? `<span class="status-pill status-entry">super user</span>` : `<span class="status-pill neutral">一般使用者</span>`;
@@ -890,7 +902,7 @@ function renderAdminUsers() {
         </article>
       `;
     })
-    .join("");
+    .join(""));
 }
 
 function adminUsersErrorMessage(message) {
@@ -951,7 +963,7 @@ function renderSelectedCompany() {
 
   state.selectedCompany = company;
   target.className = "selected-company card selected-company-card";
-  target.innerHTML = `
+  setSafeHtml(target, `
     <div class="card-head">
       <div>
         <h3 class="stock-title">${escapeHtml(company.stockCode)} ${escapeHtml(company.name)}</h3>
@@ -963,7 +975,7 @@ function renderSelectedCompany() {
       <button class="secondary-btn" type="button" id="analyze-selected-btn">單檔分析</button>
       <button class="primary-btn" type="button" id="add-selected-btn">加入持股</button>
     </div>
-  `;
+  `);
 }
 
 function renderHoldings() {
@@ -974,7 +986,7 @@ function renderHoldings() {
     return;
   }
 
-  target.innerHTML = state.holdings
+  setSafeHtml(target, state.holdings
     .map((holding) => {
       const name = safeCompanyName(holding);
       const stockCode = safeText(holding.stockCode, "未知代碼");
@@ -1030,7 +1042,7 @@ function renderHoldings() {
         </article>
       `;
     })
-    .join("");
+    .join(""));
 }
 
 function renderOnboardingDraft() {
@@ -1046,7 +1058,7 @@ function renderOnboardingDraft() {
   }
 
   list.className = "draft-list";
-  list.innerHTML = state.onboardingDraft
+  setSafeHtml(list, state.onboardingDraft
     .map(
       (holding) => {
         const stockCode = safeText(holding.stockCode, "未知代碼");
@@ -1067,7 +1079,7 @@ function renderOnboardingDraft() {
       `;
       },
     )
-    .join("");
+    .join(""));
 }
 
 function renderSettings() {
@@ -1103,11 +1115,11 @@ function renderStrategyStatusDetail() {
   });
   if (!detail) {
     target.classList.add("hidden");
-    target.innerHTML = "";
+    clearElement(target);
     return;
   }
   target.classList.remove("hidden");
-  target.innerHTML = `
+  setSafeHtml(target, `
     <div class="strategy-detail-head">
       <h3>${escapeHtml(detail.label)}</h3>
       <p>${escapeHtml(detail.summary)}</p>
@@ -1127,14 +1139,14 @@ function renderStrategyStatusDetail() {
         )
         .join("")}
     </div>
-  `;
+  `);
   applyEvidenceBarWidths(target);
 }
 
 function renderStrategyRulesGrid() {
   const target = $("#strategy-rules-grid");
   if (!target) return;
-  target.innerHTML = renderStrategyRuleCards();
+  setSafeHtml(target, renderStrategyRuleCards());
 }
 
 const MARKET_RESULT_COLUMNS = [
@@ -1497,7 +1509,7 @@ function renderMarketResults() {
           : ""
       }）判斷當期已公告。`
     : `目前非季報/年報申報窗口，主要依 ${state.marketScan.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
-  target.innerHTML = `
+  setSafeHtml(target, `
     <div class="data-source-note">
       <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
       <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
@@ -1520,7 +1532,7 @@ function renderMarketResults() {
     <div class="result-columns single-result-column">
       ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
     </div>
-  `;
+  `);
   applyEvidenceBarWidths(target);
   renderOverviewStats(state.marketScan, activeTab);
 }
@@ -1533,7 +1545,7 @@ function renderDataAndScheduler() {
       setEmptyState(dataTarget, "尚未讀取資料來源狀態");
     } else {
       const status = state.dataSourceStatus;
-      dataTarget.innerHTML = `
+      setSafeHtml(dataTarget, `
         <article class="card">
           <h3 class="stock-title">目前啟用資料源</h3>
           <p class="muted">${escapeHtml(status.activeProvider)}</p>
@@ -1560,19 +1572,19 @@ function renderDataAndScheduler() {
           <p class="muted">狀態：${escapeHtml(state.backtestStatus?.status || "未讀取")}；交易數：${escapeHtml(state.backtestStatus?.metrics?.tradeCount ?? 0)}。</p>
           <p class="muted">${escapeHtml(state.backtestStatus?.note || "匯入 data/backtest_history.csv 後可模擬進出場與績效。")}</p>
         </article>
-      `;
+      `);
     }
   }
 
   if (schedulerTarget) {
     if (!state.schedulerStatus) {
-      schedulerTarget.innerHTML = `<strong>排程狀態：</strong><span>尚未讀取</span>`;
+      setSafeHtml(schedulerTarget, `<strong>排程狀態：</strong><span>尚未讀取</span>`);
     } else {
       const autoAction = state.schedulerAutoScan?.action || "未執行";
-      schedulerTarget.innerHTML = `
+      setSafeHtml(schedulerTarget, `
         <strong>排程狀態：${escapeHtml(state.schedulerStatus.status)}</strong>
         <span>事件：${escapeHtml((state.schedulerStatus.events || []).join("、") || "無")}；下一交易日：${escapeHtml(state.schedulerStatus.nextTradingDay)}；自動掃描：${escapeHtml(autoAction)}</span>
-      `;
+      `);
     }
   }
 }
@@ -1585,7 +1597,7 @@ function renderHoldingResults() {
   }
   $("#scan-time").textContent = `更新 ${new Date(state.holdingsScan.generatedAt).toLocaleString()}`;
   const missing = state.holdingsScan.missing || [];
-  target.innerHTML = `
+  setSafeHtml(target, `
     <div class="stack">
       ${(state.holdingsScan.results || []).map((result) => renderAnalysisCard(result, { allowExitAction: true, disclosureGroup: "holding" })).join("")}
       ${missing
@@ -1604,7 +1616,7 @@ function renderHoldingResults() {
         .join("")}
       ${!(state.holdingsScan.results || []).length && !missing.length ? `<div class="empty-state">沒有可掃描持股</div>` : ""}
     </div>
-  `;
+  `);
   applyEvidenceBarWidths(target);
 }
 
@@ -1745,10 +1757,10 @@ function renderSuggestions(items) {
   const companies = normalizeCompanies(items);
   if (!companies.length) {
     box.classList.remove("open");
-    box.innerHTML = "";
+    clearElement(box);
     return;
   }
-  box.innerHTML = companies
+  setSafeHtml(box, companies
     .map(
       (company) => `
       <button class="suggestion-item" type="button" data-select-code="${escapeHtml(company.stockCode)}">
@@ -1757,7 +1769,7 @@ function renderSuggestions(items) {
       </button>
     `,
     )
-    .join("");
+    .join(""));
   box.classList.add("open");
 }
 
@@ -1770,10 +1782,10 @@ async function analyzeSelectedCompany() {
       method: "POST",
       body: JSON.stringify({ settings: state.settings }),
     });
-    target.innerHTML = renderAnalysisCard(result);
+    setSafeHtml(target, renderAnalysisCard(result));
     applyEvidenceBarWidths(target);
   } catch (error) {
-    target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "分析失敗")}</p>`;
+    setFormError(target, error.message || "分析失敗");
   }
 }
 
@@ -1782,7 +1794,7 @@ async function scanMarket() {
 }
 
 function renderMarketScanError(target, error) {
-  if (target) target.innerHTML = `<p class="form-error">${escapeHtml(error.message || "掃描失敗")}</p>`;
+  if (target) setFormError(target, error.message || "掃描失敗");
 }
 
 async function refreshMarketScan({ revealResults = false, refreshMode = "auto" } = {}) {

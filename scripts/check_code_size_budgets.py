@@ -9,12 +9,14 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGETS = {
     "frontend/app.js": 2400,
+    "frontend/dom.js": 90,
     "frontend/renderers.js": 300,
     "frontend/strategy_content.js": 160,
     "frontend/storage.js": 80,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
-    "cloudflare/worker.py": 1310,
+    "cloudflare/worker.py": 980,
+    "cloudflare/worker_support.py": 520,
     ".github/workflows/cloudflare-r2-seed-refresh.yml": 240,
 }
 
