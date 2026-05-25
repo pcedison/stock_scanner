@@ -29,7 +29,7 @@ def find_seed_zip(data_dir: Path) -> Path:
     """
     candidates = sorted(
         (path for path in data_dir.glob("official_cache_seed_*.zip") if _dated_seed_key(path) is not None),
-        key=lambda p: _dated_seed_key(p),
+        key=_dated_seed_key,
         reverse=True,
     )
     return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"
