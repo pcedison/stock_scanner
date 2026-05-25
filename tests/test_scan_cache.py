@@ -104,3 +104,36 @@ def test_scan_cache_write_uses_unique_atomic_temp_file(tmp_path, monkeypatch):
     assert calls[0]["delete"] is False
     assert list(tmp_path.glob("*.tmp")) == []
     assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_failed_background_refresh_redacts_error_details(tmp_path):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+    key = scan_cache_key(settings)
+    service.store(
+        key,
+        settings,
+        {"generatedAt": "2026-05-14T00:00:00+00:00", "entry": [], "watch": [], "excluded": []},
+        {"strategy": "stale_while_revalidate", "reason": "test", "minIntervalSeconds": 1},
+    )
+    cache_path = tmp_path / "scan.json"
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    cached["items"][key]["storedAt"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    cache_path.write_text(json.dumps(cached), encoding="utf-8")
+
+    def refresh():
+        raise RuntimeError("private filesystem path C:/Users/example/secret.json")
+
+    service.get_or_refresh(settings, refresh, build_refresh=refresh, refresh_mode="auto")
+
+    deadline = time.time() + 3
+    status = service.status(settings)
+    while status["recentJobs"][-1]["status"] != "failed" and time.time() < deadline:
+        time.sleep(0.05)
+        status = service.status(settings)
+
+    job = status["recentJobs"][-1]
+    assert job["status"] == "failed"
+    assert job["hasError"] is True
+    assert "error" not in job
+    assert "private filesystem path" not in str(status)

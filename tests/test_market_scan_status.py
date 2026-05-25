@@ -31,3 +31,25 @@ def test_data_sources_status_redacts_provider_error_details():
     assert cache["hasError"] is True
     assert "error" not in cache
     assert "private filesystem path" not in str(payload)
+
+
+def test_data_sources_status_redacts_scan_cache_job_error_details():
+    payload = data_sources_status_payload(
+        ScannerSettings(use_mock_data=False),
+        FakeStatusProvider(),
+        mock_universe_size=0,
+        scan_cache_status={
+            "recentJobs": [
+                {
+                    "id": "job-1",
+                    "status": "failed",
+                    "error": "RuntimeError: private cache path",
+                }
+            ]
+        },
+    )
+
+    job = payload["marketScanCache"]["recentJobs"][0]
+    assert job["hasError"] is True
+    assert "error" not in job
+    assert "private cache path" not in str(payload)
