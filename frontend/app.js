@@ -342,7 +342,6 @@ const {
   sortRulesForDisplay,
   statusClass,
   statusLabel,
-  strategyThresholdsFor,
 } = RENDERER_HELPERS.createRenderers({
   escapeHtml,
   isHoldingTracked,
@@ -617,10 +616,6 @@ function apiErrorMessage(response, text = "") {
   const normalized = text.trim();
   if (!normalized || /<(!doctype|html|head|body|script|style)\b/i.test(normalized)) return fallback;
   return normalized.length <= 240 ? normalized : fallback;
-}
-
-function onboardingStorageKey(user = state.auth?.user || null) {
-  return STORAGE_HELPERS.onboardingStorageKey(user);
 }
 
 function hasCompletedOnboarding(storage = localStorage, user = state.auth?.user || null) {
