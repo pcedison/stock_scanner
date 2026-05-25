@@ -6,13 +6,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main_module
-from backend.main import app
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService
 from backend.services.settings_service import load_settings, save_settings
 
 
-client = TestClient(app)
+client = TestClient(main_module.app)
 MOCK_SETTINGS = ScannerSettings(use_mock_data=True)
 
 
@@ -89,7 +88,7 @@ def test_production_runtime_security_rejects_non_https_origin(monkeypatch):
 
 def test_production_csrf_guard_requires_custom_header(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    test_client = TestClient(app)
+    test_client = TestClient(main_module.app)
 
     missing = test_client.post("/api/scan/market", json={"settings": MOCK_SETTINGS.model_dump()})
     present = test_client.post(
@@ -163,7 +162,7 @@ def test_backtest_status_cache_single_flights_concurrent_misses(tmp_path, monkey
     def call_cached():
         try:
             results.append(main_module._backtest_status_cached())
-        except BaseException as exc:  # pragma: no cover - assertion context
+        except Exception as exc:  # pragma: no cover - assertion context
             errors.append(exc)
 
     monkeypatch.setattr(main_module, "DEFAULT_BACKTEST_PATH", source)
@@ -295,7 +294,7 @@ def test_settings_rejects_string_booleans(monkeypatch):
 
 
 def test_lightweight_auth_persists_server_side_holdings():
-    test_client = TestClient(app)
+    test_client = TestClient(main_module.app)
     username = f"user_{uuid4().hex[:10]}"
     password = "test-password-123"
 
@@ -353,7 +352,7 @@ def test_failed_login_attempts_are_rate_limited(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "auth_service", auth_service)
     username = f"rate_{uuid4().hex[:10]}@example.com"
     auth_service.create_user(username, "test-password-123")
-    test_client = TestClient(app)
+    test_client = TestClient(main_module.app)
     headers = {"x-forwarded-for": "203.0.113.10"}
 
     for _ in range(AUTH_FAILURE_LIMIT):
@@ -418,7 +417,7 @@ def test_session_cleanup_is_throttled_but_deterministic(tmp_path):
 
 
 def test_market_scan_is_independent_from_holding_add_and_delete():
-    test_client = TestClient(app)
+    test_client = TestClient(main_module.app)
     username = f"user_{uuid4().hex[:10]}"
     password = "test-password-123"
     settings = MOCK_SETTINGS.model_dump()
@@ -450,8 +449,8 @@ def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
     monkeypatch.setattr(main_module, "auth_service", auth_service)
-    admin_client = TestClient(app)
-    user_client = TestClient(app)
+    admin_client = TestClient(main_module.app)
+    user_client = TestClient(main_module.app)
     normal_username = f"user_{uuid4().hex[:10]}@example.com"
     password = "test-password-123"
 

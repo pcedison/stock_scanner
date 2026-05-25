@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional
 
 from backend.services.cache_policy import FINANCIAL_REPORT_DEADLINES, MONTHLY_REVENUE_WINDOW_END_DAY, MONTHLY_REVENUE_WINDOW_START_DAY

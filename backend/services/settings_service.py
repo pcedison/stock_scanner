@@ -47,8 +47,8 @@ def load_settings() -> ScannerSettings:
         result = ScannerSettings()
         try:
             save_settings(result)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("Unable to rewrite default settings at %s: %s", path, exc)
 
     with _settings_cache_lock:
         if _settings_cache.get("sig") != sig:
@@ -81,8 +81,8 @@ def save_settings(settings: ScannerSettings) -> ScannerSettings:
         if tmp_path is not None:
             try:
                 tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("Unable to remove temporary settings file %s: %s", tmp_path, exc)
         raise
     with _settings_cache_lock:
         _settings_cache["sig"] = _file_sig(path)
