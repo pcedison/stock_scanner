@@ -1,12 +1,6 @@
 import pytest
 
 import scripts.build_cloudflare_seed as seed_build
-from scripts.build_cloudflare_seed import (
-    assert_seed_quality,
-    compact_market_scan_payload,
-    rebuild_scan_from_analysis,
-    scan_payload_needs_rebuild,
-)
 
 
 class ObjectResult:
@@ -53,7 +47,7 @@ def test_compact_market_scan_payload_strips_heavy_evidence():
         "excluded": [],
     }
 
-    compact = compact_market_scan_payload(payload)
+    compact = seed_build.compact_market_scan_payload(payload)
 
     assert compact["detailMode"] == "summary"
     assert compact["entry"][0]["stockCode"] == "1234"
@@ -77,9 +71,9 @@ def test_lazy_market_scan_payload_is_rebuilt_from_analysis_results():
         {"stockCode": "3456", "companyName": "Excluded Co", "status": "EXCLUDED"},
     ]
 
-    assert scan_payload_needs_rebuild(lazy_scan) is True
-    rebuilt = rebuild_scan_from_analysis(lazy_scan, analysis_results)
-    compact = compact_market_scan_payload(rebuilt)
+    assert seed_build.scan_payload_needs_rebuild(lazy_scan) is True
+    rebuilt = seed_build.rebuild_scan_from_analysis(lazy_scan, analysis_results)
+    compact = seed_build.compact_market_scan_payload(rebuilt)
 
     assert compact["entry"][0]["stockCode"] == "1234"
     assert compact["watch"][0]["stockCode"] == "2345"
@@ -95,7 +89,7 @@ def test_complete_market_scan_payload_does_not_need_rebuild():
         "excluded": [],
     }
 
-    assert scan_payload_needs_rebuild(scan) is False
+    assert seed_build.scan_payload_needs_rebuild(scan) is False
 
 
 def test_object_market_scan_payload_is_compacted_without_losing_identity():
@@ -114,8 +108,8 @@ def test_object_market_scan_payload_is_compacted_without_losing_identity():
         "excluded": [],
     }
 
-    assert scan_payload_needs_rebuild(scan) is False
-    compact = compact_market_scan_payload(scan)
+    assert seed_build.scan_payload_needs_rebuild(scan) is False
+    compact = seed_build.compact_market_scan_payload(scan)
 
     assert compact["entry"][0]["stockCode"] == "1234"
     assert compact["entry"][0]["companyName"] == "Object Co"
@@ -134,4 +128,4 @@ def test_seed_quality_rejects_empty_companies_when_analysis_is_present(monkeypat
     analysis_by_code = {str(index): {} for index in range(1000)}
 
     with pytest.raises(RuntimeError, match="undersized company seed"):
-        assert_seed_quality(scan_payload, [], analysis_by_code, fallback_source=None)
+        seed_build.assert_seed_quality(scan_payload, [], analysis_by_code, fallback_source=None)

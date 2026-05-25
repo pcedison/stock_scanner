@@ -452,6 +452,42 @@ def test_worker_cache_status_exposes_refresh_job_owner_run(monkeypatch):
     assert payload["recentJobs"][0]["ownerRunUrl"] == "https://github.com/pcedison/stock_scanner/actions/runs/26276779259"
 
 
+def test_worker_cache_status_redacts_refresh_job_error(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=types.SimpleNamespace(GITHUB_REPOSITORY="pcedison/stock_scanner"))
+
+    async def fake_r2_json(key, fallback):
+        assert key == "public/manifest.json"
+        return {"generatedAt": "2026-05-22T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+
+    async def fake_db_all(sql, *params):
+        return [
+            {
+                "id": "job-1",
+                "job_type": "market_scan",
+                "cache_key": "abc",
+                "status": "failed",
+                "reason": "manual",
+                "queued_at": "2026-05-22T00:00:00+00:00",
+                "started_at": "2026-05-22T00:01:00+00:00",
+                "finished_at": "2026-05-22T00:02:00+00:00",
+                "updated_at": "2026-05-22T00:02:00+00:00",
+                "error": "RuntimeError: private cache path",
+                "owner_run_id": "26276779259",
+            }
+        ]
+
+    api.r2_json = fake_r2_json
+    api.db_all = fake_db_all
+
+    payload = asyncio.run(api.cache_status())
+
+    job = payload["recentJobs"][0]
+    assert job["hasError"] is True
+    assert "error" not in job
+    assert "private cache path" not in str(payload)
+
+
 def test_worker_market_scan_uses_precomputed_summary(monkeypatch):
     worker = load_worker_module(monkeypatch)
     cache = FakeR2Cache(
