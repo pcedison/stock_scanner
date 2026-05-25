@@ -53,7 +53,7 @@ def _public_status(value: Any) -> Any:
         has_error = False
         for key, item in value.items():
             if str(key) in _PUBLIC_STATUS_ERROR_KEYS:
-                has_error = has_error or bool(item)
+                has_error = True
                 continue
             redacted[str(key)] = _public_status(item)
         if has_error:
