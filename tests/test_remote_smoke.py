@@ -1,12 +1,16 @@
 import pytest
 
-from scripts.run_remote_smoke import base_url_from_health_url, validate_public_smoke_payloads
+from scripts.run_remote_smoke import REMOTE_SMOKE_USER_AGENT, base_url_from_health_url, validate_public_smoke_payloads
 
 
 def test_base_url_from_health_url_requires_https_api_health():
     assert base_url_from_health_url("https://worker.example/api/health") == "https://worker.example/"
     with pytest.raises(RuntimeError):
         base_url_from_health_url("http://worker.example/api/health")
+
+
+def test_remote_smoke_uses_browser_like_user_agent():
+    assert REMOTE_SMOKE_USER_AGENT.startswith("Mozilla/5.0 ")
 
 
 def test_validate_public_smoke_payloads_accepts_expected_shapes():

@@ -13,11 +13,16 @@ const RENDERER_HELPERS = _mod("StockScannerRenderers", "./renderers.js");
 const DOM_HELPERS = _mod("StockScannerDom", "./dom.js");
 const HOLDING_SIGNAL_HELPERS = _mod("StockScannerHoldingSignals", "./holding_signals.js");
 const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
+const API_CLIENT_HELPERS = _mod("StockScannerApiClient", "./api_client.js");
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
 const { authValidationMessage, isSuperUserIdentity, normalizeAuthUser, normalizeAuthUsername } = AUTH_HELPERS;
 const { DEFAULT_COMPANIES } = REFERENCE_DATA;
 const { STRATEGY_STATUS_DETAILS, STRATEGY_RULE_THRESHOLDS } = STRATEGY_CONTENT;
+const API_CLIENT = API_CLIENT_HELPERS.createApiClient({
+  csrfHeaderName: CSRF_HEADER_NAME,
+  csrfHeaderValue: CSRF_HEADER_VALUE,
+});
 
 const DEFAULT_SETTINGS = {
   auto_scan_full_market: true,
@@ -589,17 +594,20 @@ async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = fal
 }
 
 async function apiJson(url, options = {}) {
-  const { headers = {}, ...rest } = options;
-  const response = await fetch(url, {
-    ...rest,
-    headers: { "Content-Type": "application/json", [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE, ...headers },
-    credentials: "same-origin",
-  });
+  const response = await apiFetch(url, options);
   const text = await response.text();
   if (!response.ok) {
     throw new Error(apiErrorMessage(response, text));
   }
   return text ? JSON.parse(text) : {};
+}
+
+async function apiFetch(url, options = {}) {
+  try {
+    return await API_CLIENT.request(url, options);
+  } catch {
+    throw new Error(apiErrorMessage({ status: 503, headers: { get: () => "" } }, ""));
+  }
 }
 
 function apiErrorMessage(response, text = "") {
@@ -1854,13 +1862,11 @@ async function exportReport(kind, reportFormat) {
     kind === "holdings"
       ? { holdings: state.holdings, settings: state.settings }
       : { settings: state.settings };
-  const response = await fetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
+  const response = await apiFetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
     body: JSON.stringify(payload),
-    credentials: "same-origin",
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(apiErrorMessage(response, await response.text()));
   const blob = await response.blob();
   const extension = reportFormat === "csv" ? "csv" : "md";
   const url = URL.createObjectURL(blob);
@@ -2299,6 +2305,9 @@ if (typeof module !== "undefined") {
     loadHoldingsFromStorage,
     normalizeText,
     apiErrorMessage,
+    apiFetch,
+    apiJson,
+    API_CLIENT,
     normalizeAuthUsername,
     normalizeAuthUser,
     isSuperUserIdentity,
