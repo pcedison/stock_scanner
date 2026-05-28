@@ -41,6 +41,17 @@ class RemoteClient:
         self.opener = build_opener(HTTPCookieProcessor(CookieJar()))
 
     def request_json(self, path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        status, data = self.request_json_status(path, method=method, payload=payload)
+        if status >= 400:
+            raise RuntimeError(f"{method} {path} returned HTTP {status}: {json.dumps(data, ensure_ascii=False)[:500]}")
+        return data
+
+    def request_json_status(
+        self,
+        path: str,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {
             "Accept": "application/json",
@@ -52,10 +63,13 @@ class RemoteClient:
         request = Request(urljoin(self.base_url, path.lstrip("/")), data=body, headers=headers, method=method)
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return response.status, json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{method} {path} returned HTTP {exc.code}: {body_text[:500]}") from exc
+            try:
+                return exc.code, json.loads(body_text)
+            except json.JSONDecodeError as json_exc:
+                raise RuntimeError(f"{method} {path} returned HTTP {exc.code}: {body_text[:500]}") from json_exc
         except URLError as exc:
             raise RuntimeError(f"{method} {path} failed to connect: {exc.reason}") from exc
         except json.JSONDecodeError as exc:
@@ -69,11 +83,14 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     data_sources = payloads.get("dataSources") or {}
     market_scan = payloads.get("marketScan") or {}
     auth_me = payloads.get("authMe") or {}
+    bad_login = payloads.get("badLogin") or {}
 
     if health.get("runtime") != "cloudflare-python-worker":
         problems.append("health.runtime is not cloudflare-python-worker")
     if auth_me.get("authenticated") is not False or auth_me.get("user") is not None:
         problems.append("auth/me without a session should return authenticated=false")
+    if bad_login.get("status") != 401:
+        problems.append(f"bad auth/login returned HTTP {bad_login.get('status')}, expected 401")
     if not isinstance(app_status.get("dataSourceStatus"), dict):
         problems.append("app-status is missing dataSourceStatus")
     if not isinstance(app_status.get("schedulerAutoScan"), dict):
@@ -122,6 +139,13 @@ def run_public_smoke(
             payloads = {
                 "health": health,
                 "authMe": client.request_json("/api/auth/me"),
+                "badLogin": {
+                    "status": client.request_json_status(
+                        "/api/auth/login",
+                        method="POST",
+                        payload={"username": "remote-smoke-not-real@example.com", "password": "not-the-password"},
+                    )[0],
+                },
                 "appStatus": client.request_json("/api/app-status"),
                 "dataSources": client.request_json("/api/data-sources/status"),
                 "marketScan": client.request_json(

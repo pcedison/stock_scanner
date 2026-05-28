@@ -30,6 +30,12 @@ def set_response_header(response, key: str, value: str) -> None:
         headers[key] = value
 
 
+def d1_param(value):
+    # Pyodide may pass Python None to JS as undefined, which D1 rejects.
+    # Empty strings round-trip as "not set" for the nullable fields we bind.
+    return "" if value is None else value
+
+
 class Api:
     def __init__(self, env):
         self.env = env
@@ -450,19 +456,19 @@ class Api:
     async def db_run(self, sql: str, *params):
         statement = self.env.DB.prepare(sql)
         if params:
-            statement = statement.bind(*params)
+            statement = statement.bind(*(d1_param(param) for param in params))
         return js_to_py(await statement.run())
 
     async def db_first(self, sql: str, *params):
         statement = self.env.DB.prepare(sql)
         if params:
-            statement = statement.bind(*params)
+            statement = statement.bind(*(d1_param(param) for param in params))
         return js_to_py(await statement.first())
 
     async def db_all(self, sql: str, *params):
         statement = self.env.DB.prepare(sql)
         if params:
-            statement = statement.bind(*params)
+            statement = statement.bind(*(d1_param(param) for param in params))
         result = js_to_py(await statement.all())
         if isinstance(result, dict):
             return result.get("results", [])
@@ -578,7 +584,7 @@ class Api:
         now = datetime.now(timezone.utc)
         stale_before = (now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS)).isoformat()
         await self.db_run(
-            "DELETE FROM auth_attempts WHERE locked_until IS NULL AND first_failed_at <= ?",
+            "DELETE FROM auth_attempts WHERE (locked_until IS NULL OR locked_until = '') AND first_failed_at <= ?",
             stale_before,
         )
         row = await self.db_first("SELECT locked_until FROM auth_attempts WHERE identifier = ?", identifier)
@@ -682,7 +688,7 @@ class Api:
                 "stockCode": row["stock_code"],
                 "name": row.get("name"),
                 "shares": row.get("shares") or 0,
-                "averageCost": row.get("average_cost"),
+                "averageCost": None if row.get("average_cost") in {"", None} else row.get("average_cost"),
             }
             for row in rows
         ]
@@ -703,7 +709,7 @@ class Api:
             holding["stockCode"],
             holding.get("name") or "",
             holding.get("shares", 0),
-            holding.get("averageCost"),
+            d1_param(holding.get("averageCost")),
             now,
             now,
         )
@@ -726,7 +732,7 @@ class Api:
                     h["stockCode"],
                     h.get("name") or "",
                     h.get("shares", 0),
-                    h.get("averageCost"),
+                    d1_param(h.get("averageCost")),
                     now,
                     now,
                 )
