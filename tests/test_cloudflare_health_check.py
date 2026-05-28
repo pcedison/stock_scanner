@@ -2,7 +2,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from scripts.check_cloudflare_health import validate_health_payload, validate_health_url
+from scripts.check_cloudflare_health import CHECK_USER_AGENT, validate_health_payload, validate_health_url
+
+
+def test_health_check_uses_browser_like_user_agent():
+    assert CHECK_USER_AGENT.startswith("Mozilla/5.0 ")
 
 
 def test_validate_health_payload_accepts_matching_manifest_counts():

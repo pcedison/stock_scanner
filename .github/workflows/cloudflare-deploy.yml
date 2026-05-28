@@ -157,10 +157,23 @@ jobs:
             --max-cache-age-hours 36 \
             --reject-offline-seed
 
+      - name: Verify deployed Worker CORS for Pages fallback
+        run: |
+          python scripts/check_cloudflare_cors.py \
+            --health-url "$CF_WORKER_HEALTH_URL" \
+            --origin "https://${CF_PAGES_PROJECT}.pages.dev"
+
       - name: Run deployed public smoke
         run: |
           python scripts/run_remote_smoke.py \
             --health-url "$CF_WORKER_HEALTH_URL" \
+            --max-cache-age-hours 36 \
+            --reject-offline-seed
+
+      - name: Run deployed Pages API proxy smoke
+        run: |
+          python scripts/run_remote_smoke.py \
+            --health-url "https://${CF_PAGES_PROJECT}.pages.dev/api/health" \
             --max-cache-age-hours 36 \
             --reject-offline-seed
 

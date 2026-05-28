@@ -11,7 +11,7 @@ Current target: Cloudflare Pages + Python Worker + D1 + R2.
 - D1 database: `stock-scanner-beta-db`
 - R2 bucket: `stock-scanner-beta-cache`
 
-Pages proxies `/api/*` through `frontend/functions/api/[[path]].js`. The frontend still calls same-origin `/api`, so local FastAPI and the Cloudflare Worker share the same browser flows.
+Pages proxies `/api/*` through `frontend/functions/api/[[path]].js`. The frontend normally calls same-origin `/api`, so local FastAPI and the Cloudflare Worker share the same browser flows. The proxy only forwards an allowlist of application headers to avoid Cloudflare loop/header issues. If the Pages proxy returns a transient 5xx on public data endpoints, the browser API client can fall back to the Worker origin declared by `stock-scanner-api-origin`; authenticated account/admin mutations stay on the same-origin proxy to avoid cross-origin cookie and duplicate-write edge cases.
 
 ## Required Settings
 
@@ -51,8 +51,10 @@ Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production
 8. Apply pending D1 migrations from `cloudflare/migrations/`.
 9. Deploy Worker and Pages.
 10. Verify deployed `/api/health` freshness.
-11. Run deployed public smoke against `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
-12. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
+11. Verify Worker CORS for `https://stock-scanner-beta.pages.dev`, including the POST preflight used by the browser fallback.
+12. Run deployed public smoke against the Worker `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
+13. Run the same smoke path through `https://stock-scanner-beta.pages.dev/api/health` to verify the Pages API proxy that browsers actually use.
+14. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
 
 D1 restore remains an operator-reviewed recovery action. Generate a non-destructive plan with:
 
@@ -115,4 +117,5 @@ Remote production smoke:
 ```powershell
 $env:CF_WORKER_HEALTH_URL='https://stock-scanner-beta-api.<account>.workers.dev/api/health'
 python scripts\run_remote_smoke.py --health-url $env:CF_WORKER_HEALTH_URL --manifest cloudflare\seed\manifest.json
+python scripts\run_remote_smoke.py --health-url 'https://stock-scanner-beta.pages.dev/api/health' --manifest cloudflare\seed\manifest.json
 ```

@@ -450,6 +450,31 @@ def test_worker_cache_status_exposes_refresh_job_owner_run(monkeypatch):
 
     assert payload["recentJobs"][0]["ownerRunId"] == "26276779259"
     assert payload["recentJobs"][0]["ownerRunUrl"] == "https://github.com/pcedison/stock_scanner/actions/runs/26276779259"
+    assert payload["recentJobs"][0]["hasError"] is False
+
+
+def test_worker_cache_status_treats_blank_refresh_job_error_as_empty(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=types.SimpleNamespace(GITHUB_REPOSITORY="pcedison/stock_scanner"))
+
+    payload = api.refresh_job_payload(
+        {
+            "id": "job-1",
+            "job_type": "market_scan",
+            "cache_key": "abc",
+            "status": "success",
+            "reason": "manual",
+            "queued_at": "2026-05-22T00:00:00+00:00",
+            "started_at": "2026-05-22T00:01:00+00:00",
+            "finished_at": "2026-05-22T00:02:00+00:00",
+            "updated_at": "2026-05-22T00:02:00+00:00",
+            "error": "",
+            "owner_run_id": "26276779259",
+        }
+    )
+
+    assert payload["hasError"] is False
+    assert "error" not in payload
 
 
 def test_worker_cache_status_redacts_refresh_job_error(monkeypatch):

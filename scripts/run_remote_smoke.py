@@ -17,6 +17,9 @@ except ModuleNotFoundError:  # Imported as scripts.run_remote_smoke under pytest
     from scripts.check_cloudflare_health import validate_health_payload
 
 
+REMOTE_SMOKE_USER_AGENT = "Mozilla/5.0 stock-scanner-remote-smoke/1.0"
+
+
 def base_url_from_health_url(health_url: str) -> str:
     parsed = urlparse(health_url)
     if parsed.scheme != "https" or not parsed.netloc or not parsed.path.endswith("/api/health"):
@@ -41,7 +44,7 @@ class RemoteClient:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {
             "Accept": "application/json",
-            "User-Agent": "stock-scanner-remote-smoke/1.0",
+            "User-Agent": REMOTE_SMOKE_USER_AGENT,
             "X-Stock-Scanner-CSRF": "1",
         }
         if body is not None:

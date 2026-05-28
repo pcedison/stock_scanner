@@ -11,6 +11,9 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
+CHECK_USER_AGENT = "Mozilla/5.0 stock-scanner-health-check/1.0"
+
+
 def validate_health_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc or not parsed.path.endswith("/api/health"):
@@ -20,7 +23,7 @@ def validate_health_url(url: str) -> str:
 
 def _load_json_url(url: str, timeout: int) -> dict[str, Any]:
     safe_url = validate_health_url(url)
-    request = Request(safe_url, headers={"User-Agent": "stock-scanner-health-check/1.0"})
+    request = Request(safe_url, headers={"User-Agent": CHECK_USER_AGENT})
     try:
         # validate_health_url restricts scheme/shape before urlopen.
         with urlopen(request, timeout=timeout) as response:  # nosec B310

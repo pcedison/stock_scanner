@@ -99,6 +99,85 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_api_client_falls_back_to_worker_after_pages_proxy_5xx():
+    script = r"""
+const { createApiClient } = require("./frontend/api_client.js");
+const calls = [];
+global.fetch = async (url, options) => {
+  calls.push({ url, credentials: options.credentials, csrf: options.headers.get("X-Stock-Scanner-CSRF") });
+  if (String(url).startsWith("/api/")) {
+    return { ok: false, status: 503, text: async () => "proxy down", headers: { get: () => "text/plain" } };
+  }
+  return { ok: true, status: 200, text: async () => '{"ok":true}', headers: { get: () => "application/json" } };
+};
+const client = createApiClient({
+  csrfHeaderName: "X-Stock-Scanner-CSRF",
+  csrfHeaderValue: "1",
+  fallbackOrigin: "https://worker.example",
+});
+(async () => {
+  const first = await client.request("/api/scan/market", { method: "POST", body: "{}" });
+  const second = await client.request("/api/settings");
+  console.log(JSON.stringify({ firstStatus: first.status, secondStatus: second.status, calls, activeOrigin: client.activeOrigin() }));
+})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["firstStatus"] == 200
+    assert payload["secondStatus"] == 200
+    assert [item["url"] for item in payload["calls"]] == [
+        "/api/scan/market",
+        "https://worker.example/api/scan/market",
+        "https://worker.example/api/settings",
+    ]
+    assert payload["calls"][1]["credentials"] == "include"
+    assert payload["calls"][1]["csrf"] == "1"
+    assert payload["activeOrigin"] == "https://worker.example"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_api_client_does_not_direct_fallback_for_account_mutations():
+    script = r"""
+const { createApiClient } = require("./frontend/api_client.js");
+const calls = [];
+global.fetch = async (url, options) => {
+  calls.push({ url, method: options.method });
+  return { ok: false, status: 503, text: async () => "proxy down", headers: { get: () => "text/plain" } };
+};
+const client = createApiClient({
+  csrfHeaderName: "X-Stock-Scanner-CSRF",
+  csrfHeaderValue: "1",
+  fallbackOrigin: "https://worker.example",
+});
+(async () => {
+  const response = await client.request("/api/auth/register", { method: "POST", body: "{}" });
+  console.log(JSON.stringify({ status: response.status, calls, activeOrigin: client.activeOrigin() }));
+})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["status"] == 503
+    assert payload["calls"] == [{"url": "/api/auth/register", "method": "POST"}]
+    assert payload["activeOrigin"] == ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
 const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
