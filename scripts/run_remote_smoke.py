@@ -68,9 +68,12 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     app_status = payloads.get("appStatus") or {}
     data_sources = payloads.get("dataSources") or {}
     market_scan = payloads.get("marketScan") or {}
+    auth_me = payloads.get("authMe") or {}
 
     if health.get("runtime") != "cloudflare-python-worker":
         problems.append("health.runtime is not cloudflare-python-worker")
+    if auth_me.get("authenticated") is not False or auth_me.get("user") is not None:
+        problems.append("auth/me without a session should return authenticated=false")
     if not isinstance(app_status.get("dataSourceStatus"), dict):
         problems.append("app-status is missing dataSourceStatus")
     if not isinstance(app_status.get("schedulerAutoScan"), dict):
@@ -118,6 +121,7 @@ def run_public_smoke(
             )
             payloads = {
                 "health": health,
+                "authMe": client.request_json("/api/auth/me"),
                 "appStatus": client.request_json("/api/app-status"),
                 "dataSources": client.request_json("/api/data-sources/status"),
                 "marketScan": client.request_json(

@@ -178,6 +178,49 @@ const client = createApiClient({
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+def test_api_client_direct_mode_uses_worker_for_account_mutations():
+    script = r"""
+const { createApiClient } = require("./frontend/api_client.js");
+const calls = [];
+global.fetch = async (url, options) => {
+  calls.push({ url, method: options.method, credentials: options.credentials, csrf: options.headers.get("X-Stock-Scanner-CSRF") });
+  return { ok: true, status: 200, text: async () => '{"authenticated":true}', headers: { get: () => "application/json" } };
+};
+const client = createApiClient({
+  apiMode: "direct",
+  csrfHeaderName: "X-Stock-Scanner-CSRF",
+  csrfHeaderValue: "1",
+  fallbackOrigin: "https://worker.example",
+});
+(async () => {
+  const response = await client.request("/api/auth/register", { method: "POST", body: "{}" });
+  console.log(JSON.stringify({ status: response.status, calls, activeOrigin: client.activeOrigin(), mode: client.apiMode() }));
+})();
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["status"] == 200
+    assert payload["calls"] == [
+        {
+            "url": "https://worker.example/api/auth/register",
+            "method": "POST",
+            "credentials": "include",
+            "csrf": "1",
+        }
+    ]
+    assert payload["activeOrigin"] == "https://worker.example"
+    assert payload["mode"] == "direct"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
 const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");

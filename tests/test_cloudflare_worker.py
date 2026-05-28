@@ -477,6 +477,14 @@ def test_worker_cache_status_treats_blank_refresh_job_error_as_empty(monkeypatch
     assert "error" not in payload
 
 
+def test_worker_session_cookie_allows_cross_site_pages_fetch(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    assert "SameSite=None" in worker.session_cookie("token")
+    assert "Secure" in worker.session_cookie("token")
+    assert "SameSite=None" in worker.clear_session_cookie()
+
+
 def test_worker_cache_status_redacts_refresh_job_error(monkeypatch):
     worker = load_worker_module(monkeypatch)
     api = worker.Api(env=types.SimpleNamespace(GITHUB_REPOSITORY="pcedison/stock_scanner"))
