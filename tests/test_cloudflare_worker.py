@@ -382,12 +382,14 @@ def test_worker_db_helpers_normalize_d1_shapes(monkeypatch):
     run_result = asyncio.run(api.db_run("UPDATE items SET value = ?", 1))
     first_result = asyncio.run(api.db_first("SELECT * FROM items WHERE id = ?", 1))
     all_result = asyncio.run(api.db_all("SELECT * FROM items"))
+    asyncio.run(api.db_run("UPDATE items SET optional_value = ?", None))
 
     assert run_result["success"] is True
     assert first_result == {"id": 1, "name": "row"}
     assert all_result == [{"id": 1}, {"id": 2}]
     assert fake_db.prepared[0].params == (1,)
     assert fake_db.prepared[1].params == (1,)
+    assert fake_db.prepared[3].params == ("",)
 
 
 def test_worker_r2_json_caches_misses_and_parses_json(monkeypatch):
@@ -660,7 +662,7 @@ def test_worker_replace_holdings_uses_single_d1_batch_and_preserves_null_average
     assert batch[0].params == (42,)
     assert "INSERT INTO holdings" in batch[1].sql
     assert batch[1].params[:4] == (42, "2330", "台積電", 1000)
-    assert batch[1].params[4] is None
+    assert batch[1].params[4] == ""
     assert batch[2].params[:4] == (42, "2357", "華碩", 200)
     assert batch[2].params[4] == 510.5
     assert result[0]["averageCost"] is None
@@ -681,4 +683,4 @@ def test_worker_upsert_holding_preserves_null_average_cost(monkeypatch):
     assert len(calls) == 1
     assert "INSERT INTO holdings" in calls[0][0]
     assert calls[0][1][:4] == (7, "2330", "台積電", 3)
-    assert calls[0][1][4] is None
+    assert calls[0][1][4] == ""
