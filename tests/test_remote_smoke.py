@@ -17,6 +17,7 @@ def test_validate_public_smoke_payloads_accepts_expected_shapes():
     summary = validate_public_smoke_payloads(
         {
             "health": {"runtime": "cloudflare-python-worker", "status": "ok"},
+            "authMe": {"authenticated": False, "user": None},
             "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
             "dataSources": {"activeProvider": "CloudflareR2Seed"},
             "marketScan": {
@@ -38,6 +39,7 @@ def test_validate_public_smoke_payloads_rejects_wrong_runtime():
         validate_public_smoke_payloads(
             {
                 "health": {"runtime": "fastapi", "status": "ok"},
+                "authMe": {"authenticated": False, "user": None},
                 "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {}},
                 "dataSources": {"activeProvider": "CloudflareR2Seed"},
                 "marketScan": {"entry": [{"stockCode": str(index)} for index in range(1000)], "cacheStatus": {}},

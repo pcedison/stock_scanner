@@ -170,12 +170,11 @@ jobs:
             --max-cache-age-hours 36 \
             --reject-offline-seed
 
-      - name: Run deployed Pages API proxy smoke
+      - name: Verify deployed Pages API redirect
         run: |
-          python scripts/run_remote_smoke.py \
-            --health-url "https://${CF_PAGES_PROJECT}.pages.dev/api/health" \
-            --max-cache-age-hours 36 \
-            --reject-offline-seed
+          python scripts/check_pages_api_redirect.py \
+            --url "https://${CF_PAGES_PROJECT}.pages.dev/api/health" \
+            --expected-origin "https://stock-scanner-beta-api.pcedison.workers.dev"
 
       - name: Roll back Worker after failed post-deploy verification
         if: failure() && steps.deploy-worker.outcome == 'success'

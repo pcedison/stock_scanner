@@ -356,12 +356,12 @@ def parse_cookies(cookie_header: str | None) -> dict[str, str]:
 def session_cookie(token: str) -> str:
     return (
         f"{SESSION_COOKIE_NAME}={token}; Max-Age={SESSION_MAX_AGE_SECONDS}; "
-        "Path=/; HttpOnly; SameSite=Lax; Secure"
+        "Path=/; HttpOnly; SameSite=None; Secure"
     )
 
 
 def clear_session_cookie() -> str:
-    return f"{SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure"
+    return f"{SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=None; Secure"
 
 
 def js_to_py(value):

@@ -45,6 +45,26 @@ function configuredApiOrigin(explicitOrigin) {
   return DEFAULT_WORKER_API_ORIGIN;
 }
 
+function configuredApiMode(explicitMode) {
+  const normalized = String(explicitMode || "").trim().toLowerCase();
+  if (["direct", "fallback", "same-origin"].includes(normalized)) return normalized;
+
+  if (typeof document !== "undefined") {
+    const meta = document.querySelector('meta[name="stock-scanner-api-mode"]');
+    const metaMode = String(meta?.getAttribute("content") || "").trim().toLowerCase();
+    if (["direct", "fallback", "same-origin"].includes(metaMode)) return metaMode;
+  }
+
+  const runtimeMode = String(globalThis.StockScannerConfig?.apiMode || "").trim().toLowerCase();
+  if (["direct", "fallback", "same-origin"].includes(runtimeMode)) return runtimeMode;
+
+  if (typeof location !== "undefined" && String(location.hostname || "").endsWith(".pages.dev")) {
+    return "direct";
+  }
+
+  return "fallback";
+}
+
 function isApiPath(url) {
   return String(url || "").startsWith("/api/");
 }
@@ -78,10 +98,17 @@ function cloneHeaders(headers = {}, csrfHeaderName, csrfHeaderValue) {
 
 function createApiClient(options = {}) {
   const fallbackOrigin = configuredApiOrigin(options.fallbackOrigin);
+  const apiMode = configuredApiMode(options.apiMode);
   let activeOrigin = "";
 
   function candidates(url, method) {
-    if (!isApiPath(url) || !fallbackOrigin || !allowsDirectFallback(url, method)) {
+    if (!isApiPath(url) || !fallbackOrigin || apiMode === "same-origin") {
+      return [{ url, origin: "" }];
+    }
+    if (apiMode === "direct") {
+      return [{ url: apiUrlForOrigin(url, fallbackOrigin), origin: fallbackOrigin }];
+    }
+    if (!allowsDirectFallback(url, method)) {
       return [{ url, origin: "" }];
     }
     const sameOrigin = { url, origin: "" };
@@ -125,11 +152,13 @@ function createApiClient(options = {}) {
     request,
     activeOrigin: () => activeOrigin,
     fallbackOrigin: () => fallbackOrigin,
+    apiMode: () => apiMode,
   };
 }
 
 const StockScannerApiClient = {
   createApiClient,
+  configuredApiMode,
   configuredApiOrigin,
   allowsDirectFallback,
   normalizeApiOrigin,

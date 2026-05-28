@@ -5,7 +5,7 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260528-api-resilience"
+APP_VERSION = "20260528-direct-worker"
 DOM_VERSION = "20260525-dom-hardening"
 
 
@@ -118,7 +118,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert 'src="/strategy_content.js?v=20260522-frontend-split"' in index_html
     assert 'src="/storage.js?v=20260522-frontend-split"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
-    assert 'src="/api_client.js?v=20260528-api-resilience"' in index_html
+    assert 'src="/api_client.js?v=20260528-direct-worker"' in index_html
     assert f'src="/app.js?v={APP_VERSION}"' in index_html
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css

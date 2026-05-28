@@ -58,7 +58,7 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "post-deploy health": r"scripts/check_cloudflare_health\.py",
         "post-deploy Worker CORS": r"scripts/check_cloudflare_cors\.py[\s\S]*--origin[\s\S]*https://\$\{CF_PAGES_PROJECT\}\.pages\.dev",
         "post-deploy remote smoke": r"scripts/run_remote_smoke\.py",
-        "Pages API proxy smoke": r"run_remote_smoke\.py[\s\S]*https://\$\{CF_PAGES_PROJECT\}\.pages\.dev/api/health",
+        "Pages API redirect check": r"scripts/check_pages_api_redirect\.py[\s\S]*https://\$\{CF_PAGES_PROJECT\}\.pages\.dev/api/health",
         "post-deploy freshness gate": r"--max-cache-age-hours",
         "offline seed rejection": r"--reject-offline-seed",
         "Worker super user secret check": r"check_cloudflare_worker_secrets\.py.*SUPER_USER_USERNAME",
