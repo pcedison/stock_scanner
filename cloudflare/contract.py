@@ -17,6 +17,7 @@ asserts both runtimes resolve to these exact values.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 # Password hashing
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
@@ -35,6 +36,22 @@ CSRF_HEADER_NAME = "x-stock-scanner-csrf"
 CSRF_HEADER_VALUE = "1"
 UNSAFE_API_METHODS = frozenset({"POST", "PUT", "DELETE"})
 
+# CORS origin classification (loopback hosts allowed only outside production)
+LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def origin_host(origin: str) -> str:
+    return (urlparse(str(origin or "")).hostname or "").lower()
+
+
+def is_local_cors_origin(origin: str) -> bool:
+    return origin_host(origin) in LOCAL_CORS_HOSTS
+
+
+def is_https_origin(origin: str) -> bool:
+    return urlparse(str(origin or "")).scheme.lower() == "https"
+
+
 __all__ = (
     "PASSWORD_ALGORITHM",
     "PASSWORD_ITERATIONS",
@@ -45,4 +62,8 @@ __all__ = (
     "CSRF_HEADER_NAME",
     "CSRF_HEADER_VALUE",
     "UNSAFE_API_METHODS",
+    "LOCAL_CORS_HOSTS",
+    "origin_host",
+    "is_local_cors_origin",
+    "is_https_origin",
 )

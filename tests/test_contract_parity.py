@@ -23,6 +23,10 @@ CSRF_CONSTANTS = (
     "CSRF_HEADER_VALUE",
     "UNSAFE_API_METHODS",
 )
+# CORS helpers shared via contract. main.py consumes the two predicates; the
+# Worker re-exports the helper trio (LOCAL_CORS_HOSTS stays contract-internal).
+CORS_BACKEND = ("is_local_cors_origin", "is_https_origin")
+CORS_WORKER = ("origin_host", "is_local_cors_origin", "is_https_origin")
 
 
 def _comparable(value):
@@ -36,11 +40,11 @@ def test_backend_auth_uses_shared_contract_constants():
 
 
 def test_backend_main_uses_shared_contract_constants():
-    for name in CSRF_CONSTANTS:
+    for name in CSRF_CONSTANTS + CORS_BACKEND:
         assert getattr(main, name) == getattr(contract, name), name
 
 
 def test_worker_runtime_matches_shared_contract_constants(monkeypatch):
     worker = load_worker_module(monkeypatch)
-    for name in AUTH_CONSTANTS + CSRF_CONSTANTS:
+    for name in AUTH_CONSTANTS + CSRF_CONSTANTS + CORS_WORKER:
         assert _comparable(getattr(worker, name)) == _comparable(getattr(contract, name)), name
