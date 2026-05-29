@@ -200,7 +200,10 @@
                   <h2 id="results-title">掃描結果</h2>
                   <p class="section-subtitle">依設定掃描 Mock 樣本或官方 TWSE/TPEx 月營收 universe。</p>
                 </div>
-                <span id="scan-time" class="muted"></span>
+                <div class="results-heading-actions">
+                  <span id="scan-time" class="muted"></span>
+                  <button id="refresh-market-scan-btn" class="secondary-btn" type="button">重新整理掃描</button>
+                </div>
               </div>
               <div class="tabs" aria-label="掃描結果分類">
                 <button class="tab active" type="button" data-tab="market">股市清單</button>
@@ -356,6 +359,6 @@
     <script src="/navigation.js?v=20260530-nav-split" defer></script>
     <script src="/normalize.js?v=20260530-normalize-split" defer></script>
     <script src="/api_client.js?v=20260530-cacheable-scan-get" defer></script>
-    <script src="/app.js?v=20260530-normalize-split" defer></script>
+    <script src="/app.js?v=20260530-refresh-button" defer></script>
   </body>
 </html>

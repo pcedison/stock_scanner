@@ -96,6 +96,31 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   expect(scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force")).toBeFalsy();
 });
 
+test("manual refresh button forces a POST scan", async ({ page, isMobile }) => {
+  const scanRequests: { method: string; body: any }[] = [];
+  await page.route("**/api/scan/market", async (route) => {
+    const request = route.request();
+    let body: any = null;
+    if (request.method() === "POST") {
+      try {
+        body = request.postDataJSON();
+      } catch {
+        body = {};
+      }
+    }
+    scanRequests.push({ method: request.method(), body });
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  await page.locator("#refresh-market-scan-btn").click();
+  await expect
+    .poll(() => scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force"))
+    .toBeTruthy();
+});
+
 test("settings stay read-only for non-admin users and CSP is strict", async ({ page, isMobile }) => {
   const response = await page.goto("/");
   expect(response?.headers()["content-security-policy"]).not.toContain("unsafe-inline");
