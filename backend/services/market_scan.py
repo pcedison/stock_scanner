@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from backend.services.filing_calendar import filing_context
@@ -85,7 +85,7 @@ def scan_market_payload(
     data_source = "mock" if settings.use_mock_data else "official_twse_tpex_monthly_revenue"
     note = _MOCK_NOTE if settings.use_mock_data else _OFFICIAL_NOTE
     return {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "generatedAt": datetime.now(UTC).isoformat(),
         "dataSource": data_source,
         "filingContext": context,
         "universeSize": len(entry) + len(watch) + len(excluded),

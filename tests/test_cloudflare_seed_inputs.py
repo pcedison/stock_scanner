@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -76,7 +76,7 @@ def test_seed_freshness_rejects_stale_manifest():
     summary = {"generatedAt": "2026-01-01T00:00:00+00:00"}
 
     with pytest.raises(ValueError, match="maximum allowed"):
-        validate_seed_freshness(summary, max_age_days=45, now=datetime(2026, 5, 18, tzinfo=timezone.utc))
+        validate_seed_freshness(summary, max_age_days=45, now=datetime(2026, 5, 18, tzinfo=UTC))
 
 
 def test_validate_seed_zip_rejects_empty_history(tmp_path):

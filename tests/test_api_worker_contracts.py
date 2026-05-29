@@ -4,9 +4,9 @@ import asyncio
 import inspect
 import json
 import types
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +16,6 @@ from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, AuthService, AuthUser
 from tests.test_cloudflare_worker import load_worker_module
-
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "api_worker_contracts.json").read_text(encoding="utf-8"))
 

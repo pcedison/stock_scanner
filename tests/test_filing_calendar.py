@@ -1,6 +1,10 @@
 from datetime import date
 
-from backend.services.filing_calendar import active_financial_report_event, filing_context, latest_monthly_revenue_period
+from backend.services.filing_calendar import (
+    active_financial_report_event,
+    filing_context,
+    latest_monthly_revenue_period,
+)
 
 
 def test_filing_context_identifies_q1_window():

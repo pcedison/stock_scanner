@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from backend.adapters.official_fundamentals import OfficialBalanceSheetRow, OfficialIncomeStatementRow
-
 
 DEFAULT_HISTORY_PATH = Path(__file__).resolve().parents[2] / "data" / "official_fundamentals_history.json"
 
@@ -156,7 +156,7 @@ class OfficialFundamentalsHistoryStore:
                 "incomeSource": income.source,
             }
             if record != existing_base:
-                company_records[period] = {**record, "lastSeenAt": datetime.now(timezone.utc).isoformat()}
+                company_records[period] = {**record, "lastSeenAt": datetime.now(UTC).isoformat()}
                 changed += 1
             touched += 1
 
@@ -180,13 +180,13 @@ class OfficialFundamentalsHistoryStore:
                 "balanceSource": balance.source,
             }
             if record != existing_base:
-                company_records[period] = {**record, "lastSeenAt": datetime.now(timezone.utc).isoformat()}
+                company_records[period] = {**record, "lastSeenAt": datetime.now(UTC).isoformat()}
                 changed += 1
             touched += 1
 
         self._prune(quarters)
         if changed:
-            payload["updatedAt"] = datetime.now(timezone.utc).isoformat()
+            payload["updatedAt"] = datetime.now(UTC).isoformat()
             self._save(payload)
 
         return {

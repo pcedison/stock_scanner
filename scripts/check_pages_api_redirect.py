@@ -6,7 +6,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
-
 CHECK_USER_AGENT = "Mozilla/5.0 stock-scanner-pages-api-redirect-check/1.0"
 
 

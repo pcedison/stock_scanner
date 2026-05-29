@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 import zipfile
 from pathlib import Path
-
-
-import sys
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 _SCRIPTS_DIR = Path(__file__).resolve().parent

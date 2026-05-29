@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Iterable
+from typing import Any
 
 import httpx
 
@@ -260,7 +261,7 @@ class OfficialFundamentalsAdapter:
             rows = payload.get("data", [])
             valuations: dict[str, OfficialValuationRow] = {}
             for item in rows:
-                row = dict(zip(fields, item))
+                row = dict(zip(fields, item, strict=False))
                 stock_code = str(row.get("證券代號") or "").strip()
                 if not stock_code or not stock_code.isdigit():
                     continue

@@ -55,14 +55,23 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B", "SIM"]
+# worker.py 以 `from worker_support import *` 注入 Pyodide 執行環境所需的全部
+# 符號（已標 noqa: F403），因此 F405（使用可能源自 star import 的名稱）為預期行為。
+"cloudflare/worker.py" = ["F405"]
+# 此 script 直接執行，需先 sys.path.insert(ROOT) 才能 import backend 套件，
+# 因此 backend 匯入必然在頂部之後（E402）。
+"scripts/generate_official_failed_report.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["backend", "cloudflare", "scripts"]
 
 # --------------------------------------------------------------------------- #
 # mypy: static type checking
-# Run:  python -m mypy backend cloudflare scripts
-# Starts lenient so it can be adopted incrementally; tighten module-by-module.
+# CI gate scope: `python -m mypy backend`（backend 套件 import 路徑單一、可乾淨檢查）。
+# cloudflare/ 因 Pyodide 平面 import 與本地套件 import 造成同檔雙模組名，scripts/
+# 需 sys.path 注入，兩者尚未納入 gate，待後續以 explicit_package_bases 處理。
+# 採漸進式導入：下方 overrides 暫時略過目前仍有型別缺口的模組（多為財報數值的
+# None 處理），逐模組補齊型別後再從清單移除，最終達成全 backend 嚴格檢查。
 # --------------------------------------------------------------------------- #
 [tool.mypy]
 python_version = "3.12"
@@ -73,6 +82,20 @@ warn_unused_configs = true
 no_implicit_optional = true
 check_untyped_defs = true
 exclude = "(^|/)(\\.tmp|\\.venv|node_modules|cloudflare/(python_modules|seed))/"
+
+# 漸進導入待辦：以下模組仍有待補的型別缺口，暫時不擋 CI。
+# 每補齊一個模組的型別就從這份清單移除一行。
+[[tool.mypy.overrides]]
+module = [
+    "backend.adapters.fundamentals_history",
+    "backend.adapters.official_fundamentals",
+    "backend.services.official_data_provider",
+    "backend.services.rules",
+    "backend.services.calendar",
+    "backend.services.filing_calendar",
+    "backend.services.auth",
+]
+ignore_errors = true
 
 # --------------------------------------------------------------------------- #
 # pytest

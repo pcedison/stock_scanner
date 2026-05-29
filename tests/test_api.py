@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
@@ -9,7 +9,6 @@ import backend.main as main_module
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService
 from backend.services.settings_service import load_settings, save_settings
-
 
 client = TestClient(main_module.app)
 MOCK_SETTINGS = ScannerSettings(use_mock_data=True)
@@ -383,7 +382,7 @@ def test_session_cleanup_is_throttled_but_deterministic(tmp_path):
     service = AuthService(tmp_path / "auth.sqlite3")
     user = service.create_user(f"cleanup_{uuid4().hex[:10]}@example.com", "test-password-123")
     token = service.create_session(user.id)
-    old_time = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    old_time = (datetime.now(UTC) - timedelta(days=1)).isoformat()
 
     def insert_expired_session(token_value: str) -> None:
         with service._connect() as connection:
@@ -411,7 +410,7 @@ def test_session_cleanup_is_throttled_but_deterministic(tmp_path):
     assert service.get_user_by_session(token) == user
     assert expired_session_exists("expired-b")
 
-    service._last_session_cleanup_at = datetime.now(timezone.utc) - timedelta(seconds=SESSION_CLEANUP_INTERVAL_SECONDS + 1)
+    service._last_session_cleanup_at = datetime.now(UTC) - timedelta(seconds=SESSION_CLEANUP_INTERVAL_SECONDS + 1)
     assert service.get_user_by_session(token) == user
     assert not expired_session_exists("expired-b")
 

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional
 
-from backend.services.cache_policy import FINANCIAL_REPORT_DEADLINES, MONTHLY_REVENUE_WINDOW_END_DAY, MONTHLY_REVENUE_WINDOW_START_DAY
+from backend.services.cache_policy import (
+    FINANCIAL_REPORT_DEADLINES,
+    MONTHLY_REVENUE_WINDOW_END_DAY,
+    MONTHLY_REVENUE_WINDOW_START_DAY,
+)
 from backend.services.calendar import load_market_calendar
 
 _FINANCIAL_WINDOW_DAYS = 3
@@ -27,7 +30,7 @@ class WakeUpDecision:
     calendarSource: str
 
 
-def should_wake_up(today: Optional[date] = None) -> WakeUpDecision:
+def should_wake_up(today: date | None = None) -> WakeUpDecision:
     today = today or date.today()
     calendar = load_market_calendar(today.year)
     events: list[str] = []

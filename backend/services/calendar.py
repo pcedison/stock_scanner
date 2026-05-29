@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 TWSE_HOLIDAY_URL = "https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule"
 
@@ -22,7 +21,7 @@ class MarketCalendar:
     source_url: str
 
     @classmethod
-    def load(cls, year: int) -> "MarketCalendar":
+    def load(cls, year: int) -> MarketCalendar:
         path = ROOT_DIR / "data" / f"market_calendar_{year}.json"
         if not path.exists():
             return cls(year=year, closed_dates=set(), spring_festival_dates=set(), source="weekend-only fallback", source_url="")
@@ -67,7 +66,7 @@ def _parse_twse_holiday_payload(year: int, payload: dict[str, Any]) -> dict[str,
     spring_dates: set[str] = set()
 
     for item in rows:
-        row = dict(zip(fields, item)) if isinstance(item, list) else item
+        row = dict(zip(fields, item, strict=False)) if isinstance(item, list) else item
         day_text = str(row.get("日期") or "").strip()
         if not day_text:
             continue

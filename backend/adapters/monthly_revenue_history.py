@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -100,7 +100,7 @@ class MonthlyRevenueHistoryStore:
                 del months_data[stock_code]
 
         if changed:
-            payload["updatedAt"] = datetime.now(timezone.utc).isoformat()
+            payload["updatedAt"] = datetime.now(UTC).isoformat()
             self._save(payload)
 
         return {

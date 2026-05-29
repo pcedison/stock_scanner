@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import Event, Lock, RLock
 from time import monotonic
-from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
@@ -24,15 +23,15 @@ from backend.services.backtest import DEFAULT_BACKTEST_PATH, run_backtest
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.data_provider import MockDataProvider
 from backend.services.integrations import integration_status
-from backend.services.official_history_backfill import OfficialHistoryBackfillService
+from backend.services.market_scan import data_sources_status_payload
+from backend.services.market_scan import scan_market_payload as _scan_market_payload_impl
 from backend.services.official_data_provider import OfficialDataProvider
-from backend.services.market_scan import data_sources_status_payload, scan_market_payload as _scan_market_payload_impl
+from backend.services.official_history_backfill import OfficialHistoryBackfillService
 from backend.services.reporting import render_csv_report, render_markdown_report
 from backend.services.rules import RuleEngine
-from backend.services.scheduler import should_wake_up
 from backend.services.scan_cache import ScanCacheService
+from backend.services.scheduler import should_wake_up
 from backend.services.settings_service import load_settings, save_settings
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT_DIR / "frontend"
@@ -261,23 +260,23 @@ def _backtest_status_cached() -> dict:
 
 
 class AnalyzeRequest(BaseModel):
-    settings: Optional[ScannerSettings] = None
+    settings: ScannerSettings | None = None
 
 
 class ScanMarketRequest(BaseModel):
-    settings: Optional[ScannerSettings] = None
+    settings: ScannerSettings | None = None
     refreshMode: str = Field(default="auto", pattern="^(auto|force|cache_only)$")
 
 
 class ScanHoldingsRequest(BaseModel):
     holdings: list[Holding] = Field(default_factory=list, max_length=500)
-    settings: Optional[ScannerSettings] = None
+    settings: ScannerSettings | None = None
 
 
 class AuthRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=80)
     password: str = Field(..., min_length=8, max_length=128)
-    displayName: Optional[str] = Field(default=None, max_length=80)
+    displayName: str | None = Field(default=None, max_length=80)
 
 
 class HoldingsReplaceRequest(BaseModel):
@@ -289,7 +288,7 @@ class HoldingUpsertRequest(BaseModel):
 
 
 class ReportFormatRequest(BaseModel):
-    settings: Optional[ScannerSettings] = None
+    settings: ScannerSettings | None = None
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -340,7 +339,7 @@ def _holdings_payload(holdings: list[Holding]) -> dict:
     return {"holdings": [holding.model_dump() for holding in holdings]}
 
 
-def _effective_settings(settings: Optional[ScannerSettings]) -> ScannerSettings:
+def _effective_settings(settings: ScannerSettings | None) -> ScannerSettings:
     return settings or load_settings()
 
 
@@ -390,7 +389,7 @@ def _scan_holdings_payload(holdings: list[Holding], settings: ScannerSettings) -
         results.append(engine.evaluate_holding(snapshot, holding, settings))
 
     return {
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "generatedAt": datetime.now(UTC).isoformat(),
         "dataSource": "mock" if settings.use_mock_data else "official_twse_tpex",
         "results": results,
         "missing": missing,
@@ -398,7 +397,7 @@ def _scan_holdings_payload(holdings: list[Holding], settings: ScannerSettings) -
 
 
 def _report_response(payload: dict, report_format: str, title: str, filename_prefix: str) -> Response:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     if report_format == "csv":
         return Response(
             content=render_csv_report(payload),
@@ -420,7 +419,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "dataSource": "mock" if settings.use_mock_data else "official_twse_tpex",
-        "time": datetime.now(timezone.utc).isoformat(),
+        "time": datetime.now(UTC).isoformat(),
     }
 
 
@@ -558,12 +557,12 @@ def backfill_history(
 
 
 @app.get("/api/scheduler/wakeup")
-def scheduler_wakeup(today: Optional[date] = None) -> dict:
+def scheduler_wakeup(today: date | None = None) -> dict:
     return should_wake_up(today).__dict__
 
 
 @app.get("/api/scheduler/auto-scan")
-def scheduler_auto_scan(today: Optional[date] = None, execute: bool = True, backfill_history: bool = False) -> dict:
+def scheduler_auto_scan(today: date | None = None, execute: bool = True, backfill_history: bool = False) -> dict:
     settings = load_settings()
     decision = should_wake_up(today)
     should_scan = decision.status == "WAKE" and settings.auto_scan_full_market
@@ -619,7 +618,7 @@ def list_companies(page: int = Query(default=1, ge=1), limit: int = Query(defaul
 
 
 @app.post("/api/analyze/{stock_code}")
-def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(default=None)):
+def analyze_stock(stock_code: str, payload: AnalyzeRequest | None = Body(default=None)):
     settings = _effective_settings(payload.settings if payload else None)
     provider = _active_provider(settings)
     snapshot = provider.get_snapshot(stock_code)
@@ -629,7 +628,7 @@ def analyze_stock(stock_code: str, payload: Optional[AnalyzeRequest] = Body(defa
 
 
 @app.post("/api/scan/market")
-def scan_market(request: Request, payload: Optional[ScanMarketRequest] = Body(default=None)) -> dict:
+def scan_market(request: Request, payload: ScanMarketRequest | None = Body(default=None)) -> dict:
     settings = _effective_settings(payload.settings if payload else None)
     _ensure_manual_scan_enabled(settings)
     if settings.use_mock_data:
@@ -663,7 +662,7 @@ def scan_holdings(request: Request, payload: ScanHoldingsRequest) -> dict:
 
 
 @app.post("/api/reports/market")
-def market_report(report_format: str = "markdown", payload: Optional[ReportFormatRequest] = Body(default=None)):
+def market_report(report_format: str = "markdown", payload: ReportFormatRequest | None = Body(default=None)):
     settings = _effective_settings(payload.settings if payload else None)
     if settings.use_mock_data:
         scan_payload = _scan_market_payload(settings)
@@ -678,7 +677,7 @@ def market_report(report_format: str = "markdown", payload: Optional[ReportForma
 
 
 @app.post("/api/reports/holdings")
-def holdings_report(report_format: str = "markdown", payload: Optional[ScanHoldingsRequest] = Body(default=None)):
+def holdings_report(report_format: str = "markdown", payload: ScanHoldingsRequest | None = Body(default=None)):
     settings = _effective_settings(payload.settings if payload else None)
     scan_payload = _scan_holdings_payload(payload.holdings if payload else [], settings)
     return _report_response(scan_payload, report_format, "台股持股追蹤報告", "holdings_scan")
@@ -695,7 +694,7 @@ def backtest_status() -> dict:
 
 
 @app.get("/api/app-status")
-def app_status(today: Optional[date] = None) -> dict:
+def app_status(today: date | None = None) -> dict:
     settings = load_settings()
     official_status = official_provider.status(refresh=False) if not settings.use_mock_data else None
     data_source_payload = {

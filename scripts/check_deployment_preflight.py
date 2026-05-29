@@ -8,7 +8,6 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_WRANGLER = ROOT_DIR / "cloudflare" / "wrangler.toml"
 DEFAULT_DEPLOY_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-deploy.yml"

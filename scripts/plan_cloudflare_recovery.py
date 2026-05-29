@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 

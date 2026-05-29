@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEPLOY_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-deploy.yml"
 HEALTH_WORKFLOW = ROOT_DIR / ".github" / "workflows" / "cloudflare-health-monitor.yml"

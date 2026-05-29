@@ -2,7 +2,6 @@ from pathlib import Path
 
 from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_frontend_hygiene
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
 APP_VERSION = "20260528-direct-worker"

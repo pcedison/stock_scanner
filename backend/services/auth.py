@@ -8,11 +8,10 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from backend.models.holding import Holding
-
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
@@ -150,7 +149,7 @@ class AuthService:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     @staticmethod
     def _parse_time(value: str | None) -> datetime | None:
@@ -169,7 +168,7 @@ class AuthService:
     def _auth_attempt_identifier(username: str, source: str | None) -> str:
         normalized_username = (username or "").strip().lower()
         normalized_source = (source or "unknown").split(",", 1)[0].strip().lower() or "unknown"
-        return hashlib.sha256(f"{normalized_source}|{normalized_username}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{normalized_source}|{normalized_username}".encode()).hexdigest()
 
     @staticmethod
     def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -239,7 +238,7 @@ class AuthService:
 
     def assert_auth_allowed(self, username: str, source: str | None) -> None:
         identifier = self._auth_attempt_identifier(username, source)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale_before = (now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS)).isoformat()
         with self._connect() as connection:
             connection.execute(
@@ -259,7 +258,7 @@ class AuthService:
 
     def record_auth_failure(self, username: str, source: str | None) -> None:
         identifier = self._auth_attempt_identifier(username, source)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         now_text = now.isoformat()
         with self._connect() as connection:
             row = connection.execute(
@@ -301,7 +300,7 @@ class AuthService:
 
     def create_session(self, user_id: int, days: int = 30) -> str:
         token = secrets.token_urlsafe(32)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(days=days)
         with self._connect() as connection:
             connection.execute(
@@ -325,7 +324,7 @@ class AuthService:
     def get_user_by_session(self, token: str | None) -> AuthUser | None:
         if not token:
             return None
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(UTC)
         now = now_dt.isoformat()
         with self._connect() as connection:
             if self._should_cleanup_sessions(now_dt):

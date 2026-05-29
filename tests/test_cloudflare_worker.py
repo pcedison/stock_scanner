@@ -9,7 +9,6 @@ import pytest
 
 from backend.models.settings import ScannerSettings
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

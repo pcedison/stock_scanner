@@ -7,7 +7,7 @@ import io
 import json
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from js import Object, Response
@@ -352,9 +352,9 @@ class Api:
         next_refresh = None
         is_stale = True
         if generated_time:
-            next_refresh_time = generated_time.astimezone(timezone.utc) + timedelta(seconds=policy["minIntervalSeconds"])
+            next_refresh_time = generated_time.astimezone(UTC) + timedelta(seconds=policy["minIntervalSeconds"])
             next_refresh = next_refresh_time.isoformat()
-            is_stale = datetime.now(timezone.utc) >= next_refresh_time
+            is_stale = datetime.now(UTC) >= next_refresh_time
         return {
             "strategy": "stale_while_revalidate",
             "source": "cloudflare_r2",
@@ -377,7 +377,7 @@ class Api:
         if not force and not status["isStale"]:
             return {"status": "fresh", "reason": policy["reason"]}
         cache_key = status["cacheKey"]
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
         existing = await self.db_first(
             """
             SELECT id, status, reason, queued_at, owner_run_id
@@ -400,7 +400,7 @@ class Api:
             }
         job_id = secrets.token_hex(16)
         now = utc_now()
-        stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        stale_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
         await self.db_run(
             "DELETE FROM refresh_jobs WHERE queued_at < ?",
             stale_cutoff,
@@ -555,7 +555,7 @@ class Api:
     async def create_session(self, user_id: int):
         token = secrets.token_urlsafe(32)
         now = utc_now()
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=SESSION_MAX_AGE_SECONDS)).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(seconds=SESSION_MAX_AGE_SECONDS)).isoformat()
         await self.db_run(
             "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
             token_hash(token),
@@ -577,11 +577,11 @@ class Api:
     def auth_attempt_identifier(self, username: str, request):
         source = self.auth_source(request).lower()
         normalized = str(username or "").strip().lower()
-        return hashlib.sha256(f"{source}|{normalized}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{source}|{normalized}".encode()).hexdigest()
 
     async def require_auth_attempt_allowed(self, username: str, request):
         identifier = self.auth_attempt_identifier(username, request)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale_before = (now - timedelta(seconds=AUTH_FAILURE_WINDOW_SECONDS)).isoformat()
         await self.db_run(
             "DELETE FROM auth_attempts WHERE (locked_until IS NULL OR locked_until = '') AND first_failed_at <= ?",
@@ -597,7 +597,7 @@ class Api:
 
     async def record_auth_failure(self, username: str, request):
         identifier = self.auth_attempt_identifier(username, request)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         row = await self.db_first(
             "SELECT failure_count, first_failed_at FROM auth_attempts WHERE identifier = ?",
             identifier,
@@ -814,7 +814,7 @@ class Api:
         analyses = await asyncio.gather(*[self.holding_analysis_for_stock(h["stockCode"]) for h in holdings])
         results = []
         missing = []
-        for holding, result in zip(holdings, analyses):
+        for holding, result in zip(holdings, analyses, strict=False):
             if not result:
                 result = await self.analysis_for_stock(holding["stockCode"])
             if not result:
@@ -894,7 +894,7 @@ class Api:
         return self.report_response(await self.holdings_scan_payload(payload), report_format, "台股持股掃描報告", "holdings_scan")
 
     def report_response(self, payload, report_format: str, title: str, filename_prefix: str):
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         if report_format == "csv":
             output = io.StringIO()
             writer = csv.writer(output)

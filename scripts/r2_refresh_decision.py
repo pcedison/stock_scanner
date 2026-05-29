@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 COUNT_FIELDS = ("pending_count", "cnt")
 
 

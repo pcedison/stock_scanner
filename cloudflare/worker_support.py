@@ -5,12 +5,11 @@ import hmac
 import json
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from js import Object, Response
 from pyodide.ffi import to_js
-
 
 SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
@@ -88,7 +87,7 @@ class RateLimitError(Exception):
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def parse_time(value):
@@ -103,10 +102,7 @@ def parse_time(value):
 def env_value(env, name: str, default=None):
     if env is None:
         return default
-    if isinstance(env, dict):
-        value = env.get(name, default)
-    else:
-        value = getattr(env, name, default)
+    value = env.get(name, default) if isinstance(env, dict) else getattr(env, name, default)
     return js_to_py(value)
 
 

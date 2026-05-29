@@ -4,9 +4,9 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 BLOCKING_RUN_STATUSES = {"pending", "waiting", "in_progress", "queued"}
@@ -25,8 +25,7 @@ def _run(args: Sequence[str], *, cwd: Path = ROOT_DIR, check: bool = True) -> su
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
     except FileNotFoundError as exc:
