@@ -5,6 +5,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 SEED_ZIP_PATTERN = re.compile(r"^official_cache_seed_(\d{4}-\d{2}-\d{2})\.zip$")
 
@@ -28,7 +29,7 @@ def find_seed_zip(data_dir: Path) -> Path:
     """
     candidates = sorted(
         (path for path in data_dir.glob("official_cache_seed_*.zip") if _dated_seed_key(path) is not None),
-        key=_dated_seed_key,
+        key=lambda path: cast(date, _dated_seed_key(path)),
         reverse=True,
     )
     return candidates[0] if candidates else data_dir / "official_cache_seed_latest.zip"

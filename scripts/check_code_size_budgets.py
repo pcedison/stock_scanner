@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGETS = {
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, indent=2, sort_keys=True))
     if report["problems"]:
         print("Code size budget check failed:", file=sys.stderr)
-        for problem in report["problems"]:
+        for problem in cast(list[str], report["problems"]):
             print(f"- {problem}", file=sys.stderr)
         return 1
     return 0
