@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from threading import RLock
 from time import monotonic
+from typing import Literal, cast
 
 from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.adapters.fundamentals_import import LocalFundamentalsImportAdapter
@@ -106,7 +107,9 @@ class OfficialDataProvider:
         return Company(
             stockCode=profile.stockCode,
             name=company_name,
-            market=profile.market,
+            # profile.market is a plain str; Company still validates it against the
+            # Literal at runtime, so this cast is type-only and behaviour-preserving.
+            market=cast(Literal["TWSE", "TPEX", "OTHER"], profile.market),
             industryName=industry_name,
             isFinancial=_is_financial_company(profile.stockCode, industry_name, company_name),
         )
@@ -190,7 +193,13 @@ class OfficialDataProvider:
                 history_yoy = self.history_store.quarterly_yoy(company.stockCode, latest_quarter)
 
                 current_inventory_turnover = None
-                if income and balance and income.costOfRevenue is not None and balance.inventory not in (None, 0):
+                if (
+                    income
+                    and balance
+                    and income.costOfRevenue is not None
+                    and balance.inventory is not None
+                    and balance.inventory != 0
+                ):
                     annualized_factor = 4 / income.quarter if income.quarter else 1
                     current_inventory_turnover = (income.costOfRevenue * annualized_factor) / balance.inventory
                 inventory_turnover = _first_present(
@@ -207,7 +216,9 @@ class OfficialDataProvider:
                     {"year": row.year, "netIncome": row.netIncome}
                     for row in imported.annuals.get(company.stockCode, [])
                 )
-                annuals = list({row["year"]: row for row in sorted(annuals, key=lambda item: item["year"])}.values())
+                annuals = list(
+                    {row["year"]: row for row in sorted(annuals, key=lambda item: cast(int, item["year"]))}.values()
+                )
 
                 try:
                     snapshot_year = int(snapshot_month[:4])
