@@ -91,8 +91,6 @@ module = [
     "backend.adapters.official_fundamentals",
     "backend.services.official_data_provider",
     "backend.services.rules",
-    "backend.services.calendar",
-    "backend.services.filing_calendar",
 ]
 ignore_errors = true
 
