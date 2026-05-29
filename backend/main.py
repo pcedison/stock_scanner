@@ -6,7 +6,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import Event, Lock, RLock
 from time import monotonic
-from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -32,12 +31,17 @@ from backend.services.rules import RuleEngine
 from backend.services.scan_cache import ScanCacheService
 from backend.services.scheduler import should_wake_up
 from backend.services.settings_service import load_settings, save_settings
-from cloudflare.contract import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, UNSAFE_API_METHODS
+from cloudflare.contract import (
+    CSRF_HEADER_NAME,
+    CSRF_HEADER_VALUE,
+    UNSAFE_API_METHODS,
+    is_https_origin,
+    is_local_cors_origin,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT_DIR / "frontend"
 DEFAULT_CORS_ALLOW_ORIGINS = ("http://localhost", "http://localhost:8000", "http://127.0.0.1:8000")
-LOCAL_CORS_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _env_flag(name: str) -> bool:
@@ -67,30 +71,18 @@ def _cors_allowed_origins() -> list[str]:
     return _csv_env("APP_CORS_ALLOW_ORIGINS", DEFAULT_CORS_ALLOW_ORIGINS)
 
 
-def _origin_host(origin: str) -> str:
-    return (urlparse(origin).hostname or "").lower()
-
-
-def _is_local_cors_origin(origin: str) -> bool:
-    return _origin_host(origin) in LOCAL_CORS_HOSTS
-
-
-def _is_https_origin(origin: str) -> bool:
-    return urlparse(origin).scheme.lower() == "https"
-
-
 def _validate_runtime_security(cors_origins: list[str]) -> None:
     if not _is_production_environment():
         return
     if not _cookie_secure():
         raise RuntimeError("SESSION_COOKIE_SECURE must be enabled when APP_ENV=production")
-    local_origins = sorted(origin for origin in cors_origins if _is_local_cors_origin(origin))
+    local_origins = sorted(origin for origin in cors_origins if is_local_cors_origin(origin))
     if local_origins and not _env_flag("APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
         raise RuntimeError(
             "APP_CORS_ALLOW_ORIGINS must not include localhost origins in production: "
             + ", ".join(local_origins)
         )
-    insecure_origins = sorted(origin for origin in cors_origins if not _is_https_origin(origin))
+    insecure_origins = sorted(origin for origin in cors_origins if not is_https_origin(origin))
     if insecure_origins and not _env_flag("APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
         raise RuntimeError(
             "APP_CORS_ALLOW_ORIGINS must use https origins in production: "

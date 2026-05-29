@@ -6,7 +6,6 @@ import json
 import re
 import secrets
 from datetime import UTC, datetime, timedelta, timezone
-from urllib.parse import urlparse
 
 from js import Object, Response
 from pyodide.ffi import to_js
@@ -25,6 +24,9 @@ try:
         PASSWORD_ITERATIONS,
         UNSAFE_API_METHODS,
         USERNAME_PATTERN,
+        is_https_origin,
+        is_local_cors_origin,
+        origin_host,
     )
 except (ModuleNotFoundError, ImportError):
     from cloudflare.contract import (
@@ -37,13 +39,15 @@ except (ModuleNotFoundError, ImportError):
         PASSWORD_ITERATIONS,
         UNSAFE_API_METHODS,
         USERNAME_PATTERN,
+        is_https_origin,
+        is_local_cors_origin,
+        origin_host,
     )
 
 SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 TAIPEI_TZ = timezone(timedelta(hours=8))
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
-LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
 REVENUE_GROWTH_MODES = frozenset({"cumulative_ytd", "monthly", "trailing_3m_avg"})
 
@@ -152,18 +156,6 @@ def configured_super_user_username(env) -> str:
 def validate_runtime_security(env, super_user: str) -> None:
     if is_production_environment(env) and not super_user:
         raise RuntimeError("SUPER_USER_USERNAME must be configured when APP_ENV=production")
-
-
-def origin_host(origin: str) -> str:
-    return (urlparse(str(origin or "")).hostname or "").lower()
-
-
-def is_local_cors_origin(origin: str) -> bool:
-    return origin_host(origin) in LOCAL_CORS_HOSTS
-
-
-def is_https_origin(origin: str) -> bool:
-    return urlparse(str(origin or "")).scheme.lower() == "https"
 
 
 def cache_key_from_manifest(manifest):
