@@ -5,6 +5,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import cast
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_APP = ROOT_DIR / "frontend" / "app.js"
@@ -118,20 +119,20 @@ def frontend_hygiene_report(
 
 def validate_frontend_hygiene(report: dict[str, object], max_app_lines: int, max_inner_html: int) -> list[str]:
     problems: list[str] = []
-    if int(report["appLines"]) > max_app_lines:
+    if cast(int, report["appLines"]) > max_app_lines:
         problems.append(f"frontend/app.js has {report['appLines']} lines; budget is {max_app_lines}")
-    if int(report["innerHTMLAssignments"]) > max_inner_html:
+    if cast(int, report["innerHTMLAssignments"]) > max_inner_html:
         problems.append(
             f"frontend/app.js has {report['innerHTMLAssignments']} innerHTML references; budget is {max_inner_html}"
         )
     dangerous_assignments = report.get("dangerousInnerHTMLAssignments", [])
     if dangerous_assignments:
-        lines = ", ".join(str(item["line"]) for item in dangerous_assignments)
+        lines = ", ".join(str(item["line"]) for item in cast(list, dangerous_assignments))
         problems.append(
             "frontend/app.js has dangerous HTML sinks without escapeHtml/render helper "
             f"or whitelist coverage on lines: {lines}"
         )
-    if int(report["insertAdjacentHTMLCalls"]) > 0:
+    if cast(int, report["insertAdjacentHTMLCalls"]) > 0:
         problems.append("insertAdjacentHTML is not allowed in frontend/app.js")
     if not report["hasSharedEscapeHelper"]:
         problems.append("frontend/dom.js must own the shared escapeHtml helper")

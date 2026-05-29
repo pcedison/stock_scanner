@@ -8,6 +8,7 @@ import json
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from js import Object, Response
@@ -24,7 +25,7 @@ async def on_fetch(request, env):
 
 def set_response_header(response, key: str, value: str) -> None:
     headers = getattr(response, "headers", None)
-    if hasattr(headers, "set"):
+    if headers is not None and hasattr(headers, "set"):
         headers.set(key, value)
     elif isinstance(headers, dict):
         headers[key] = value
@@ -886,7 +887,7 @@ class Api:
             for reason in reasons:
                 if not isinstance(reason, dict):
                     continue
-                compact["reasons"].append(
+                cast(list, compact["reasons"]).append(
                     {
                         key: reason.get(key)
                         for key in ("code", "title", "passed", "severity", "message")

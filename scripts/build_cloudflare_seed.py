@@ -6,6 +6,7 @@ import sys
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal, cast
 
 from fastapi.encoders import jsonable_encoder
 
@@ -106,7 +107,7 @@ def compact_scan_result(result: dict) -> dict:
                 continue
             if str(reason.get("code") or "") not in SUMMARY_REASON_CODES:
                 continue
-            compact["reasons"].append({key: reason.get(key) for key in SUMMARY_REASON_KEYS if key in reason})
+            cast(list, compact["reasons"]).append({key: reason.get(key) for key in SUMMARY_REASON_KEYS if key in reason})
     compact["detailsAvailable"] = True
     compact["hasFullDetails"] = False
     return compact
@@ -186,7 +187,7 @@ def history_yoy(records: dict, record: dict, field: str) -> float | None:
     if not isinstance(previous, dict):
         return None
     previous_value = previous.get(field)
-    if previous_value in (None, 0):
+    if previous_value is None or previous_value == 0:
         return None
     return ((float(current) - float(previous_value)) / abs(float(previous_value))) * 100
 
@@ -209,14 +210,14 @@ def annual_financials_from_history(records: dict) -> list[dict]:
         if not isinstance(record, dict) or record.get("quarter") != 4 or record.get("fiscalYear") is None:
             continue
         annuals.append({"year": int(record["fiscalYear"]), "netIncome": record.get("netIncome")})
-    return list({row["year"]: row for row in sorted(annuals, key=lambda item: item["year"])}.values())
+    return list({row["year"]: row for row in sorted(annuals, key=lambda item: cast(int, item["year"]))}.values())
 
 
 def inventory_turnover_from_history(record: dict) -> float | None:
     cost = record.get("costOfRevenue")
     inventory = record.get("inventory")
     quarter = record.get("quarter")
-    if cost is None or inventory in (None, 0) or not quarter:
+    if cost is None or inventory is None or inventory == 0 or not quarter:
         return None
     return (float(cost) * (4 / int(quarter))) / float(inventory)
 
@@ -246,7 +247,7 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
             industry_name = existing.industryName
             is_financial = existing.isFinancial
         else:
-            market = record.get("market") if record.get("market") in {"TWSE", "TPEX"} else "OTHER"
+            market = cast(Literal["TWSE", "TPEX", "OTHER"], record.get("market")) if record.get("market") in {"TWSE", "TPEX"} else "OTHER"
             company_name = str(record.get("companyName") or stock_code)
             industry_name = "Unknown industry"
             is_financial = _is_financial_company(stock_code, industry_name, company_name)

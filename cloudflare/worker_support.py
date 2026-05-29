@@ -405,7 +405,7 @@ def normalize_holding(payload: dict) -> dict:
     if shares < 0:
         raise ValueError("股數不可小於 0")
     average_cost = payload.get("averageCost", payload.get("average_cost"))
-    parsed_cost = float(average_cost) if average_cost not in (None, "") else None
+    parsed_cost = float(average_cost) if average_cost is not None and average_cost != "" else None
     if parsed_cost is not None and parsed_cost < 0:
         raise ValueError("平均成本不可小於 0")
     return {
