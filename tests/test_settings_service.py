@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from backend.models.settings import ScannerSettings
 import backend.services.settings_service as settings_service
+from backend.models.settings import ScannerSettings
 
 
 def test_default_settings_path_uses_local_runtime_file(monkeypatch):

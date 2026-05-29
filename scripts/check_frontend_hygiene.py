@@ -6,7 +6,6 @@ import re
 import sys
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_APP = ROOT_DIR / "frontend" / "app.js"
 DEFAULT_DOM = ROOT_DIR / "frontend" / "dom.js"
@@ -53,9 +52,7 @@ def is_static_html_assignment(statement: str) -> bool:
     rhs = statement.split("=", 1)[1].strip().rstrip(";")
     if rhs in {'""', "''", "``"}:
         return True
-    if rhs.startswith(("`", '"', "'")) and "${" not in rhs:
-        return True
-    return False
+    return rhs.startswith(("`", '"', "'")) and "${" not in rhs
 
 
 def raw_template_path_interpolations(statement: str) -> list[str]:

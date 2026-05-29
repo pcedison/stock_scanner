@@ -3,16 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.adapters.mops_historical_fundamentals import OfficialMopsHistoricalFundamentalsAdapter
 from backend.models.company import Company
 from backend.services.filing_calendar import filing_context
-
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_PROGRESS_PATH = ROOT_DIR / "data" / "official_history_backfill_progress.json"
@@ -89,7 +89,7 @@ class BackfillProgressStore:
 
     def save(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        payload["updatedAt"] = datetime.now(UTC).isoformat()
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(self.path)
@@ -188,7 +188,7 @@ class OfficialHistoryBackfillService:
                 "failedCompanies": {},
                 "pendingCompanies": {},
                 "lastCompany": None,
-                "startedAt": datetime.now(timezone.utc).isoformat(),
+                "startedAt": datetime.now(UTC).isoformat(),
             }
 
         requested = 0
@@ -349,9 +349,7 @@ class OfficialHistoryBackfillService:
             return True
         if row.netIncome is None or row.eps is None:
             return True
-        if not company.isFinancial and (row.inventory is None or row.costOfRevenue is None):
-            return True
-        return False
+        return bool(not company.isFinancial and (row.inventory is None or row.costOfRevenue is None))
 
     def _needs_backfill(self, company: Company, fiscal_year: int, quarter: int, years: int = 5) -> bool:
         previous_same_quarter = self.history_store.quarter(company.stockCode, f"{fiscal_year - 1}Q{quarter}")

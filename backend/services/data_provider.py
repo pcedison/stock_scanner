@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from backend.models.company import Company
 from backend.models.financial import FundamentalSnapshot
 from backend.models.settings import ScannerSettings
-
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
@@ -17,7 +15,7 @@ def normalize_query(value: str) -> str:
 
 
 class MockDataProvider:
-    def __init__(self, data_dir: Optional[Path] = None) -> None:
+    def __init__(self, data_dir: Path | None = None) -> None:
         self.data_dir = data_dir or ROOT_DIR / "data"
         self._companies = self._load_companies()
         self._fundamentals = self._load_fundamentals()
@@ -52,7 +50,7 @@ class MockDataProvider:
             code = company.stockCode.lower()
             name = company.name.lower()
             haystack = f"{code} {name} {company.industryName.lower()}"
-            if normalized == code or normalized == name:
+            if normalized in (code, name):
                 scored.append((0, company))
             elif code.startswith(normalized) or name.startswith(normalized):
                 scored.append((1, company))
@@ -61,10 +59,10 @@ class MockDataProvider:
 
         return [company for _, company in sorted(scored, key=lambda item: (item[0], item[1].stockCode))[:limit]]
 
-    def get_company(self, stock_code: str) -> Optional[Company]:
+    def get_company(self, stock_code: str) -> Company | None:
         return next((company for company in self._companies if company.stockCode == stock_code), None)
 
-    def get_snapshot(self, stock_code: str) -> Optional[FundamentalSnapshot]:
+    def get_snapshot(self, stock_code: str) -> FundamentalSnapshot | None:
         return self._fundamentals.get(stock_code)
 
     def list_snapshots(self, settings: ScannerSettings) -> list[FundamentalSnapshot]:

@@ -6,7 +6,6 @@ import sys
 from datetime import date
 from pathlib import Path
 
-
 SEED_ZIP_PATTERN = re.compile(r"^official_cache_seed_(\d{4}-\d{2}-\d{2})\.zip$")
 
 

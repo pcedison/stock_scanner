@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 # 財報截止日（月, 日）—— 前後 3 天視為財報窗口

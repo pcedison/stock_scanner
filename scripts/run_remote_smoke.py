@@ -168,7 +168,7 @@ def run_public_smoke(
         except RuntimeError as exc:
             last_error = exc
             if time.monotonic() >= deadline:
-                raise last_error
+                raise last_error from exc
             time.sleep(3)
 
 

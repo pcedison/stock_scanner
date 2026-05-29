@@ -1,5 +1,6 @@
 import json
 
+from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.adapters.fundamentals_import import (
     ImportedAnnualFinancial,
     ImportedFundamentalBundle,
@@ -8,7 +9,6 @@ from backend.adapters.fundamentals_import import (
     ImportedValuation,
     LocalFundamentalsImportAdapter,
 )
-from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 from backend.adapters.official_fundamentals import (
     OfficialBalanceSheetRow,
@@ -16,7 +16,11 @@ from backend.adapters.official_fundamentals import (
     OfficialIncomeStatementRow,
     OfficialValuationRow,
 )
-from backend.adapters.official_monthly_revenue import OfficialCompanyProfileRow, OfficialMonthlyRevenueRow, roc_month_to_ad
+from backend.adapters.official_monthly_revenue import (
+    OfficialCompanyProfileRow,
+    OfficialMonthlyRevenueRow,
+    roc_month_to_ad,
+)
 from backend.models.settings import ScannerSettings
 from backend.services.official_data_provider import OfficialDataProvider
 from backend.services.rules import RuleEngine

@@ -2,17 +2,17 @@ from backend.services.backtest import BacktestRow, _entry_signal, _exit_signal, 
 
 
 def _row(**kwargs) -> BacktestRow:
-    defaults = dict(
-        stockCode="1234",
-        period="2026-04",
-        closePrice=100.0,
-        cumulativeRevenueYoY=None,
-        monthlyRevenueYoY=None,
-        epsYoY=None,
-        netIncomeYoY=None,
-        per=None,
-        inventoryTurnover=None,
-    )
+    defaults = {
+        "stockCode": "1234",
+        "period": "2026-04",
+        "closePrice": 100.0,
+        "cumulativeRevenueYoY": None,
+        "monthlyRevenueYoY": None,
+        "epsYoY": None,
+        "netIncomeYoY": None,
+        "per": None,
+        "inventoryTurnover": None,
+    }
     defaults.update(kwargs)
     return BacktestRow(**defaults)
 
@@ -22,7 +22,7 @@ def test_entry_signal_all_criteria_met():
 
 
 def test_entry_signal_boundary_values():
-    base = dict(cumulativeRevenueYoY=50.0, per=19.9, inventoryTurnover=2.6)
+    base = {"cumulativeRevenueYoY": 50.0, "per": 19.9, "inventoryTurnover": 2.6}
     assert _entry_signal(_row(**base)) is True
     assert _entry_signal(_row(**{**base, "cumulativeRevenueYoY": 49.9})) is False
     assert _entry_signal(_row(**{**base, "per": 20.0})) is False

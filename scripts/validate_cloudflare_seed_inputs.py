@@ -6,10 +6,9 @@ import json
 import sys
 import zipfile
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -142,8 +141,8 @@ def validate_seed_freshness(summary: dict[str, Any], max_age_days: int | None, n
     except ValueError as exc:
         raise ValueError(f"Seed manifest generatedAt is not a valid ISO datetime: {generated_at}") from exc
     if generated.tzinfo is None:
-        generated = generated.replace(tzinfo=timezone.utc)
-    current = now or datetime.now(timezone.utc)
+        generated = generated.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
     age_days = (current - generated).total_seconds() / 86400
     if age_days > max_age_days:
         raise ValueError(f"Seed manifest is {age_days:.1f} days old; maximum allowed is {max_age_days}")

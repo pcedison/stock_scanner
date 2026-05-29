@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 from .company import Company
@@ -9,42 +7,42 @@ from .company import Company
 
 class MonthlyRevenue(BaseModel):
     month: str = Field(..., min_length=7, max_length=7)
-    monthlyRevenueYoY: Optional[float]
-    previousMonthRevenueYoY: Optional[float] = None
-    cumulativeRevenueYoY: Optional[float]
-    trailingThreeMonthAverageYoY: Optional[float] = None
-    janFebCombinedRevenueYoY: Optional[float] = None
+    monthlyRevenueYoY: float | None
+    previousMonthRevenueYoY: float | None = None
+    cumulativeRevenueYoY: float | None
+    trailingThreeMonthAverageYoY: float | None = None
+    janFebCombinedRevenueYoY: float | None = None
     isSpringFestivalMonth: bool = False
 
 
 class QuarterlyFinancial(BaseModel):
     quarter: str = Field(..., min_length=6)
-    eps: Optional[float] = None
-    epsYoY: Optional[float]
-    netIncome: Optional[float] = None
-    netIncomeYoY: Optional[float]
-    revenue: Optional[float] = None
-    grossMargin: Optional[float] = None
-    grossMarginYoY: Optional[float] = None
-    operatingMargin: Optional[float] = None
+    eps: float | None = None
+    epsYoY: float | None
+    netIncome: float | None = None
+    netIncomeYoY: float | None
+    revenue: float | None = None
+    grossMargin: float | None = None
+    grossMarginYoY: float | None = None
+    operatingMargin: float | None = None
 
 
 class Valuation(BaseModel):
-    per: Optional[float]
-    priceBookRatio: Optional[float] = None
-    dividendYield: Optional[float] = None
-    valuationDate: Optional[str] = None
-    valuationFiscalQuarter: Optional[str] = None
-    inventoryTurnover: Optional[float]
-    roe: Optional[float] = None
-    nonPerformingLoanRatio: Optional[float] = None
-    capitalAdequacyRatio: Optional[float] = None
-    netInterestMargin: Optional[float] = None
+    per: float | None
+    priceBookRatio: float | None = None
+    dividendYield: float | None = None
+    valuationDate: str | None = None
+    valuationFiscalQuarter: str | None = None
+    inventoryTurnover: float | None
+    roe: float | None = None
+    nonPerformingLoanRatio: float | None = None
+    capitalAdequacyRatio: float | None = None
+    netInterestMargin: float | None = None
 
 
 class AnnualFinancial(BaseModel):
     year: int
-    netIncome: Optional[float] = None
+    netIncome: float | None = None
 
 
 class FundamentalSnapshot(BaseModel):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from threading import RLock
 from time import monotonic
-from typing import Optional
 
 from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.adapters.fundamentals_import import LocalFundamentalsImportAdapter
@@ -17,7 +16,6 @@ from backend.models.company import Company
 from backend.models.financial import FundamentalSnapshot
 from backend.models.settings import ScannerSettings
 from backend.services.data_provider import normalize_query
-
 
 _FINANCIAL_KEYWORDS = frozenset({"金融", "銀行", "保險", "金控", "證券", "票券", "期貨", "投信", "投顧"})
 
@@ -63,11 +61,11 @@ class OfficialDataProvider:
 
     def __init__(
         self,
-        adapter: Optional[OfficialMonthlyRevenueAdapter] = None,
-        fundamentals_adapter: Optional[OfficialFundamentalsAdapter] = None,
-        import_adapter: Optional[LocalFundamentalsImportAdapter] = None,
-        history_store: Optional[OfficialFundamentalsHistoryStore] = None,
-        monthly_revenue_history: Optional[MonthlyRevenueHistoryStore] = None,
+        adapter: OfficialMonthlyRevenueAdapter | None = None,
+        fundamentals_adapter: OfficialFundamentalsAdapter | None = None,
+        import_adapter: LocalFundamentalsImportAdapter | None = None,
+        history_store: OfficialFundamentalsHistoryStore | None = None,
+        monthly_revenue_history: MonthlyRevenueHistoryStore | None = None,
         ttl_seconds: int = 900,
     ) -> None:
         self.adapter = adapter or OfficialMonthlyRevenueAdapter()
@@ -365,7 +363,7 @@ class OfficialDataProvider:
             code = company.stockCode.lower()
             name = company.name.lower()
             haystack = f"{code} {name} {company.industryName.lower()}"
-            if normalized == code or normalized == name:
+            if normalized in (code, name):
                 scored.append((0, company))
             elif code.startswith(normalized) or name.startswith(normalized):
                 scored.append((1, company))
@@ -374,11 +372,11 @@ class OfficialDataProvider:
 
         return [company for _, company in sorted(scored, key=lambda item: (item[0], item[1].stockCode))[:limit]]
 
-    def get_company(self, stock_code: str) -> Optional[Company]:
+    def get_company(self, stock_code: str) -> Company | None:
         self._safe_refresh_companies()
         return next((company for company in self._companies if company.stockCode == stock_code), None)
 
-    def get_snapshot(self, stock_code: str) -> Optional[FundamentalSnapshot]:
+    def get_snapshot(self, stock_code: str) -> FundamentalSnapshot | None:
         self._safe_refresh_snapshots()
         return self._snapshots.get(stock_code)
 
