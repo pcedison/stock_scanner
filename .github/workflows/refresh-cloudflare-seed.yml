@@ -25,6 +25,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -73,6 +74,9 @@ jobs:
           branch="automation/cloudflare-seed-refresh-$(date -u +%Y%m%d)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Ensure the LFS filters are active so the refreshed seed zip is
+          # committed as an LFS object per .gitattributes.
+          git lfs install --local
           git checkout -B "$branch"
           git add \
             data/official_cache_seed_*.zip \
