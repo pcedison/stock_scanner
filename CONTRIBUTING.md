@@ -4,9 +4,10 @@
 
 ## 開發環境 / Getting Started
 
-建議使用 Python 3.12。
+建議使用 Python 3.12。Cloudflare seed zip 以 Git LFS 追蹤，請先安裝並啟用 `git lfs`。
 
 ```bash
+git lfs install            # 首次安裝 git-lfs 後執行一次
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -c constraints.txt
 npm ci
