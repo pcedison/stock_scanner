@@ -6,12 +6,11 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INDEX = ROOT_DIR / "frontend" / "index.html"

@@ -8,7 +8,6 @@ from typing import Any
 from backend.adapters._utils import to_float as _to_float
 from backend.adapters.official_monthly_revenue import roc_month_to_ad
 
-
 DEFAULT_IMPORT_PATH = Path(__file__).resolve().parents[2] / "data" / "fundamentals_import.csv"
 
 

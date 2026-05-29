@@ -7,7 +7,6 @@ from threading import Lock
 
 from backend.models.settings import ScannerSettings
 
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS_PATH = ROOT_DIR / "data" / "settings.local.json"
 SETTINGS_PATH_ENV = "SETTINGS_PATH"

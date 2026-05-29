@@ -2,9 +2,7 @@ import json
 import subprocess
 import sys
 
-from scripts import check_release_sync
-from scripts import write_agent_handoff
-
+from scripts import check_release_sync, write_agent_handoff
 
 ORIGIN_SHA = "b" * 40
 STALE_SHA = "a" * 40

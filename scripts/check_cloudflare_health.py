@@ -10,7 +10,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-
 CHECK_USER_AGENT = "Mozilla/5.0 stock-scanner-health-check/1.0"
 
 

@@ -9,7 +9,6 @@ from backend.services.official_history_backfill import (
     _strategy_backfill_periods,
 )
 
-
 INCOME_HTML = """
 <table>
 <tr><td>會計項目</td><td>114年01月01日至114年03月31日</td><td>113年01月01日至113年03月31日</td></tr>

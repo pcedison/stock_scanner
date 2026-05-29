@@ -6,18 +6,17 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Callable
 from uuid import uuid4
-
-logger = logging.getLogger(__name__)
 
 from backend.models.settings import ScannerSettings
 from backend.services.cache_policy import refresh_policy  # noqa: F401 — re-exported for callers
 
+logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SCAN_CACHE_PATH = ROOT_DIR / "data" / "market_scan_cache.json"
@@ -25,7 +24,7 @@ DEFAULT_REFRESH_STATE_PATH = ROOT_DIR / "data" / "cache_refresh_state.json"
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -214,7 +213,7 @@ class ScanCacheService:
         stored_time = _parse_time(stored_at)
         if not stored_time:
             return True
-        return datetime.now(timezone.utc) >= stored_time.astimezone(timezone.utc) + timedelta(seconds=policy["minIntervalSeconds"])
+        return datetime.now(UTC) >= stored_time.astimezone(UTC) + timedelta(seconds=policy["minIntervalSeconds"])
 
     def _append_job(self, job: dict) -> None:
         with self._lock:

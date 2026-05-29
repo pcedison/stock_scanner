@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Iterable
 from io import StringIO
-from typing import Any, Iterable
+from typing import Any
 
 
 def _value(item: Any, key: str, default: Any = "") -> Any:

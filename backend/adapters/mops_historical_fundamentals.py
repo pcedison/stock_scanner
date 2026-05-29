@@ -16,7 +16,6 @@ from backend.adapters.official_fundamentals import (
     _operating_margin,
 )
 
-
 MOPS_BASE_URL = "https://mopsov.twse.com.tw/mops/web"
 MOPS_INCOME_ENDPOINT = f"{MOPS_BASE_URL}/ajax_t164sb04"
 MOPS_BALANCE_ENDPOINT = f"{MOPS_BASE_URL}/ajax_t164sb03"

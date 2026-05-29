@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .company import Company
-
 
 AnalysisStatus = Literal["ENTRY", "WATCH", "HOLD", "ADD_WATCH", "WARNING", "EXIT", "EXCLUDED", "INSUFFICIENT_DATA"]
 
@@ -16,7 +15,7 @@ class RuleResult(BaseModel):
     passed: bool
     severity: Literal["INFO", "WATCH", "WARNING", "EXIT", "EXCLUDED", "INSUFFICIENT_DATA"] = "INFO"
     message: str
-    evidence: Optional[list[dict[str, Any]]] = None
+    evidence: list[dict[str, Any]] | None = None
 
 
 class AnalysisResult(BaseModel):
@@ -25,4 +24,4 @@ class AnalysisResult(BaseModel):
     status: AnalysisStatus
     summary: str
     reasons: list[RuleResult] = Field(..., min_length=1)
-    company: Optional[Company] = None
+    company: Company | None = None

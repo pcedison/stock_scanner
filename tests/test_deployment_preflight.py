@@ -1,12 +1,12 @@
 from pathlib import Path
 
+from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
 from scripts.check_deployment_preflight import (
     validate_deploy_workflow,
     validate_seed_zip_selection,
     validate_worker_cors,
     validate_workflow_yaml,
 )
-from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
 
 
 def test_validate_worker_cors_rejects_local_or_insecure_production_origins(tmp_path):

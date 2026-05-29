@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from backend.models.settings import ScannerSettings
-from backend.services.scan_cache import ScanCacheService, scan_cache_key
 from backend.services import scan_cache as scan_cache_module
+from backend.services.scan_cache import ScanCacheService, scan_cache_key
 
 
 def test_scan_cache_returns_cached_payload_without_rebuilding(tmp_path):
@@ -56,7 +56,7 @@ def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     )
     cache_path = tmp_path / "scan.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached["items"][key]["storedAt"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     cache_path.write_text(json.dumps(cached), encoding="utf-8")
     calls = {"count": 0}
 
@@ -118,7 +118,7 @@ def test_failed_background_refresh_redacts_error_details(tmp_path):
     )
     cache_path = tmp_path / "scan.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached["items"][key]["storedAt"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     cache_path.write_text(json.dumps(cached), encoding="utf-8")
 
     def refresh():

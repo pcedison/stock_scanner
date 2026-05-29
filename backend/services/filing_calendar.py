@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import date
 from zoneinfo import ZoneInfo
 
-
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
@@ -74,7 +73,7 @@ def active_financial_report_event(today: date) -> FinancialReportEvent | None:
         ),
     ]
     starts = [date(year, 1, 1), date(year, 4, 1), date(year, 7, 1), date(year, 10, 1)]
-    for start, event in zip(starts, windows):
+    for start, event in zip(starts, windows, strict=False):
         deadline = event.financial_deadline or event.general_deadline
         if start <= today <= deadline:
             return event

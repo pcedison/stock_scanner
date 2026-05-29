@@ -13,7 +13,6 @@ sys.path.insert(0, str(ROOT))
 from backend.adapters.fundamentals_history import OfficialFundamentalsHistoryStore
 from backend.services.official_data_provider import OfficialDataProvider
 
-
 PROGRESS_PATH = ROOT / "data" / "official_history_backfill_progress.json"
 
 

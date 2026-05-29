@@ -7,7 +7,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-
 CORS_CHECK_USER_AGENT = "Mozilla/5.0 stock-scanner-cors-check/1.0"
 
 

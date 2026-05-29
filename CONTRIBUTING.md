@@ -23,17 +23,21 @@ python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 - **Cloudflare schema 變更**：請新增版本化 migration `cloudflare/migrations/*.sql`，**不要**只改 `cloudflare/schema.sql`。
 - **前端 DOM 安全**：新的 renderer 應優先使用 `frontend/dom.js` 中的 escape / DOM helper，避免新增 ad hoc `innerHTML`，以維持 XSS 防護的一致性。
 - **相依套件管理**：Python 套件透過 `requirements.txt` + `constraints.txt` 安裝；`constraints.txt` 釘住 direct 與 transitive 相依（由 `pip-compile` 產生）。新增套件時請一併更新兩個檔案。
-- **程式風格與型別**：Python 使用 `ruff`（lint + format）與 `mypy`，設定見 [`pyproject.toml`](./pyproject.toml)。送出前請在本機跑過。
+- **程式風格與型別**：Python 使用 `ruff`（lint + format）與 `mypy`，設定見 [`pyproject.toml`](./pyproject.toml)；開發工具版本釘於 [`requirements-dev.txt`](./requirements-dev.txt)。CI 會擋 `ruff check .` 與 `mypy backend`。mypy 採漸進導入，仍有型別缺口的模組暫列於 pyproject 的 overrides，補齊後逐一移除。
 
 ## 提交前驗證 / Pre-submit Checks
 
 請在本機跑過下列檢查（對應 CI 的 quality gate）：
 
 ```bash
-# 程式風格與型別
+# 開發工具（一次安裝）
+python -m pip install -r requirements-dev.txt
+
+# 程式風格與型別（對應 CI gate）
 python -m ruff check .
-python -m ruff format --check .
-python -m mypy backend cloudflare scripts
+python -m mypy backend
+# 選用：套用格式（尚未納入 CI gate，全面導入待獨立排版 PR）
+python -m ruff format .
 
 # 測試與安全
 python -m pytest -q
@@ -49,7 +53,7 @@ python scripts/run_wrangler_dev_smoke.py
 npm run test:e2e
 ```
 
-> 若你尚未安裝 `ruff` / `mypy`：`python -m pip install ruff mypy`。
+> `ruff` / `mypy` 由 `requirements-dev.txt` 釘住版本，請以 `python -m pip install -r requirements-dev.txt` 安裝，確保與 CI 結果一致。
 
 ## Pull Request 流程 / Pull Request Process
 

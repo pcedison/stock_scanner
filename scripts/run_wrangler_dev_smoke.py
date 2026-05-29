@@ -13,7 +13,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT_DIR / ".tmp" / "wrangler-dev-smoke.log"
 DEFAULT_SMOKE_SUPER_USER = "wrangler-smoke-admin@example.com"

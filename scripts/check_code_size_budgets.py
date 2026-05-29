@@ -5,7 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGETS = {
     "frontend/app.js": 2400,

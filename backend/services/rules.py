@@ -6,7 +6,6 @@ from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.calendar import load_market_calendar
 
-
 ENTRY_PER_THRESHOLD = 20
 
 _E3_TITLE: dict[str, str] = {
@@ -42,7 +41,7 @@ def _annual_net_income_message(rows: list[AnnualFinancial], years: int, *, growt
     if len(rows) < years or len(available_values) < years:
         return f"已取得 {len(available_values)} / {years} 年年度淨利，仍有年度待補；詳見年度表格。"
     if growth_rule:
-        is_growing = all(later > earlier for earlier, later in zip(available_values, available_values[1:]))
+        is_growing = all(later > earlier for earlier, later in zip(available_values, available_values[1:], strict=False))
         return "近 3 年年度淨利連續成長；詳見年度表格。" if is_growing else "近 3 年年度淨利未連續成長；詳見年度表格。"
     loss_count = sum(1 for value in available_values if value < 0)
     return f"近 {years} 年年度淨利有 {loss_count} 年虧損；詳見年度表格。" if loss_count else f"近 {years} 年年度淨利皆為正；詳見年度表格。"
@@ -236,7 +235,7 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
             evidence=e2_evidence,
         )
     else:
-        e2_growth_ok = all(later > earlier for earlier, later in zip(annual_3y, annual_3y[1:]))
+        e2_growth_ok = all(later > earlier for earlier, later in zip(annual_3y, annual_3y[1:], strict=False))
         e2 = RuleResult(
             code="E2",
             title="近 3 年淨利正成長",
