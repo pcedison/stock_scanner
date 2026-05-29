@@ -7,11 +7,12 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGETS = {
-    "frontend/app.js": 2400,
+    "frontend/app.js": 2340,
     "frontend/dom.js": 90,
     "frontend/renderers.js": 300,
     "frontend/strategy_content.js": 160,
     "frontend/storage.js": 80,
+    "frontend/navigation.js": 100,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
     "cloudflare/worker.py": 980,
