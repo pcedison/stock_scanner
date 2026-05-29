@@ -234,6 +234,20 @@ class Api:
         return error_response("Not found", status=404)
 
     async def _route_scan(self, request, method: str, path: str):
+        if path == "/api/scan/market" and method == "GET":
+            # Pure read: serve the global R2 seed scan with edge caching and no
+            # refresh side effect, so repeat page loads are served from cache
+            # (0 Worker/R2/D1). Refresh queuing stays on the POST path + cron.
+            manifest = await self.r2_json("public/manifest.json", {})
+            scan = await self.r2_json("public/market_scan_summary.json", None)
+            if not isinstance(scan, dict):
+                scan = self.empty_market_scan()
+            scan = self.compact_market_scan(scan)
+            policy = self.cache_policy()
+            scan["cacheStatus"] = self.cache_status_from_manifest(
+                manifest, {"status": "fresh", "reason": policy["reason"]}
+            )
+            return json_response(scan, public_cache_seconds=policy["minIntervalSeconds"])
         if path == "/api/scan/market" and method == "POST":
             payload = await self.request_json(request)
             refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()

@@ -284,9 +284,24 @@ def contract_holdings(monkeypatch, worker, tmp_path):
     assert fastapi_get.json()["holdings"] == worker_payload(worker_get)["holdings"] == holdings
 
 
+def contract_scan_market_get(monkeypatch, worker):
+    monkeypatch.setattr(main_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    client = TestClient(main_module.app)
+    api = make_worker_api(worker)
+
+    fastapi_response = client.get("/api/scan/market")
+    worker_response = run_worker_fetch(api, "GET", "/api/scan/market")
+    assert_status_and_keys_match(
+        fastapi_response,
+        worker_response,
+        {"entry", "watch", "excluded", "generatedAt", "dataSource"},
+    )
+
+
 ENDPOINT_CONTRACT_MATRIX = [
     EndpointContractCase("app-status", contract_app_status),
     EndpointContractCase("data-sources/status", contract_data_sources_status),
+    EndpointContractCase("scan/market GET", contract_scan_market_get),
     EndpointContractCase("scheduler/wakeup", contract_scheduler_wakeup),
     EndpointContractCase("scheduler/auto-scan", contract_scheduler_auto_scan),
     EndpointContractCase("backtest", contract_backtest),
