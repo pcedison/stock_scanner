@@ -86,7 +86,6 @@ const {
   isMobileNavigation,
   setScanNavExpanded,
   normalizeResponsiveNavigation,
-  setMobileMenuOpen,
   closeMobileMenu,
   toggleMobileMenu,
 } = NAVIGATION_HELPERS.createNavigation({ query: $, breakpoint: MOBILE_NAV_BREAKPOINT });
@@ -288,7 +287,7 @@ async function syncHoldingsToServer(holdings = state.holdings) {
     }
     state.auth.message = "持股已同步到帳號。";
     return true;
-  } catch (error) {
+  } catch {
     state.auth.available = false;
     state.pendingHoldingsSync = false;
     state.auth.message = "伺服器同步失敗，已保留本機持股。";

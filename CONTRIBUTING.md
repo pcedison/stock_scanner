@@ -24,7 +24,8 @@ python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 - **Cloudflare schema 變更**：請新增版本化 migration `cloudflare/migrations/*.sql`，**不要**只改 `cloudflare/schema.sql`。
 - **前端 DOM 安全**：新的 renderer 應優先使用 `frontend/dom.js` 中的 escape / DOM helper，避免新增 ad hoc `innerHTML`，以維持 XSS 防護的一致性。
 - **相依套件管理**：Python 套件透過 `requirements.txt` + `constraints.txt` 安裝；`constraints.txt` 釘住 direct 與 transitive 相依（由 `pip-compile` 產生）。新增套件時請一併更新兩個檔案。
-- **程式風格與型別**：Python 使用 `ruff`（lint + format）與 `mypy`，設定見 [`pyproject.toml`](./pyproject.toml)；開發工具版本釘於 [`requirements-dev.txt`](./requirements-dev.txt)。CI 會擋 `ruff check .` 與 `mypy backend`。mypy 採漸進導入，仍有型別缺口的模組暫列於 pyproject 的 overrides，補齊後逐一移除。
+- **Python 風格與型別**：使用 `ruff`（lint + format）與 `mypy`，設定見 [`pyproject.toml`](./pyproject.toml)；開發工具版本釘於 [`requirements-dev.txt`](./requirements-dev.txt)。CI 會擋 `ruff check .` 與 `mypy backend`。mypy 採漸進導入，仍有型別缺口的模組暫列於 pyproject 的 overrides，補齊後逐一移除。
+- **前端 JS 風格**：使用 `eslint`（設定見 [`eslint.config.mjs`](./eslint.config.mjs)），CI 會擋 `npm run lint`。`prettier` 為**選用**格式化（`npm run format`），與 Python 的 `ruff format` 一致地**未納入 CI gate**，以避免一次性大量重排既有碼。請至少對你改動的檔案套用 `prettier`。
 
 ## 提交前驗證 / Pre-submit Checks
 
@@ -35,9 +36,11 @@ python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 python -m pip install -r requirements-dev.txt
 
 # 程式風格與型別（對應 CI gate）
+npm run lint          # eslint（前端 JS）
 python -m ruff check .
 python -m mypy backend
-# 選用：套用格式（尚未納入 CI gate，全面導入待獨立排版 PR）
+# 選用：套用格式（皆未納入 CI gate，全面導入待獨立排版 PR）
+npm run format        # prettier（前端 JS）
 python -m ruff format .
 
 # 測試與安全
