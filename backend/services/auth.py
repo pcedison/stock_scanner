@@ -218,7 +218,10 @@ class AuthService:
                     """,
                     (normalized_username, clean_display_name, self._hash_password(password), now),
                 )
-                user_id = int(cursor.lastrowid)
+                last_row_id = cursor.lastrowid
+                if last_row_id is None:  # sqlite sets lastrowid after a successful INSERT
+                    raise RuntimeError("user insert did not return a row id")
+                user_id = int(last_row_id)
         except sqlite3.IntegrityError as exc:
             raise ValueError("帳號已存在") from exc
         return AuthUser(id=user_id, username=normalized_username, display_name=clean_display_name)
