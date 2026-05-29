@@ -1,0 +1,82 @@
+# Project metadata and tooling configuration.
+#
+# Runtime dependencies are intentionally NOT declared here: they are managed
+# via requirements.txt + constraints.txt (pip-compile pins direct and
+# transitive deps). This file centralises project metadata and the lint /
+# format / type-check configuration so contributors and CI share one source
+# of truth. See CONTRIBUTING.md for the pre-submit check commands.
+
+[project]
+name = "stock-scanner"
+version = "0.1.0"
+description = "台股財報事件驅動掃描與持股分析工具（FastAPI + Cloudflare Pages/Worker/D1/R2）"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "pcedison" }]
+keywords = ["taiwan-stock", "fastapi", "cloudflare-workers", "stock-screener"]
+
+[project.urls]
+Homepage = "https://github.com/pcedison/stock_scanner"
+Repository = "https://github.com/pcedison/stock_scanner"
+Issues = "https://github.com/pcedison/stock_scanner/issues"
+
+# --------------------------------------------------------------------------- #
+# Ruff: linter + formatter
+# Run:  python -m ruff check .   /   python -m ruff format .
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = [
+    ".tmp",
+    ".venv",
+    "node_modules",
+    "cloudflare/python_modules",
+    "cloudflare/seed",
+]
+
+[tool.ruff.lint]
+# A pragmatic starting set. Tighten over time as the codebase is cleaned up.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort (import ordering)
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line length is handled by the formatter
+    "B008",  # FastAPI uses function calls in argument defaults (Depends/Query/Body)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend", "cloudflare", "scripts"]
+
+# --------------------------------------------------------------------------- #
+# mypy: static type checking
+# Run:  python -m mypy backend cloudflare scripts
+# Starts lenient so it can be adopted incrementally; tighten module-by-module.
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+no_implicit_optional = true
+check_untyped_defs = true
+exclude = "(^|/)(\\.tmp|\\.venv|node_modules|cloudflare/(python_modules|seed))/"
+
+# --------------------------------------------------------------------------- #
+# pytest
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
