@@ -82,13 +82,13 @@ def _pick(row: dict[str, Any], *keys: str) -> Any:
 
 
 def _gross_margin(revenue: float | None, gross_profit: float | None) -> float | None:
-    if revenue in (None, 0) or gross_profit is None:
+    if revenue is None or revenue == 0 or gross_profit is None:
         return None
     return (gross_profit / revenue) * 100
 
 
 def _operating_margin(revenue: float | None, operating_income: float | None) -> float | None:
-    if revenue in (None, 0) or operating_income is None:
+    if revenue is None or revenue == 0 or operating_income is None:
         return None
     return (operating_income / revenue) * 100
 
