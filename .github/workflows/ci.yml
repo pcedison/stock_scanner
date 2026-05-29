@@ -37,6 +37,7 @@ jobs:
 
       - name: Run lint and type checks
         run: |
+          npm run lint
           python -m ruff check .
           python -m mypy backend
 

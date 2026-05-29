@@ -93,7 +93,6 @@ module = [
     "backend.services.rules",
     "backend.services.calendar",
     "backend.services.filing_calendar",
-    "backend.services.auth",
 ]
 ignore_errors = true
 

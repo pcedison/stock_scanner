@@ -1,9 +1,17 @@
 {
   "scripts": {
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "format": "prettier --write \"frontend/**/*.js\" \"*.mjs\" \"playwright.config.js\" \"tests/e2e/*.cjs\"",
+    "format:check": "prettier --check \"frontend/**/*.js\" \"*.mjs\" \"playwright.config.js\" \"tests/e2e/*.cjs\""
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.57.0",
+    "eslint": "^10.4.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.3",
     "wrangler": "^4.94.0"
   },
   "overrides": {
