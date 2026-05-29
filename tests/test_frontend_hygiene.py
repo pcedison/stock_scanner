@@ -4,7 +4,7 @@ from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_fro
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260530-cacheable-scan-get"
+APP_VERSION = "20260530-normalize-split"
 DOM_VERSION = "20260525-dom-hardening"
 
 
