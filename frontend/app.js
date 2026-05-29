@@ -1782,10 +1782,15 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
     }
     return state.marketScan;
   }
-  marketScanRefreshPromise = apiJson("/api/scan/market", {
-    method: "POST",
-    body: JSON.stringify({ settings: state.settings, refreshMode }),
-  })
+  // Passive/auto loads use the cacheable GET (served from Cloudflare edge
+  // cache within TTL — 0 Worker/R2/D1). Only an explicit force refresh POSTs,
+  // which may queue a refresh job. See docs/proposals/market-scan-cacheability.md.
+  marketScanRefreshPromise = apiJson(
+    "/api/scan/market",
+    refreshMode === "force"
+      ? { method: "POST", body: JSON.stringify({ settings: state.settings, refreshMode }) }
+      : { method: "GET" },
+  )
     .then((scan) => {
       state.marketScan = scan;
       resetMarketListUi();
