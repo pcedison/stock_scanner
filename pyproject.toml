@@ -88,7 +88,6 @@ exclude = "(^|/)(\\.tmp|\\.venv|node_modules|cloudflare/(python_modules|seed))/"
 [[tool.mypy.overrides]]
 module = [
     "backend.adapters.fundamentals_history",
-    "backend.services.official_data_provider",
     "backend.services.rules",
 ]
 ignore_errors = true
