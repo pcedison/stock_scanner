@@ -35,6 +35,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          lfs: true
 
       # Lightweight pre-check: query D1 via REST API and check health URL.
       # This runs before npm/pip so empty runs still skip the heavy setup.
