@@ -11,22 +11,41 @@ from urllib.parse import urlparse
 from js import Object, Response
 from pyodide.ffi import to_js
 
+# Contract constants shared with the FastAPI backend (single source of truth in
+# cloudflare/contract.py). The flat import is what the bundled Worker uses; the
+# package-path fallback is for CPython (tests / local tooling).
+try:
+    from contract import (
+        AUTH_FAILURE_LIMIT,
+        AUTH_FAILURE_WINDOW_SECONDS,
+        AUTH_LOCK_SECONDS,
+        CSRF_HEADER_NAME,
+        CSRF_HEADER_VALUE,
+        PASSWORD_ALGORITHM,
+        PASSWORD_ITERATIONS,
+        UNSAFE_API_METHODS,
+        USERNAME_PATTERN,
+    )
+except (ModuleNotFoundError, ImportError):
+    from cloudflare.contract import (
+        AUTH_FAILURE_LIMIT,
+        AUTH_FAILURE_WINDOW_SECONDS,
+        AUTH_LOCK_SECONDS,
+        CSRF_HEADER_NAME,
+        CSRF_HEADER_VALUE,
+        PASSWORD_ALGORITHM,
+        PASSWORD_ITERATIONS,
+        UNSAFE_API_METHODS,
+        USERNAME_PATTERN,
+    )
+
 SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
-PASSWORD_ALGORITHM = "pbkdf2_sha256"
-PASSWORD_ITERATIONS = 210_000
-USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
 TAIPEI_TZ = timezone(timedelta(hours=8))
 _LOCALHOST_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d{1,5}$")
 LOCAL_CORS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
-AUTH_FAILURE_LIMIT = 5
-AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
-AUTH_LOCK_SECONDS = 15 * 60
 REVENUE_GROWTH_MODES = frozenset({"cumulative_ytd", "monthly", "trailing_3m_avg"})
-CSRF_HEADER_NAME = "x-stock-scanner-csrf"
-CSRF_HEADER_VALUE = "1"
-UNSAFE_API_METHODS = frozenset({"POST", "PUT", "DELETE"})
 
 DEFAULT_SETTINGS = {
     "auto_scan_full_market": True,

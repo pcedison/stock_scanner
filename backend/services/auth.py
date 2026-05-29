@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-import re
 import secrets
 import sqlite3
 import threading
@@ -12,15 +11,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from backend.models.holding import Holding
+from cloudflare.contract import (
+    AUTH_FAILURE_LIMIT,
+    AUTH_FAILURE_WINDOW_SECONDS,
+    AUTH_LOCK_SECONDS,
+    PASSWORD_ALGORITHM,
+    PASSWORD_ITERATIONS,
+    USERNAME_PATTERN,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = ROOT_DIR / "data" / "app.sqlite3"
-PASSWORD_ALGORITHM = "pbkdf2_sha256"
-PASSWORD_ITERATIONS = 210_000
-USERNAME_PATTERN = re.compile(r"^[^\s<>\"'`;]{3,80}$")
-AUTH_FAILURE_LIMIT = 5
-AUTH_FAILURE_WINDOW_SECONDS = 15 * 60
-AUTH_LOCK_SECONDS = 15 * 60
 SESSION_CLEANUP_INTERVAL_SECONDS = 15 * 60
 MAX_SESSIONS_PER_USER = 10
 

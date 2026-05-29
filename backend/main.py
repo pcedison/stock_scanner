@@ -32,6 +32,7 @@ from backend.services.rules import RuleEngine
 from backend.services.scan_cache import ScanCacheService
 from backend.services.scheduler import should_wake_up
 from backend.services.settings_service import load_settings, save_settings
+from cloudflare.contract import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, UNSAFE_API_METHODS
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT_DIR / "frontend"
@@ -132,9 +133,6 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 }
 
-CSRF_HEADER_NAME = "x-stock-scanner-csrf"
-CSRF_HEADER_VALUE = "1"
-UNSAFE_API_METHODS = {"POST", "PUT", "DELETE"}
 
 
 def _requires_csrf_header(request: Request) -> bool:
