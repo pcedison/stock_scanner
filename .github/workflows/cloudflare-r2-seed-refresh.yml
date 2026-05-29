@@ -191,8 +191,30 @@ jobs:
             --data-dir data \
             --output-json .tmp/r2-upload-plan.json \
             --output-tsv .tmp/r2-upload-plan.tsv
+          # 單一物件遇到 Cloudflare API 暫時性錯誤（如 502 Bad Gateway）時，
+          # 以指數退避重試，避免一次抖動就讓整批 seed 上傳失敗。
+          put_with_retry() {
+            object_key="$1"
+            file_path="$2"
+            attempt=1
+            max_attempts=5
+            delay=5
+            while true; do
+              if npx wrangler r2 object put "$CF_R2_BUCKET/$object_key" --remote --file "$file_path" </dev/null; then
+                return 0
+              fi
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "R2 上傳 $object_key 失敗：已重試 $max_attempts 次仍未成功" >&2
+                return 1
+              fi
+              echo "R2 上傳 $object_key 第 $attempt 次失敗，${delay}s 後重試..." >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
           while IFS=$'\t' read -r object_key file_path; do
-            npx wrangler r2 object put "$CF_R2_BUCKET/$object_key" --remote --file "$file_path"
+            put_with_retry "$object_key" "$file_path"
           done < .tmp/r2-upload-plan.tsv
 
       - name: Verify refreshed production seed
