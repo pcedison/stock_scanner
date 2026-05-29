@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from backend.adapters.official_fundamentals import OfficialBalanceSheetRow, OfficialIncomeStatementRow
 
@@ -29,7 +29,7 @@ def _period_key(period: str) -> tuple[int, int]:
 
 
 def _yoy(current: float | None, previous: float | None) -> float | None:
-    if current is None or previous in (None, 0):
+    if current is None or previous is None or previous == 0:
         return None
     return ((current - previous) / abs(previous)) * 100
 
@@ -89,7 +89,7 @@ class OfficialFundamentalsHistoryStore:
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            payload = {"schemaVersion": 1, "updatedAt": None, "quarters": {}}
+            payload: dict[str, Any] = {"schemaVersion": 1, "updatedAt": None, "quarters": {}}
             self._cache = payload
             self._cache_mtime = None
             return payload
@@ -237,12 +237,12 @@ class OfficialFundamentalsHistoryStore:
             if fiscal_year is None:
                 continue
             annuals.append({"year": int(fiscal_year), "netIncome": record.get("netIncome")})
-        deduped = {row["year"]: row for row in sorted(annuals, key=lambda item: item["year"])}
+        deduped = {row["year"]: row for row in sorted(annuals, key=lambda item: cast(int, item["year"]))}
         return list(deduped.values())
 
     def inventory_turnover(self, stock_code: str, period: str | None) -> float | None:
         current = self.quarter(stock_code, period)
-        if current is None or current.costOfRevenue is None or current.inventory in (None, 0):
+        if current is None or current.costOfRevenue is None or current.inventory is None or current.inventory == 0:
             return None
         annualized_factor = 4 / current.quarter if current.quarter else 1
         return (current.costOfRevenue * annualized_factor) / current.inventory
@@ -292,7 +292,7 @@ class OfficialFundamentalsHistoryStore:
         fiscal_year = record.get("fiscalYear")
         quarter = record.get("quarter")
         period = _period(fiscal_year, quarter)
-        if period is None:
+        if period is None or fiscal_year is None or quarter is None:
             return None
         return HistoricalQuarterlyFundamental(
             stockCode=stock_code,
