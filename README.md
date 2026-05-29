@@ -15,7 +15,15 @@
 
 ## 本機啟動
 
-建議 Python 3.12。
+建議 Python 3.12。本專案的 Cloudflare seed zip（`data/official_cache_seed_*.zip`）以 **Git LFS** 追蹤，clone 前請先安裝並啟用：
+
+```bash
+git lfs install
+# 既有 clone 補拉 LFS 物件：
+git lfs pull
+```
+
+未安裝 git-lfs 時，新版 seed zip 會以 pointer 檔形式出現，導致 seed 驗證/重建步驟失敗。
 
 ```powershell
 python -m pip install --upgrade pip
