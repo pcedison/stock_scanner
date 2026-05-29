@@ -94,7 +94,7 @@ def _parse_twse_holiday_payload(year: int, payload: dict[str, Any]) -> dict[str,
 
 
 def fetch_twse_market_calendar(year: int, timeout: float = 20) -> dict[str, Any]:
-    params = {"response": "json", "queryYear": year}
+    params: dict[str, str | int] = {"response": "json", "queryYear": year}
     response = httpx.get(TWSE_HOLIDAY_URL, params=params, timeout=timeout, follow_redirects=True)
     response.raise_for_status()
     payload = response.json()

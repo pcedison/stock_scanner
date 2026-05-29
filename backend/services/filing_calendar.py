@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 from zoneinfo import ZoneInfo
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -83,7 +84,7 @@ def active_financial_report_event(today: date) -> FinancialReportEvent | None:
 def filing_context(today: date | None = None) -> dict:
     target_date = today or today_taipei()
     event = active_financial_report_event(target_date)
-    context = {
+    context: dict[str, Any] = {
         "asOfDate": target_date.isoformat(),
         "monthlyRevenuePeriod": latest_monthly_revenue_period(target_date),
         "activeFinancialReport": None,
