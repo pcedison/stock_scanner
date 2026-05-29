@@ -1,5 +1,9 @@
 # Stock Scanner
 
+[![Validate](https://github.com/pcedison/stock_scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/pcedison/stock_scanner/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/pcedison/stock_scanner/actions/workflows/codeql.yml/badge.svg)](https://github.com/pcedison/stock_scanner/actions/workflows/codeql.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 台股掃描與持股分析工具。專案已從早期純前端 MVP 進化為 server-backed、Cloudflare-ready 架構：本機使用 FastAPI，部署端使用 Cloudflare Pages + Python Worker + D1 + R2。
 
 完整現況以 `docs/current_architecture.md` 為準；舊版規格中的 localStorage 描述只代表早期 MVP 設計。現在持股、設定、session 以 API 儲存為主，前端 local fallback 只用於離線或 API 不可用時的降級情境。
@@ -120,3 +124,11 @@ Production health/smoke checks reject stale cache data older than 36 hours and o
 - 新 Cloudflare schema 變更應新增 `cloudflare/migrations/*.sql`，不要只改 `cloudflare/schema.sql`。
 - 新前端 renderer 應優先使用 `frontend/dom.js` 中的 escape/DOM helper，避免增加 ad hoc `innerHTML`。
 - Python dependency 透過 `requirements.txt` + `constraints.txt` 安裝；`constraints.txt` 釘住 direct 與 transitive dependencies。
+
+## 專案資訊 / Project
+
+- 授權：[Apache-2.0](./LICENSE)
+- 貢獻指南：[CONTRIBUTING.md](./CONTRIBUTING.md)
+- 行為準則：[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- 安全政策：[SECURITY.md](./SECURITY.md)
+- 變更紀錄：[CHANGELOG.md](./CHANGELOG.md)
