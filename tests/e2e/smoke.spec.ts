@@ -53,16 +53,18 @@ async function registerViaApi(page, username: string, password = "test-password-
 }
 
 test("overview auto-refreshes market counts on load and after login", async ({ page }) => {
-  const scanBodies: any[] = [];
+  const scanRequests: { method: string; body: any }[] = [];
   await page.route("**/api/scan/market", async (route) => {
     const request = route.request();
+    let body: any = null;
     if (request.method() === "POST") {
       try {
-        scanBodies.push(request.postDataJSON());
+        body = request.postDataJSON();
       } catch {
-        scanBodies.push({});
+        body = {};
       }
     }
+    scanRequests.push({ method: request.method(), body });
     await route.continue();
   });
 
@@ -71,9 +73,10 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
   await expect(page.locator("#overview-watch-count")).not.toHaveText("--", { timeout: 15_000 });
   await expect(page.locator("#overview-excluded-count")).not.toHaveText("--", { timeout: 15_000 });
-  const autoCountBeforeLogin = scanBodies.filter((body) => body?.refreshMode === "auto").length;
+  // Passive/auto loads use the cacheable GET; only an explicit force refresh POSTs.
+  const autoCountBeforeLogin = scanRequests.filter((r) => r.method === "GET").length;
   expect(autoCountBeforeLogin).toBeGreaterThan(0);
-  expect(scanBodies.some((body) => body?.refreshMode === "force")).toBeFalsy();
+  expect(scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force")).toBeFalsy();
 
   const overviewCounts = await page
     .locator("#overview-entry-count, #overview-watch-count, #overview-excluded-count")
@@ -89,8 +92,8 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   await page.locator("#auth-modal-username").fill(`overview-${Date.now()}@example.com`);
   await page.locator("#auth-modal-password").fill("test-password-123");
   await page.locator("#auth-modal-form").evaluate((form: HTMLFormElement) => form.requestSubmit());
-  await expect.poll(() => scanBodies.filter((body) => body?.refreshMode === "auto").length).toBeGreaterThan(autoCountBeforeLogin);
-  expect(scanBodies.some((body) => body?.refreshMode === "force")).toBeFalsy();
+  await expect.poll(() => scanRequests.filter((r) => r.method === "GET").length).toBeGreaterThan(autoCountBeforeLogin);
+  expect(scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force")).toBeFalsy();
 });
 
 test("settings stay read-only for non-admin users and CSP is strict", async ({ page, isMobile }) => {

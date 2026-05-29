@@ -11,6 +11,7 @@ const PUBLIC_DIRECT_FALLBACK_ROUTES = [
   /^GET \/api\/data-sources\//,
   /^GET \/api\/calendar\//,
   /^GET \/api\/companies(?:$|[/?])/,
+  /^GET \/api\/scan\/market$/,
   /^POST \/api\/scan\/market$/,
   /^POST \/api\/scan\/holdings$/,
   /^POST \/api\/analyze\//,
