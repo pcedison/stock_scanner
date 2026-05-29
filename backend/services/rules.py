@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from backend.models.analysis import AnalysisResult, RuleResult
+from typing import cast
+
+from backend.models.analysis import AnalysisResult, AnalysisStatus, RuleResult
 from backend.models.financial import AnnualFinancial, FundamentalSnapshot
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
@@ -235,7 +237,8 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
             evidence=e2_evidence,
         )
     else:
-        e2_growth_ok = all(later > earlier for earlier, later in zip(annual_3y, annual_3y[1:], strict=False))
+        _annual_values = cast(list[float], annual_3y)
+        e2_growth_ok = all(later > earlier for earlier, later in zip(_annual_values, _annual_values[1:], strict=False))
         e2 = RuleResult(
             code="E2",
             title="近 3 年淨利正成長",
@@ -505,7 +508,7 @@ class RuleEngine:
         return AnalysisResult(
             stockCode=company.stockCode,
             companyName=company.name,
-            status=status,
+            status=cast(AnalysisStatus, status),
             summary=summary,
             reasons=reasons,
             company=company,
@@ -568,7 +571,7 @@ class RuleEngine:
         return AnalysisResult(
             stockCode=company.stockCode,
             companyName=company.name,
-            status=status,
+            status=cast(AnalysisStatus, status),
             summary=summary,
             reasons=[*entry_reasons, *exit_reasons, *watch_rules, holding_note],
             company=company,

@@ -68,10 +68,9 @@ known-first-party = ["backend", "cloudflare", "scripts"]
 # --------------------------------------------------------------------------- #
 # mypy: static type checking
 # CI gate scope: `python -m mypy backend`（backend 套件 import 路徑單一、可乾淨檢查）。
+# 全 backend 已通過型別檢查，不再有 per-module ignore_errors overrides。
 # cloudflare/ 因 Pyodide 平面 import 與本地套件 import 造成同檔雙模組名，scripts/
 # 需 sys.path 注入，兩者尚未納入 gate，待後續以 explicit_package_bases 處理。
-# 採漸進式導入：下方 overrides 暫時略過目前仍有型別缺口的模組（多為財報數值的
-# None 處理），逐模組補齊型別後再從清單移除，最終達成全 backend 嚴格檢查。
 # --------------------------------------------------------------------------- #
 [tool.mypy]
 python_version = "3.12"
@@ -83,14 +82,6 @@ no_implicit_optional = true
 check_untyped_defs = true
 exclude = "(^|/)(\\.tmp|\\.venv|node_modules|cloudflare/(python_modules|seed))/"
 
-# 漸進導入待辦：以下模組仍有待補的型別缺口，暫時不擋 CI。
-# 每補齊一個模組的型別就從這份清單移除一行。
-[[tool.mypy.overrides]]
-module = [
-    "backend.adapters.fundamentals_history",
-    "backend.services.rules",
-]
-ignore_errors = true
 
 # --------------------------------------------------------------------------- #
 # pytest
