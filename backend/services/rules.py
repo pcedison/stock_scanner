@@ -525,29 +525,51 @@ class RuleEngine:
         entry_reasons = _healthy_entry_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         exit_reasons = _exit_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         add_reasons = _add_watch_rules(entry_reasons, exit_reasons, snapshot)
-        x_reasons = [reason for reason in exit_reasons if reason.code.startswith("X")]
-        high_priority_exit = any(reason.code in {"X4", "X5"} and not reason.passed for reason in exit_reasons)
+        # A missing X-rule is INSUFFICIENT_DATA (passed=False). For a holding we do
+        # not turn "data missing" into an EXIT/出清 verdict — only a *genuine* rule
+        # failure (severity WARNING/EXIT) drives that. Missing exit data instead
+        # surfaces a cautious WARNING ("can't confirm it's still safe to hold"),
+        # so it is never silently ignored. (Both `high_priority_exit` and
+        # `failed_warning` therefore exclude INSUFFICIENT_DATA.)
+        def _genuinely_failed(reason: RuleResult) -> bool:
+            return not reason.passed and reason.severity != "INSUFFICIENT_DATA"
+
+        high_priority_exit = any(reason.code in {"X4", "X5"} and _genuinely_failed(reason) for reason in exit_reasons)
         failed_warning = [
             reason
             for reason in exit_reasons
-            if reason.code in {"X1", "X2", "T3"} and not reason.passed
-            or (reason.code == "X3" and not reason.passed and not high_priority_exit)
+            if _genuinely_failed(reason)
+            and (
+                reason.code in {"X1", "X2", "T3"}
+                or (reason.code == "X3" and not high_priority_exit)
+            )
         ]
+        exit_data_missing = any(
+            reason.code.startswith("X") and reason.severity == "INSUFFICIENT_DATA" for reason in exit_reasons
+        )
         entry_excluded = any(reason.code == "E6" and not reason.passed for reason in entry_reasons)
         entry_insufficient = any(reason.severity == "INSUFFICIENT_DATA" for reason in entry_reasons)
-        exit_insufficient = any(reason.severity == "INSUFFICIENT_DATA" for reason in x_reasons)
         mild_warning = bool(failed_warning)
 
         if high_priority_exit:
             status = "EXIT"
             summary = "已觸發高優先出場條件，建議出清或至少大幅降低部位。"
-        elif mild_warning:
+        elif mild_warning or exit_data_missing:
             status = "WARNING"
-            failed = "、".join(reason.code for reason in failed_warning)
-            summary = f"成長訊號轉弱，進入警戒：{failed}。"
-        elif exit_insufficient:
-            status = "INSUFFICIENT_DATA"
-            summary = "持股出場規則 X1-X5 資料待補，暫不硬給續抱或出場結論。"
+            if mild_warning:
+                failed = "、".join(reason.code for reason in failed_warning)
+                summary = (
+                    f"成長訊號轉弱並有出場依據待補，保守示警：{failed}。"
+                    if exit_data_missing
+                    else f"成長訊號轉弱，進入警戒：{failed}。"
+                )
+            else:
+                missing = "、".join(
+                    reason.code
+                    for reason in exit_reasons
+                    if reason.code.startswith("X") and reason.severity == "INSUFFICIENT_DATA"
+                )
+                summary = f"出場依據資料待補，無法確認是否仍可安全續抱，保守示警：{missing}。"
         elif entry_excluded:
             status = "HOLD"
             summary = "主策略排除產業，但 X1-X5 未觸發出場條件；仍需用專屬產業指標人工覆核。"
