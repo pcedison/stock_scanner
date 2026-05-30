@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import hashlib
-import io
 import json
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from js import Object, Response
@@ -242,8 +239,8 @@ class Api:
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
             if not isinstance(scan, dict):
-                scan = self.empty_market_scan()
-            scan = self.compact_market_scan(scan)
+                scan = empty_market_scan()
+            scan = compact_market_scan(scan)
             policy = self.cache_policy()
             scan["cacheStatus"] = self.cache_status_from_manifest(
                 manifest, {"status": "fresh", "reason": policy["reason"]}
@@ -256,8 +253,8 @@ class Api:
             scan = await self.r2_json("public/market_scan_summary.json", None)
             refresh_status = await self.ensure_refresh_job(manifest, force=refresh_mode == "force")
             if not isinstance(scan, dict):
-                scan = self.empty_market_scan()
-            scan = self.compact_market_scan(scan)
+                scan = empty_market_scan()
+            scan = compact_market_scan(scan)
             scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
             return json_response(scan)
         if path == "/api/scan/holdings" and method == "POST":
@@ -852,87 +849,12 @@ class Api:
         shard = await self.r2_json(f"public/analysis_shards/{normalized[:2]}.json", {})
         return shard.get(normalized) if isinstance(shard, dict) else None
 
-    def empty_market_scan(self):
-        return {
-            "generatedAt": utc_now(),
-            "dataSource": "cloudflare_r2_seed",
-            "universeSize": 0,
-            "note": "尚未上傳 Cloudflare R2 掃描快取。",
-            "entry": [],
-            "watch": [],
-            "excluded": [],
-        }
-
-    def compact_market_scan(self, scan):
-        if not isinstance(scan, dict):
-            return self.empty_market_scan()
-        compact = dict(scan)
-        for category in ("entry", "watch", "excluded", "results"):
-            items = compact.get(category)
-            if isinstance(items, list):
-                compact[category] = [self.compact_scan_result(item) for item in items]
-        compact["detailMode"] = "summary"
-        return compact
-
-    def compact_scan_result(self, result):
-        if not isinstance(result, dict):
-            return {}
-        compact = {}
-        for key in ("stockCode", "companyName", "status", "summary", "company"):
-            if key in result:
-                compact[key] = result.get(key)
-        reasons = result.get("reasons")
-        if isinstance(reasons, list):
-            compact["reasons"] = []
-            for reason in reasons:
-                if not isinstance(reason, dict):
-                    continue
-                cast(list, compact["reasons"]).append(
-                    {
-                        key: reason.get(key)
-                        for key in ("code", "title", "passed", "severity", "message")
-                        if key in reason
-                    }
-                )
-        compact["detailsAvailable"] = True
-        compact["hasFullDetails"] = False
-        return compact
-
     async def market_report(self, query):
         report_format = (query.get("report_format") or ["markdown"])[0]
-        scan = await self.r2_json("public/market_scan_summary.json", self.empty_market_scan())
-        return self.report_response(scan, report_format, "台股市場掃描報告", "market_scan")
+        scan = await self.r2_json("public/market_scan_summary.json", empty_market_scan())
+        return report_response(scan, report_format, "台股市場掃描報告", "market_scan")
 
     async def holdings_report(self, request, query):
         report_format = (query.get("report_format") or ["markdown"])[0]
         payload = await self.request_json(request)
-        return self.report_response(await self.holdings_scan_payload(payload), report_format, "台股持股掃描報告", "holdings_scan")
-
-    def report_response(self, payload, report_format: str, title: str, filename_prefix: str):
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        if report_format == "csv":
-            output = io.StringIO()
-            writer = csv.writer(output)
-            writer.writerow(["category", "stockCode", "companyName", "status", "summary"])
-            for category in ("entry", "watch", "excluded", "results"):
-                for item in payload.get(category, []):
-                    writer.writerow([category, item.get("stockCode"), item.get("companyName"), item.get("status"), item.get("summary")])
-            return text_response(
-                output.getvalue(),
-                media_type="text/csv; charset=utf-8",
-                headers={"content-disposition": f'attachment; filename="{filename_prefix}_{timestamp}.csv"'},
-            )
-        lines = [f"# {title}", "", f"- 產生時間：{payload.get('generatedAt', utc_now())}", f"- 資料來源：{payload.get('dataSource', 'cloudflare_r2_seed')}", ""]
-        for category, label in (("entry", "適合進場"), ("watch", "接近觀察"), ("excluded", "排除清單"), ("results", "持股")):
-            items = payload.get(category, [])
-            if not items:
-                continue
-            lines.append(f"## {label} ({len(items)})")
-            for item in items:
-                lines.append(f"- {item.get('stockCode')} {item.get('companyName')}：{item.get('summary')}")
-            lines.append("")
-        return text_response(
-            "\n".join(lines),
-            media_type="text/markdown; charset=utf-8",
-            headers={"content-disposition": f'attachment; filename="{filename_prefix}_{timestamp}.md"'},
-        )
+        return report_response(await self.holdings_scan_payload(payload), report_format, "台股持股掃描報告", "holdings_scan")

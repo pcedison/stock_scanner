@@ -18,8 +18,8 @@ DEFAULT_BUDGETS = {
     "frontend/market_scan.js": 200,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
-    "cloudflare/worker.py": 980,
-    "cloudflare/worker_support.py": 520,
+    "cloudflare/worker.py": 880,
+    "cloudflare/worker_support.py": 590,
     ".github/workflows/cloudflare-r2-seed-refresh.yml": 260,
 }
 
