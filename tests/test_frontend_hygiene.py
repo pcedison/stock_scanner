@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from scripts.check_frontend_hygiene import frontend_hygiene_report, validate_frontend_hygiene
+from scripts.check_frontend_hygiene import (
+    dangerous_inner_html_assignments,
+    frontend_hygiene_report,
+    validate_frontend_hygiene,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
@@ -122,3 +126,46 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css
     assert ".holding-exit-alert-banner.critical" in styles_css
+
+
+def test_map_chain_sink_does_not_run_into_following_code():
+    # A fully-escaped `.map(...).join("")` template sink, followed by unrelated
+    # code containing a raw `${...}` (a fetch URL). The statement must terminate at
+    # its own `);` rather than running away and flagging the downstream code.
+    source = """
+function renderList(target, items) {
+  setSafeHtml(target, `
+    <ul>
+      ${items
+        .map((item) => `<li>${escapeHtml(item.name)}</li>`)
+        .join("")}
+    </ul>
+  `);
+}
+
+async function loadDetails(result) {
+  const detail = await apiJson(`/api/analyze/${result.stockCode}`, { method: "POST" });
+}
+"""
+    assert dangerous_inner_html_assignments(source) == []
+
+
+def test_nested_template_literals_have_no_false_positive():
+    source = (
+        'setSafeHtml(target, `<div>${rows'
+        '.map((r) => `<span>${escapeHtml(r.label)}</span>`)'
+        '.join("")}</div>`);\n'
+    )
+    assert dangerous_inner_html_assignments(source) == []
+
+
+def test_multiline_template_with_raw_interpolation_is_still_flagged():
+    source = """
+setSafeHtml(target, `
+  <div>${escapeHtml(payload.title)}</div>
+  <div>${payload.body}</div>
+`);
+"""
+    findings = dangerous_inner_html_assignments(source)
+    assert len(findings) == 1
+    assert findings[0]["rawTemplateInterpolations"] == ["${payload.body}"]
