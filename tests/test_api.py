@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+import backend.dependencies as deps_module
 import backend.main as main_module
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService
@@ -126,14 +127,14 @@ def test_backtest_status_cache_invalidates_when_source_file_changes(tmp_path, mo
         calls["count"] += 1
         return {"status": "OK", "trades": [], "metrics": {"tradeCount": calls["count"]}}
 
-    monkeypatch.setattr(main_module, "DEFAULT_BACKTEST_PATH", source)
-    monkeypatch.setattr(main_module, "run_backtest", fake_run_backtest)
-    main_module._backtest_cache.clear()
+    monkeypatch.setattr(deps_module, "DEFAULT_BACKTEST_PATH", source)
+    monkeypatch.setattr(deps_module, "run_backtest", fake_run_backtest)
+    deps_module._backtest_cache.clear()
 
-    first = main_module._backtest_status_cached()
-    second = main_module._backtest_status_cached()
+    first = deps_module._backtest_status_cached()
+    second = deps_module._backtest_status_cached()
     source.write_text("changed\n", encoding="utf-8")
-    third = main_module._backtest_status_cached()
+    third = deps_module._backtest_status_cached()
 
     assert first["metrics"]["tradeCount"] == 1
     assert second["metrics"]["tradeCount"] == 1
@@ -160,14 +161,14 @@ def test_backtest_status_cache_single_flights_concurrent_misses(tmp_path, monkey
 
     def call_cached():
         try:
-            results.append(main_module._backtest_status_cached())
+            results.append(deps_module._backtest_status_cached())
         except Exception as exc:  # pragma: no cover - assertion context
             errors.append(exc)
 
-    monkeypatch.setattr(main_module, "DEFAULT_BACKTEST_PATH", source)
-    monkeypatch.setattr(main_module, "run_backtest", fake_run_backtest)
-    main_module._backtest_cache.clear()
-    main_module._backtest_refresh_events.clear()
+    monkeypatch.setattr(deps_module, "DEFAULT_BACKTEST_PATH", source)
+    monkeypatch.setattr(deps_module, "run_backtest", fake_run_backtest)
+    deps_module._backtest_cache.clear()
+    deps_module._backtest_refresh_events.clear()
 
     first = Thread(target=call_cached)
     second = Thread(target=call_cached)
@@ -187,25 +188,25 @@ def test_backtest_status_cache_single_flights_concurrent_misses(tmp_path, monkey
 
 def test_scan_rate_limit_prunes_stale_sources_and_caps_store(monkeypatch):
     now = 1_000.0
-    monkeypatch.setattr(main_module, "monotonic", lambda: now)
-    monkeypatch.setattr(main_module, "_SCAN_RATE_MAX_REQUESTS", 100)
-    monkeypatch.setattr(main_module, "_SCAN_RATE_MAX_SOURCES", 3)
-    main_module._scan_rate_store.clear()
-    main_module._scan_rate_store.update(
+    monkeypatch.setattr(deps_module, "monotonic", lambda: now)
+    monkeypatch.setattr(deps_module, "_SCAN_RATE_MAX_REQUESTS", 100)
+    monkeypatch.setattr(deps_module, "_SCAN_RATE_MAX_SOURCES", 3)
+    deps_module._scan_rate_store.clear()
+    deps_module._scan_rate_store.update(
         {
-            "stale": [now - main_module._SCAN_RATE_WINDOW_SECONDS - 1],
+            "stale": [now - deps_module._SCAN_RATE_WINDOW_SECONDS - 1],
             "older": [now - 20],
             "old": [now - 10],
             "fresh": [now - 1],
         }
     )
 
-    main_module._check_scan_rate_limit("new")
+    deps_module._check_scan_rate_limit("new")
 
-    assert "stale" not in main_module._scan_rate_store
-    assert "older" not in main_module._scan_rate_store
-    assert "new" in main_module._scan_rate_store
-    assert len(main_module._scan_rate_store) <= 3
+    assert "stale" not in deps_module._scan_rate_store
+    assert "older" not in deps_module._scan_rate_store
+    assert "new" in deps_module._scan_rate_store
+    assert len(deps_module._scan_rate_store) <= 3
 
 
 def test_companies_endpoint_is_paginated():
@@ -272,7 +273,7 @@ def test_settings_put_requires_auth():
 
 
 def test_settings_api_round_trip_as_super_user(monkeypatch):
-    monkeypatch.setattr(main_module, "_require_super_user", lambda req: None)
+    monkeypatch.setattr(deps_module, "_require_super_user", lambda req: None)
     original = load_settings()
     try:
         put_response = client.put("/api/settings", json={**original.model_dump(), "manual_scan_enabled": False})
@@ -284,7 +285,7 @@ def test_settings_api_round_trip_as_super_user(monkeypatch):
 
 
 def test_settings_rejects_string_booleans(monkeypatch):
-    monkeypatch.setattr(main_module, "_require_super_user", lambda req: None)
+    monkeypatch.setattr(deps_module, "_require_super_user", lambda req: None)
     original = load_settings()
 
     response = client.put("/api/settings", json={**original.model_dump(), "manual_scan_enabled": "false"})
@@ -348,7 +349,7 @@ def test_auth_service_close_reopens_thread_local_connection(tmp_path):
 
 def test_failed_login_attempts_are_rate_limited(tmp_path, monkeypatch):
     auth_service = AuthService(tmp_path / "auth.sqlite3")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
     username = f"rate_{uuid4().hex[:10]}@example.com"
     auth_service.create_user(username, "test-password-123")
     test_client = TestClient(main_module.app)
@@ -447,7 +448,7 @@ def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
     admin_username = "admin@example.com"
     monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
     admin_client = TestClient(main_module.app)
     user_client = TestClient(main_module.app)
     normal_username = f"user_{uuid4().hex[:10]}@example.com"
@@ -456,7 +457,7 @@ def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
     user_response = user_client.post("/api/auth/register", json={"username": normal_username, "password": password})
     assert user_response.status_code == 200
     assert user_response.json()["user"]["isSuperUser"] is False
-    normal_session_token = user_response.cookies.get(main_module.SESSION_COOKIE_NAME)
+    normal_session_token = user_response.cookies.get(deps_module.SESSION_COOKIE_NAME)
     user_client.put(
         "/api/me/holdings",
         json={"holdings": [{"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600}]},
