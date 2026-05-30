@@ -4,10 +4,18 @@
 
 ## 開發環境 / Getting Started
 
-建議使用 Python 3.12。Cloudflare seed zip 以 Git LFS 追蹤，請先安裝並啟用 `git lfs`。
+需要 **Python 3.11+**（後端使用 `datetime.UTC`，3.10 以下會失敗；CI 跑 3.12 / 3.13）。Cloudflare seed zip 以 Git LFS 追蹤，請先安裝並啟用 `git lfs`。
+
+最快的方式是用 `make`（建立 `.venv`、安裝 Python 與 npm 相依）：
 
 ```bash
 git lfs install            # 首次安裝 git-lfs 後執行一次
+make setup                 # 預設用 python3；若預設過舊：make setup PYTHON=python3.12
+```
+
+`make` 也提供 `test` / `lint` / `typecheck` / `e2e` 對應 CI 的 quality gate。或手動安裝：
+
+```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -c constraints.txt
 npm ci
@@ -24,7 +32,7 @@ python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 - **Cloudflare schema 變更**：請新增版本化 migration `cloudflare/migrations/*.sql`，**不要**只改 `cloudflare/schema.sql`。
 - **前端 DOM 安全**：新的 renderer 應優先使用 `frontend/dom.js` 中的 escape / DOM helper，避免新增 ad hoc `innerHTML`，以維持 XSS 防護的一致性。
 - **相依套件管理**：Python 套件透過 `requirements.txt` + `constraints.txt` 安裝；`constraints.txt` 釘住 direct 與 transitive 相依（由 `pip-compile` 產生）。新增套件時請一併更新兩個檔案。
-- **Python 風格與型別**：使用 `ruff`（lint + format）與 `mypy`，設定見 [`pyproject.toml`](./pyproject.toml)；開發工具版本釘於 [`requirements-dev.txt`](./requirements-dev.txt)。CI 會擋 `ruff check .` 與 `mypy backend scripts cloudflare`。整個 backend / scripts / cloudflare 已通過 mypy 型別檢查（無 per-module override），新增程式碼請維持此標準。
+- **Python 風格與型別**：使用 `ruff`（lint + format）與 `mypy`，設定見 [`pyproject.toml`](./pyproject.toml)；開發工具版本釘於 [`requirements-dev.txt`](./requirements-dev.txt)。CI 會擋 `ruff check .` 與 `mypy backend scripts cloudflare tests`。backend / scripts / cloudflare 已完整通過 mypy 型別檢查（無 per-module override）；`tests/` 亦納入檢查，但對測試 fake/fixture 慣用的 duck typing 放寬少數錯誤碼（見 `pyproject.toml` 的 `tests.*` override），新增程式碼請維持此標準。
 - **前端 JS 風格**：使用 `eslint`（設定見 [`eslint.config.mjs`](./eslint.config.mjs)），CI 會擋 `npm run lint`。`prettier` 為**選用**格式化（`npm run format`），與 Python 的 `ruff format` 一致地**未納入 CI gate**，以避免一次性大量重排既有碼。請至少對你改動的檔案套用 `prettier`。
 
 ## 提交前驗證 / Pre-submit Checks
@@ -38,7 +46,7 @@ python -m pip install -r requirements-dev.txt
 # 程式風格與型別（對應 CI gate）
 npm run lint          # eslint（前端 JS）
 python -m ruff check .
-python -m mypy backend scripts cloudflare
+python -m mypy backend scripts cloudflare tests
 # 選用：套用格式（皆未納入 CI gate，全面導入待獨立排版 PR）
 npm run format        # prettier（前端 JS）
 python -m ruff format .

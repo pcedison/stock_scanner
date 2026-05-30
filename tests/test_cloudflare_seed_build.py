@@ -125,7 +125,7 @@ def test_seed_quality_rejects_empty_companies_when_analysis_is_present(monkeypat
         "watch": [{} for _ in range(1000)],
         "excluded": [],
     }
-    analysis_by_code = {str(index): {} for index in range(1000)}
+    analysis_by_code: dict[str, dict] = {str(index): {} for index in range(1000)}
 
     with pytest.raises(RuntimeError, match="undersized company seed"):
         seed_build.assert_seed_quality(scan_payload, [], analysis_by_code, fallback_source=None)

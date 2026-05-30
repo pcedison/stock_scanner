@@ -39,7 +39,7 @@ jobs:
         run: |
           npm run lint
           python -m ruff check .
-          python -m mypy backend scripts cloudflare
+          python -m mypy backend scripts cloudflare tests
 
       - name: Run quality gates
         run: |

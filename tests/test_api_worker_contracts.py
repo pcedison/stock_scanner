@@ -258,7 +258,7 @@ def contract_holdings(monkeypatch, worker, tmp_path):
     client.post("/api/auth/register", json={"username": username, "password": "test-password-123"})
     holdings = [{"stockCode": "2330", "name": "TSMC", "shares": 1000, "averageCost": None}]
     api = make_worker_api(worker)
-    stored_holdings = []
+    stored_holdings: list = []
 
     async def fake_require_user(request):
         return {"id": 1, "username": username, "display_name": None}

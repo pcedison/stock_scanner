@@ -8,7 +8,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
+@pytest.fixture(autouse=True)
+def _require_node() -> None:
+    # These tests exercise the real frontend JS via node. A missing node must be a
+    # hard failure, not a silent skip, so CI/local runs can't quietly lose this
+    # coverage.
+    if shutil.which("node") is None:
+        pytest.fail("Node.js is required for the frontend parser tests; install Node to run them.", pytrace=False)
+
+
 def test_frontend_dom_helpers_escape_empty_state_html():
     script = r"""
 const { emptyStateHtml, escapeHtml, setEmptyState } = require("./frontend/dom.js");
@@ -39,7 +47,6 @@ console.log(JSON.stringify({
     assert "&lt;img" in payload["setEmpty"].lower()
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_overview_counts_follow_active_market_disclosure_tab():
     script = r"""
 const { state, activeMarketDisclosureKey, renderOverviewStats } = require("./frontend/app.js");
@@ -97,7 +104,6 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
     assert payload["fallback"] == "announced"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_api_client_falls_back_to_worker_after_pages_proxy_5xx():
     script = r"""
 const { createApiClient } = require("./frontend/api_client.js");
@@ -142,7 +148,6 @@ const client = createApiClient({
     assert payload["activeOrigin"] == "https://worker.example"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_api_client_does_not_direct_fallback_for_account_mutations():
     script = r"""
 const { createApiClient } = require("./frontend/api_client.js");
@@ -176,7 +181,6 @@ const client = createApiClient({
     assert payload["activeOrigin"] == ""
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_api_client_direct_mode_uses_worker_for_account_mutations():
     script = r"""
 const { createApiClient } = require("./frontend/api_client.js");
@@ -219,7 +223,6 @@ const client = createApiClient({
     assert payload["mode"] == "direct"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
 const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
@@ -506,7 +509,6 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["isPartialPublished"] is True
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not available")
 def test_frontend_renderers_escape_untrusted_html_payloads():
     script = r"""
 const { state, renderAnalysisCard, renderMarketResultRow, renderRuleEvidence, renderRule } = require("./frontend/app.js");

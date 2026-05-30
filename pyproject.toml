@@ -84,6 +84,16 @@ explicit_package_bases = true
 namespace_packages = true
 exclude = "(^|/)(\\.tmp|\\.venv|node_modules|cloudflare/(python_modules|seed))/"
 
+[[tool.mypy.overrides]]
+# Tests are type-checked too, but their fakes/fixtures lean on duck typing:
+# stand-in adapters passed where a concrete type is annotated, attribute access on
+# Optional fixture returns, indexing loosely-typed report dicts, and the
+# dynamically-loaded Pyodide worker module. Relax those categories for tests while
+# keeping the rest of mypy active (untyped defs, bad returns, missing annotations,
+# unused ignores).
+module = "tests.*"
+disable_error_code = ["arg-type", "attr-defined", "union-attr", "index"]
+
 
 # --------------------------------------------------------------------------- #
 # pytest
