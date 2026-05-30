@@ -1,8 +1,27 @@
-from backend.models.financial import MonthlyRevenue
+from backend.models.financial import AnnualFinancial, MonthlyRevenue
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.data_provider import MockDataProvider
-from backend.services.rules import RuleEngine
+from backend.services.rules import (
+    RuleEngine,
+    _annual_net_income_yoy,
+    _exit_rules,
+    _healthy_entry_rules,
+    _is_spring_month,
+    _revenue_growth_for_entry,
+)
+
+
+def _healthy_exit_overrides(base):
+    """Monthly + quarterly values that keep every X1-X5 exit rule passing."""
+    return {
+        "monthlyRevenue": base.monthlyRevenue.model_copy(
+            update={"monthlyRevenueYoY": 60.0, "previousMonthRevenueYoY": 60.0}
+        ),
+        "quarterlyFinancial": base.quarterlyFinancial.model_copy(
+            update={"epsYoY": 10.0, "netIncomeYoY": 10.0, "grossMarginYoY": 5.0}
+        ),
+    }
 
 
 def test_2357_passes_entry_rules_with_reasons():
@@ -131,3 +150,104 @@ def test_spring_festival_guard_marks_watch_not_exit_for_revenue_drop_only():
     assert result.status == "WARNING"
     assert any(reason.code == "SPRING_FESTIVAL_WATCH" for reason in result.reasons)
     assert not any(reason.code in {"X4", "X5"} and not reason.passed for reason in result.reasons)
+
+
+def _af(year: int, net_income: float | None) -> AnnualFinancial:
+    return AnnualFinancial(year=year, netIncome=net_income)
+
+
+def test_annual_net_income_yoy_edge_cases():
+    assert _annual_net_income_yoy([]) is None
+    assert _annual_net_income_yoy([_af(2025, 100.0)]) is None  # need at least two years
+    assert _annual_net_income_yoy([_af(2024, None), _af(2025, 100.0)]) is None  # previous missing
+    assert _annual_net_income_yoy([_af(2024, 100.0), _af(2025, None)]) is None  # latest missing
+    assert _annual_net_income_yoy([_af(2024, 0.0), _af(2025, 100.0)]) is None  # prior zero -> undefined
+    assert _annual_net_income_yoy([_af(2024, 100.0), _af(2025, 150.0)]) == 50.0
+
+
+def test_is_spring_month_false_when_guard_disabled():
+    snapshot = MockDataProvider().get_snapshot("2357")
+    assert _is_spring_month(snapshot, ScannerSettings(spring_festival_guard=False)) is False
+
+
+def test_revenue_growth_for_entry_respects_mode():
+    base = MockDataProvider().get_snapshot("2357")
+    snapshot = base.model_copy(
+        update={
+            "monthlyRevenue": base.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 11.0,
+                    "trailingThreeMonthAverageYoY": 22.0,
+                    "cumulativeRevenueYoY": 33.0,
+                }
+            )
+        }
+    )
+    assert _revenue_growth_for_entry(snapshot, ScannerSettings(revenue_growth_mode="monthly")) == 11.0
+    assert _revenue_growth_for_entry(snapshot, ScannerSettings(revenue_growth_mode="trailing_3m_avg")) == 22.0
+    assert _revenue_growth_for_entry(snapshot, ScannerSettings(revenue_growth_mode="cumulative_ytd")) == 33.0
+
+
+def test_entry_and_exit_helpers_sort_annuals_when_not_provided():
+    # Called without the sorted_annuals arg, the helpers sort internally; the
+    # public engine always passes it, so this exercises the default-arg branch.
+    snapshot = MockDataProvider().get_snapshot("2357")
+    entry = _healthy_entry_rules(snapshot, ScannerSettings())
+    exit_rules = _exit_rules(snapshot, ScannerSettings())
+    assert any(rule.code == "E1" for rule in entry)
+    assert any(rule.code == "X1" for rule in exit_rules)
+
+
+def test_spring_support_growth_annotates_and_rescues_x1():
+    base = MockDataProvider().get_snapshot("2357")
+    spring = base.model_copy(
+        update={
+            "monthlyRevenue": MonthlyRevenue(
+                month="2026-02",
+                monthlyRevenueYoY=12.0,  # below 30 -> X1 would trigger
+                previousMonthRevenueYoY=20.0,
+                cumulativeRevenueYoY=40.0,
+                janFebCombinedRevenueYoY=40.0,  # spring support present and >= 30
+                isSpringFestivalMonth=True,
+            )
+        }
+    )
+    x1 = next(rule for rule in _exit_rules(spring, ScannerSettings(spring_festival_guard=True)) if rule.code == "X1")
+    assert "輔助營收年增率為 40.0%" in x1.message
+    assert x1.passed is True  # spring guard + adequate support rescues X1
+
+
+def test_holding_financial_company_holds_for_manual_review():
+    base = MockDataProvider().get_snapshot("2881")  # financial -> E6 excludes it
+    snapshot = base.model_copy(update=_healthy_exit_overrides(base))
+    holding = Holding(stockCode="2881", name="富邦金", shares=1000, averageCost=50)
+
+    result = RuleEngine().evaluate_holding(snapshot, holding, ScannerSettings())
+
+    assert result.status == "HOLD"
+    assert "排除產業" in result.summary
+
+
+def test_holding_holds_when_exit_clean_but_entry_data_incomplete():
+    base = MockDataProvider().get_snapshot("2357")
+    snapshot = base.model_copy(update={"annualFinancials": [], **_healthy_exit_overrides(base)})
+    holding = Holding(stockCode="2357", name="華碩", shares=1000, averageCost=300)
+
+    result = RuleEngine().evaluate_holding(snapshot, holding, ScannerSettings())
+
+    assert result.status == "HOLD"
+    assert "資料缺口" in result.summary
+
+
+def test_holding_holds_when_exit_clean_but_add_watch_not_fully_met():
+    base = MockDataProvider().get_snapshot("2357")  # passes entry + normally ADD_WATCH
+    # eps_yoy == 0 fails A3 (> 0) while X3 (>= 0) and X4 (> -10) still pass.
+    snapshot = base.model_copy(
+        update={"quarterlyFinancial": base.quarterlyFinancial.model_copy(update={"epsYoY": 0.0})}
+    )
+    holding = Holding(stockCode="2357", name="華碩", shares=1000, averageCost=300)
+
+    result = RuleEngine().evaluate_holding(snapshot, holding, ScannerSettings())
+
+    assert result.status == "HOLD"
+    assert "持續追蹤" in result.summary
