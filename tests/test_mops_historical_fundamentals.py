@@ -184,7 +184,13 @@ def test_backfill_service_writes_progress_and_resumes(tmp_path):
     assert service.history_store.status()["companies"] == 2
 
 
-def test_backfill_service_treats_current_unannounced_period_as_pending(tmp_path):
+def test_backfill_service_treats_current_unannounced_period_as_pending(monkeypatch, tmp_path):
+    # Pin the active filing window so FakePendingCurrentAdapter's blanked 2026Q1
+    # is the current period regardless of the wall-clock date the suite runs on.
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
     companies = [Company(stockCode="1111", name="A", market="TWSE", industryName="Tech", isFinancial=False)]
     service = OfficialHistoryBackfillService(
         history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
