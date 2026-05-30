@@ -251,3 +251,39 @@ def test_holding_holds_when_exit_clean_but_add_watch_not_fully_met():
 
     assert result.status == "HOLD"
     assert "持續追蹤" in result.summary
+
+
+def test_holding_missing_exit_data_warns_instead_of_exiting():
+    # Missing EPS/net-income data makes X3/X4/X5 INSUFFICIENT. That must NOT be
+    # read as a high-priority exit ("建議出清"); for a holding it is a cautious
+    # WARNING that exit rules can't be confirmed.
+    base = MockDataProvider().get_snapshot("2357")
+    snapshot = base.model_copy(
+        update={
+            "quarterlyFinancial": base.quarterlyFinancial.model_copy(
+                update={"epsYoY": None, "netIncomeYoY": None, "grossMarginYoY": None}
+            )
+        }
+    )
+    holding = Holding(stockCode="2357", name="華碩", shares=1000, averageCost=300)
+
+    result = RuleEngine().evaluate_holding(snapshot, holding, ScannerSettings())
+
+    assert result.status == "WARNING"
+    assert "待補" in result.summary
+    assert not any(reason.code in {"X4", "X5"} and reason.severity == "EXIT" for reason in result.reasons)
+
+
+def test_holding_genuine_x4_failure_still_exits():
+    # A real EPS collapse (severity EXIT) must still trigger EXIT — the data-gap
+    # carve-out only spares INSUFFICIENT rules, not genuine failures.
+    base = MockDataProvider().get_snapshot("2357")
+    snapshot = base.model_copy(
+        update={"quarterlyFinancial": base.quarterlyFinancial.model_copy(update={"epsYoY": -25.0})}
+    )
+    holding = Holding(stockCode="2357", name="華碩", shares=1000, averageCost=300)
+
+    result = RuleEngine().evaluate_holding(snapshot, holding, ScannerSettings())
+
+    assert result.status == "EXIT"
+    assert any(reason.code == "X4" and reason.severity == "EXIT" and not reason.passed for reason in result.reasons)
