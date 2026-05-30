@@ -39,7 +39,14 @@ def html_assignment_statement(lines: list[str], start_index: int) -> str:
         if ".map(" in line:
             captures_map_chain = True
         if captures_map_chain:
-            if ".join(" in line and line.rstrip().endswith(";"):
+            stripped = line.rstrip()
+            # Terminate at the close of a `.map(...).join(...)` chain, or at the
+            # close of the surrounding sink call/template literal (a line ending
+            # in "`);"). Without the latter, templates whose join closes an
+            # interpolation (`.join("")}`) never match the `.join(...);` form, so
+            # the statement runs away up to the 120-line cap and sweeps in
+            # unrelated downstream code.
+            if (".join(" in line and stripped.endswith(";")) or stripped.endswith(");"):
                 break
             if len(statement_lines) >= 120:
                 break
