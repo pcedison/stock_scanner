@@ -31,29 +31,58 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-def html_assignment_statement(lines: list[str], start_index: int) -> str:
-    statement_lines = []
-    captures_map_chain = ".map(" in lines[start_index]
-    for line in lines[start_index:]:
-        statement_lines.append(line)
-        if ".map(" in line:
-            captures_map_chain = True
-        if captures_map_chain:
-            stripped = line.rstrip()
-            # Terminate at the close of a `.map(...).join(...)` chain, or at the
-            # close of the surrounding sink call/template literal (a line ending
-            # in "`);"). Without the latter, templates whose join closes an
-            # interpolation (`.join("")}`) never match the `.join(...);` form, so
-            # the statement runs away up to the 120-line cap and sweeps in
-            # unrelated downstream code.
-            if (".join(" in line and stripped.endswith(";")) or stripped.endswith(");"):
-                break
-            if len(statement_lines) >= 120:
-                break
+def _statement_end_offset(text: str) -> int:
+    """Index of the `;` that ends the JS statement at the start of `text`.
+
+    Tracks bracket depth and string / template-literal state (including nested
+    `${ ... }` interpolations) so the statement ends exactly at its terminating
+    semicolon at depth 0. This replaces a line-count heuristic that ran away
+    through `.map(...).join(...)` chains whose join closes an interpolation
+    (`.join("")}`), sweeping unrelated downstream code into the captured sink.
+    Falls back to the final offset when no depth-0 `;` is found.
+    """
+    depth = 0
+    quote = ""  # "'", '"' or "`" while inside a string/template; "" otherwise
+    template_depths: list[int] = []  # bracket depth at each open `${`
+    i, length = 0, len(text)
+    while i < length:
+        char = text[i]
+        if quote:
+            if char == "\\":
+                i += 2
+                continue
+            if quote == "`":
+                if char == "`":
+                    quote = ""
+                elif char == "$" and i + 1 < length and text[i + 1] == "{":
+                    template_depths.append(depth)
+                    depth += 1  # the `{` of `${` opens a brace level
+                    quote = ""
+                    i += 2
+                    continue
+            elif char == quote:
+                quote = ""
+            i += 1
             continue
-        if line.rstrip().endswith(";"):
-            break
-    return "\n".join(statement_lines)
+        if char in "\"'`":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if template_depths and depth == template_depths[-1]:
+                template_depths.pop()  # closed a `${ ... }`; back inside the template
+                quote = "`"
+        elif char == ";" and depth == 0:
+            return i
+        i += 1
+    return length - 1
+
+
+def html_assignment_statement(lines: list[str], start_index: int) -> str:
+    text = "\n".join(lines[start_index:])
+    end_line = text[: _statement_end_offset(text) + 1].count("\n")
+    return "\n".join(lines[start_index : start_index + end_line + 1])
 
 
 def is_static_html_assignment(statement: str) -> bool:
