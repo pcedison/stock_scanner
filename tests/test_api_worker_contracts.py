@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import backend.dependencies as deps_module
 import backend.main as main_module
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
@@ -89,7 +90,7 @@ def run_worker_fetch(api, method: str, path: str, payload: dict | None = None, h
 
 
 def contract_app_status(monkeypatch, worker):
-    monkeypatch.setattr(main_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
@@ -109,7 +110,7 @@ def contract_app_status(monkeypatch, worker):
 
 
 def contract_data_sources_status(monkeypatch, worker):
-    monkeypatch.setattr(main_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
@@ -138,7 +139,7 @@ def contract_scheduler_wakeup(monkeypatch, worker):
 
 
 def contract_scheduler_auto_scan(monkeypatch, worker):
-    monkeypatch.setattr(main_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
@@ -180,7 +181,7 @@ def contract_auth_required(monkeypatch, worker):
 
 
 def contract_settings_validation(monkeypatch, worker):
-    monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
+    monkeypatch.setattr(deps_module, "_require_super_user", lambda request: None)
     client = TestClient(main_module.app)
     invalid_settings = {**ScannerSettings().model_dump(), "manual_scan_enabled": "false"}
     api = make_worker_api(worker)
@@ -199,7 +200,7 @@ def contract_settings_validation(monkeypatch, worker):
 
 
 def contract_reports(monkeypatch, worker):
-    monkeypatch.setattr(main_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
@@ -226,8 +227,8 @@ def contract_admin_delete(monkeypatch, worker, tmp_path):
     monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
     super_user = auth_service.create_user(admin_username, "test-password-123")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
-    monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "_require_super_user", lambda request: None)
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
     api._super_user = admin_username
@@ -251,7 +252,7 @@ def contract_admin_delete(monkeypatch, worker, tmp_path):
 
 def contract_holdings(monkeypatch, worker, tmp_path):
     auth_service = AuthService(tmp_path / "auth.sqlite3")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
     client = TestClient(main_module.app)
     username = "contract-holdings@example.com"
     client.post("/api/auth/register", json={"username": username, "password": "test-password-123"})
@@ -285,7 +286,7 @@ def contract_holdings(monkeypatch, worker, tmp_path):
 
 
 def contract_scan_market_get(monkeypatch, worker):
-    monkeypatch.setattr(main_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
@@ -363,8 +364,8 @@ def test_admin_delete_user_behavior_matches_fastapi_and_worker(tmp_path, monkeyp
     admin_username = "contract-admin@example.com"
     monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     admin_user = auth_service.create_user(admin_username, "test-password-123")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
-    monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "_require_super_user", lambda request: None)
     client = TestClient(main_module.app)
     api = worker.Api(env=None)
     db_run_calls = []
@@ -427,8 +428,8 @@ def test_admin_delete_missing_user_behavior_matches_fastapi_and_worker(tmp_path,
     monkeypatch.setenv("SUPER_USER_USERNAME", admin_username)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
     admin_user = auth_service.create_user(admin_username, "test-password-123")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
-    monkeypatch.setattr(main_module, "_require_super_user", lambda request: None)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "_require_super_user", lambda request: None)
     client = TestClient(main_module.app)
     api = worker.Api(env=None)
 
@@ -451,7 +452,7 @@ def test_admin_delete_missing_user_behavior_matches_fastapi_and_worker(tmp_path,
 def test_rate_limit_behavior_matches_fastapi_and_worker(tmp_path, monkeypatch):
     worker = load_worker_module(monkeypatch)
     auth_service = AuthService(tmp_path / "auth.sqlite3")
-    monkeypatch.setattr(main_module, "auth_service", auth_service)
+    monkeypatch.setattr(deps_module, "auth_service", auth_service)
     username = "contract-rate@example.com"
     password = "test-password-123"
     auth_service.create_user(username, password)
