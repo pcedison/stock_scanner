@@ -74,11 +74,19 @@ def active_financial_report_event(today: date) -> FinancialReportEvent | None:
         ),
     ]
     starts = [date(year, 1, 1), date(year, 4, 1), date(year, 7, 1), date(year, 10, 1)]
+    most_recently_closed: FinancialReportEvent | None = None
     for start, event in zip(starts, windows, strict=False):
         deadline = event.financial_deadline or event.general_deadline
         if start <= today <= deadline:
             return event
-    return None
+        if deadline < today:
+            # windows are chronological, so the last match is the most recent
+            most_recently_closed = event
+    # In a between-windows gap, fall back to the most recently closed window so the
+    # last published quarter still drives the announced/pending freshness gate
+    # instead of leaving it unset. (None only for the pre-first-window degenerate
+    # case, which cannot occur within a calendar year.)
+    return most_recently_closed
 
 
 def filing_context(today: date | None = None) -> dict:
