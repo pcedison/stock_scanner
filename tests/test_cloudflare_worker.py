@@ -683,3 +683,70 @@ def test_worker_upsert_holding_preserves_null_average_cost(monkeypatch):
     assert "INSERT INTO holdings" in calls[0][0]
     assert calls[0][1][:4] == (7, "2330", "台積電", 3)
     assert calls[0][1][4] == ""
+
+
+def test_worker_empty_market_scan_shape(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    scan = worker.empty_market_scan()
+    assert scan["entry"] == []
+    assert scan["watch"] == []
+    assert scan["excluded"] == []
+    assert scan["universeSize"] == 0
+    assert scan["dataSource"] == "cloudflare_r2_seed"
+
+
+def test_worker_compact_scan_result_trims_to_summary_fields(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    compact = worker.compact_scan_result(
+        {
+            "stockCode": "2330",
+            "companyName": "台積電",
+            "status": "ENTRY",
+            "summary": "ok",
+            "extra": "dropped",
+            "reasons": [
+                {"code": "E1", "title": "t", "passed": True, "severity": "info", "message": "m", "evidence": "drop"},
+                "not-a-dict",
+            ],
+        }
+    )
+    assert compact["stockCode"] == "2330"
+    assert "extra" not in compact
+    assert compact["reasons"] == [{"code": "E1", "title": "t", "passed": True, "severity": "info", "message": "m"}]
+    assert compact["detailsAvailable"] is True
+    assert compact["hasFullDetails"] is False
+
+
+def test_worker_compact_market_scan_falls_back_for_non_dict(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    fallback = worker.compact_market_scan(None)
+    assert fallback["entry"] == []
+    assert "detailMode" not in fallback  # returns the empty scan verbatim
+
+    compact = worker.compact_market_scan(
+        {"entry": [{"stockCode": "1", "summary": "s", "reasons": []}], "watch": [], "excluded": []}
+    )
+    assert compact["detailMode"] == "summary"
+    assert compact["entry"][0]["hasFullDetails"] is False
+
+
+def test_worker_report_response_renders_markdown_and_csv(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    payload = {
+        "generatedAt": "2026-05-19T00:00:00+00:00",
+        "dataSource": "cloudflare_r2_seed",
+        "entry": [{"stockCode": "2330", "companyName": "台積電", "status": "ENTRY", "summary": "好"}],
+        "watch": [],
+        "excluded": [],
+    }
+
+    markdown = worker.report_response(payload, "markdown", "台股市場掃描報告", "market_scan")
+    assert "# 台股市場掃描報告" in markdown.body
+    assert "2330 台積電：好" in markdown.body
+    assert markdown.init["headers"]["content-type"] == "text/markdown; charset=utf-8"
+    assert ".md" in markdown.init["headers"]["content-disposition"]
+
+    csv_report = worker.report_response(payload, "csv", "台股市場掃描報告", "market_scan")
+    assert "category,stockCode,companyName,status,summary" in csv_report.body
+    assert "entry,2330,台積電,ENTRY,好" in csv_report.body
+    assert csv_report.init["headers"]["content-type"] == "text/csv; charset=utf-8"

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import re
 import secrets
 from datetime import UTC, datetime, timedelta, timezone
+from typing import cast
 
 from js import Object, Response
 from pyodide.ffi import to_js
@@ -415,6 +418,86 @@ def normalize_holding(payload: dict) -> dict:
         "averageCost": parsed_cost,
     }
 
+
+def empty_market_scan() -> dict:
+    return {
+        "generatedAt": utc_now(),
+        "dataSource": "cloudflare_r2_seed",
+        "universeSize": 0,
+        "note": "尚未上傳 Cloudflare R2 掃描快取。",
+        "entry": [],
+        "watch": [],
+        "excluded": [],
+    }
+
+
+def compact_scan_result(result):
+    if not isinstance(result, dict):
+        return {}
+    compact = {}
+    for key in ("stockCode", "companyName", "status", "summary", "company"):
+        if key in result:
+            compact[key] = result.get(key)
+    reasons = result.get("reasons")
+    if isinstance(reasons, list):
+        compact["reasons"] = []
+        for reason in reasons:
+            if not isinstance(reason, dict):
+                continue
+            cast(list, compact["reasons"]).append(
+                {
+                    key: reason.get(key)
+                    for key in ("code", "title", "passed", "severity", "message")
+                    if key in reason
+                }
+            )
+    compact["detailsAvailable"] = True
+    compact["hasFullDetails"] = False
+    return compact
+
+
+def compact_market_scan(scan):
+    if not isinstance(scan, dict):
+        return empty_market_scan()
+    compact = dict(scan)
+    for category in ("entry", "watch", "excluded", "results"):
+        items = compact.get(category)
+        if isinstance(items, list):
+            compact[category] = [compact_scan_result(item) for item in items]
+    compact["detailMode"] = "summary"
+    return compact
+
+
+def report_response(payload, report_format: str, title: str, filename_prefix: str):
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    if report_format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["category", "stockCode", "companyName", "status", "summary"])
+        for category in ("entry", "watch", "excluded", "results"):
+            for item in payload.get(category, []):
+                writer.writerow([category, item.get("stockCode"), item.get("companyName"), item.get("status"), item.get("summary")])
+        return text_response(
+            output.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"content-disposition": f'attachment; filename="{filename_prefix}_{timestamp}.csv"'},
+        )
+    lines = [f"# {title}", "", f"- 產生時間：{payload.get('generatedAt', utc_now())}", f"- 資料來源：{payload.get('dataSource', 'cloudflare_r2_seed')}", ""]
+    for category, label in (("entry", "適合進場"), ("watch", "接近觀察"), ("excluded", "排除清單"), ("results", "持股")):
+        items = payload.get(category, [])
+        if not items:
+            continue
+        lines.append(f"## {label} ({len(items)})")
+        for item in items:
+            lines.append(f"- {item.get('stockCode')} {item.get('companyName')}：{item.get('summary')}")
+        lines.append("")
+    return text_response(
+        "\n".join(lines),
+        media_type="text/markdown; charset=utf-8",
+        headers={"content-disposition": f'attachment; filename="{filename_prefix}_{timestamp}.md"'},
+    )
+
+
 __all__ = (
     "AUTH_FAILURE_LIMIT",
     "AUTH_FAILURE_WINDOW_SECONDS",
@@ -443,9 +526,12 @@ __all__ = (
     "_LOCALHOST_ORIGIN_RE",
     "cache_key_from_manifest",
     "clear_session_cookie",
+    "compact_market_scan",
+    "compact_scan_result",
     "configured_super_user_username",
     "csv_env_value",
     "empty_backtest_status",
+    "empty_market_scan",
     "env_flag",
     "env_value",
     "error_response",
@@ -466,6 +552,7 @@ __all__ = (
     "parse_time",
     "prepare_holding_result",
     "public_user",
+    "report_response",
     "runtime_environment",
     "session_cookie",
     "settings_from_payload",
