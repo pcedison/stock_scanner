@@ -1,0 +1,74 @@
+name: Nightly date sweep
+
+# Runtime date logic is injectable (`today=`/`now=`), but tests that walk the live
+# clock have slipped in and only broken when the wall clock crossed a filing-calendar
+# boundary (e.g. the day after the 30-May Q1 deadline). This job re-runs the suite at
+# the real clock plus a set of representative calendar dates (via `faketime`) so such
+# date coupling surfaces here instead of on the day it next occurs.
+
+on:
+  schedule:
+    - cron: "17 18 * * *" # daily ~02:17 Asia/Taipei, off-peak
+  workflow_dispatch:
+  pull_request:
+    # Self-validate whenever this workflow is edited (does not run on other PRs).
+    paths:
+      - ".github/workflows/nightly-date-sweep.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-date-sweep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  date-sweep:
+    name: pytest @ ${{ matrix.fake_date }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # "now" exercises the live clock (what would have caught 2026-05-31
+        # organically); the rest pin calendar boundaries and between-window gaps.
+        fake_date:
+          - "now"
+          - "2026-03-31" # annual report deadline (inclusive)
+          - "2026-05-31" # Q1 deadline + 1 → gap (the original regression date)
+          - "2026-09-01" # Q2 → gap
+          - "2026-11-15" # Q3 → gap
+          - "2026-12-31" # year-end gap
+          - "2027-02-28" # next year, before the annual deadline
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+          pip install -r requirements-dev.txt
+
+      - name: Install faketime
+        run: sudo apt-get update && sudo apt-get install -y faketime
+
+      - name: Run the test suite at ${{ matrix.fake_date }}
+        run: |
+          if [ "${{ matrix.fake_date }}" = "now" ]; then
+            python -m pytest -q
+          else
+            faketime "${{ matrix.fake_date }} 12:00:00" python -m pytest -q
+          fi
