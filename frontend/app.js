@@ -1665,6 +1665,15 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
     showView("scan");
     showTab("market");
   }
+  // A force refresh must not be swallowed by an in-flight passive GET: wait for
+  // it to settle, then fall through to issue a fresh POST.
+  if (refreshMode === "force" && marketScanRefreshPromise) {
+    try {
+      await marketScanRefreshPromise;
+    } catch {
+      // ignore; we are about to re-scan anyway
+    }
+  }
   if (marketScanRefreshPromise) {
     try {
       await marketScanRefreshPromise;
@@ -1987,6 +1996,11 @@ function bindEvents() {
   $("#export-market-csv-btn").addEventListener("click", () => exportReport("market", "csv"));
   $("#export-holdings-md-btn").addEventListener("click", () => exportReport("holdings", "markdown"));
   $("#export-holdings-csv-btn").addEventListener("click", () => exportReport("holdings", "csv"));
+  $("#refresh-market-scan-btn").addEventListener("click", () => {
+    // Explicit user refresh: force a POST (may queue a seed rebuild), unlike
+    // the passive cacheable GET used on load. See market-scan-cacheability.md.
+    void refreshMarketScan({ revealResults: true, refreshMode: "force" }).catch(() => {});
+  });
   $("#open-onboarding-btn").addEventListener("click", () => {
     if (!state.auth?.authenticated) {
       openAuthGate();
