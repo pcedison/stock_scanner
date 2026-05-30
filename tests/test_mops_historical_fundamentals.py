@@ -4,8 +4,12 @@ from backend.adapters.official_fundamentals import OfficialBalanceSheetRow, Offi
 from backend.models.company import Company
 from backend.services.official_history_backfill import (
     BackfillProgressStore,
+    OfficialHistoryBackfillResult,
     OfficialHistoryBackfillService,
+    _backfill_periods,
+    _dedupe_periods,
     _full_quarterly_periods,
+    _latest_annual_year,
     _strategy_backfill_periods,
 )
 
@@ -180,7 +184,13 @@ def test_backfill_service_writes_progress_and_resumes(tmp_path):
     assert service.history_store.status()["companies"] == 2
 
 
-def test_backfill_service_treats_current_unannounced_period_as_pending(tmp_path):
+def test_backfill_service_treats_current_unannounced_period_as_pending(monkeypatch, tmp_path):
+    # Pin the active filing window so FakePendingCurrentAdapter's blanked 2026Q1
+    # is the current period regardless of the wall-clock date the suite runs on.
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
     companies = [Company(stockCode="1111", name="A", market="TWSE", industryName="Tech", isFinancial=False)]
     service = OfficialHistoryBackfillService(
         history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
@@ -194,3 +204,270 @@ def test_backfill_service_treats_current_unannounced_period_as_pending(tmp_path)
     assert result.failedCompanies == 0
     assert result.pendingCompanies == 1
     assert result.progress["pendingCompanies"] == 1
+
+
+class _FakeRow:
+    def __init__(self, *, netIncome=10.0, eps=1.0, inventory=30.0, costOfRevenue=60.0):
+        self.netIncome = netIncome
+        self.eps = eps
+        self.inventory = inventory
+        self.costOfRevenue = costOfRevenue
+
+
+class FakeHistoryStore:
+    """Minimal history store stub for exercising backfill decision branches."""
+
+    def __init__(self, *, quarter_row=None, annual_count=0):
+        self._quarter_row = quarter_row
+        self._annual_count = annual_count
+        self.merged: list[tuple[list, list]] = []
+
+    def quarter(self, stock_code, period):
+        return self._quarter_row
+
+    def annual_financials(self, stock_code):
+        return [{"year": 2020 + i, "netIncome": 1.0} for i in range(self._annual_count)]
+
+    def merge_rows(self, incomes, balances):
+        self.merged.append((list(incomes), list(balances)))
+        return {"companies": 1, "rows": len(incomes)}
+
+    def status(self):
+        return {"companies": 1, "rows": 0}
+
+
+class AllEmptyAdapter:
+    """Returns no rows for every requested period."""
+
+    def fetch_company_period(self, stock_code, company_name, market, fiscal_year, quarter):
+        return type("Bundle", (), {"incomes": [], "balances": []})()
+
+
+def _company(stock_code="1111", *, is_financial=False):
+    return Company(stockCode=stock_code, name="A", market="TWSE", industryName="Tech", isFinancial=is_financial)
+
+
+def _patch_filing_context(monkeypatch, context):
+    monkeypatch.setattr("backend.services.official_history_backfill.filing_context", lambda: context)
+
+
+def _service(tmp_path, history_store, adapter, name="progress.json"):
+    return OfficialHistoryBackfillService(
+        history_store=history_store,
+        adapter=adapter,
+        progress_store=BackfillProgressStore(tmp_path / name),
+    )
+
+
+def test_period_helpers_dedupe_and_dispatch():
+    assert _latest_annual_year(2026, 4) == 2026
+    assert _latest_annual_year(2026, 1) == 2025
+    assert _dedupe_periods([(2026, 1), (2026, 1), (2025, 4)]) == [(2026, 1), (2025, 4)]
+    assert _backfill_periods(2026, 1, mode="full_quarterly") == _full_quarterly_periods(2026, 1)
+    assert _backfill_periods(2026, 1) == _strategy_backfill_periods(2026, 1)
+    # Unknown modes fall back to the strategy minimal set.
+    assert _backfill_periods(2026, 1, mode="bogus") == _strategy_backfill_periods(2026, 1)
+
+
+def test_progress_store_recovers_from_corruption_and_resets(tmp_path):
+    path = tmp_path / "progress.json"
+    store = BackfillProgressStore(path)
+    assert store.load() == {}  # missing file
+
+    path.write_text("{not valid json", encoding="utf-8")
+    assert store.load() == {}  # corrupt JSON
+
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert store.load() == {}  # valid JSON but not a dict
+
+    store.save({"runKey": "x"})
+    assert path.exists()
+    store.reset()
+    assert not path.exists()
+    store.reset()  # no-op when already absent
+
+
+def test_backfill_result_as_dict_round_trips():
+    result = OfficialHistoryBackfillResult(
+        requestedCompanies=1,
+        backfilledCompanies=1,
+        skippedCompanies=2,
+        failedCompanies=0,
+        pendingCompanies=0,
+        incomeRows=3,
+        balanceRows=4,
+        historyStatus={"companies": 5},
+        periods=["2026Q1"],
+        progress={"runKey": "x"},
+        completed=True,
+    )
+    payload = result.as_dict()
+    assert payload["requestedCompanies"] == 1
+    assert payload["periods"] == ["2026Q1"]
+    assert payload["completed"] is True
+    assert set(payload) == {
+        "requestedCompanies",
+        "backfilledCompanies",
+        "skippedCompanies",
+        "failedCompanies",
+        "pendingCompanies",
+        "incomeRows",
+        "balanceRows",
+        "historyStatus",
+        "periods",
+        "progress",
+        "completed",
+    }
+
+
+def test_period_needs_backfill_branches(tmp_path):
+    company = _company()
+    financial = _company("2881", is_financial=True)
+    adapter = FakeMopsBackfillAdapter()
+
+    def needs(row, target=company):
+        service = _service(tmp_path, FakeHistoryStore(quarter_row=row), adapter)
+        return service._period_needs_backfill(target, 2025, 4)
+
+    assert needs(None) is True  # no stored row at all
+    assert needs(_FakeRow(netIncome=None)) is True
+    assert needs(_FakeRow(eps=None)) is True
+    assert needs(_FakeRow(inventory=None)) is True  # non-financial requires inventory
+    assert needs(_FakeRow(costOfRevenue=None)) is True
+    # Financial issuers do not need inventory / cost-of-revenue.
+    assert needs(_FakeRow(inventory=None, costOfRevenue=None), target=financial) is False
+    assert needs(_FakeRow()) is False  # fully populated non-financial
+
+
+def test_needs_backfill_branches(tmp_path):
+    company = _company()
+    adapter = FakeMopsBackfillAdapter()
+
+    complete = _service(tmp_path, FakeHistoryStore(quarter_row=_FakeRow(), annual_count=5), adapter, "c.json")
+    assert complete._needs_backfill(company, 2026, 1, years=5) is False
+
+    no_prev = _service(tmp_path, FakeHistoryStore(quarter_row=None, annual_count=5), adapter, "n.json")
+    assert no_prev._needs_backfill(company, 2026, 1, years=5) is True
+
+    too_few_annuals = _service(tmp_path, FakeHistoryStore(quarter_row=_FakeRow(), annual_count=2), adapter, "f.json")
+    assert too_few_annuals._needs_backfill(company, 2026, 1, years=5) is True
+
+
+def test_backfill_skips_companies_with_complete_history(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    companies = [_company("1111"), _company("2222")]
+    service = _service(tmp_path, FakeHistoryStore(quarter_row=_FakeRow(), annual_count=5), FakeMopsBackfillAdapter())
+
+    result = service.backfill(companies, limit=10, throttle_seconds=0, reset_progress=True)
+
+    assert result.requestedCompanies == 0
+    assert result.skippedCompanies == 2
+    assert result.completed is True
+
+
+def test_backfill_records_annual_period_failures(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    progress_path = tmp_path / "progress.json"
+    service = OfficialHistoryBackfillService(
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        adapter=AllEmptyAdapter(),
+        progress_store=BackfillProgressStore(progress_path),
+    )
+
+    result = service.backfill([_company("1111")], limit=1, throttle_seconds=0, reset_progress=True)
+
+    assert result.failedCompanies == 1
+    assert result.backfilledCompanies == 0
+    assert result.incomeRows == 0
+    assert "1111" in BackfillProgressStore(progress_path).load()["failedCompanies"]
+
+    # A resume run skips the still-failing company instead of re-fetching it.
+    resumed = service.backfill([_company("1111")], limit=1, throttle_seconds=0)
+    assert resumed.requestedCompanies == 0
+    assert resumed.skippedCompanies == 1
+
+
+def test_backfill_skips_when_all_target_periods_present(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    # Company still "needs backfill" (only 2 annuals) but every requested period is
+    # already populated, so there is nothing pending to fetch.
+    service = _service(tmp_path, FakeHistoryStore(quarter_row=_FakeRow(), annual_count=2), FakeMopsBackfillAdapter())
+
+    result = service.backfill([_company("1111")], limit=1, throttle_seconds=0, reset_progress=True)
+
+    assert result.requestedCompanies == 0
+    assert result.skippedCompanies == 1
+    assert result.completed is True
+
+
+def test_backfill_reconciles_stale_failures_on_resume(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    progress_path = tmp_path / "progress.json"
+    seed = BackfillProgressStore(progress_path)
+    # runKey must match what backfill() derives ("<year>Q<quarter>:<years>:<mode>").
+    seed.save(
+        {
+            "schemaVersion": 1,
+            "runKey": "2026Q1:5:strategy",
+            "completedCompanies": [],
+            # 1111: stale current-period "no rows" failure -> promoted to pending.
+            # 2222: annual failure but history is now complete -> reconciled as done.
+            "failedCompanies": {
+                "1111": [{"period": "2026Q1", "error": "no official rows returned"}],
+                "2222": [{"period": "2024Q4", "error": "no official rows returned"}],
+            },
+            "pendingCompanies": {},
+        }
+    )
+    service = _service(
+        tmp_path,
+        FakeHistoryStore(quarter_row=_FakeRow(), annual_count=5),
+        FakeMopsBackfillAdapter(),
+    )
+
+    result = service.backfill([_company("1111"), _company("2222")], limit=10, throttle_seconds=0)
+
+    assert result.requestedCompanies == 0  # both reconciled, nothing re-fetched
+    saved = BackfillProgressStore(progress_path).load()
+    assert "1111" in saved["pendingCompanies"]
+    assert saved["failedCompanies"] == {}
+
+
+def test_backfill_derives_period_from_monthly_revenue_when_no_active_report(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {}, "monthlyRevenuePeriod": "2026-05"},
+    )
+    service = _service(tmp_path, FakeHistoryStore(quarter_row=None, annual_count=0), FakeMopsBackfillAdapter())
+
+    # 2026-05 -> fiscalYear 2026, quarter 2. throttle>0 exercises the inter-request sleep.
+    result = service.backfill([_company("1111")], limit=1, throttle_seconds=0.001, reset_progress=True)
+
+    assert "2026Q2" in result.periods
+    assert result.progress["runKey"].startswith("2026Q2:")
+
+
+def test_backfill_saves_progress_at_interval(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    companies = [_company(f"{1000 + i}") for i in range(11)]
+    service = _service(tmp_path, FakeHistoryStore(quarter_row=None, annual_count=0), FakeMopsBackfillAdapter())
+
+    result = service.backfill(companies, limit=11, throttle_seconds=0, reset_progress=True)
+
+    assert result.requestedCompanies == 11
+    assert result.completed is True

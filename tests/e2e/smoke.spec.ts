@@ -246,11 +246,26 @@ test("authenticated holdings survive reload and market results expose evidence",
   await showView(page, isMobile, "scan");
   await page.locator('[data-tab="market"]').click();
   await expect(page.locator("#market-results")).toContainText(/2357|市場|掃描|Mock/);
-  await page.locator('[data-market-disclosure-tab="pending"]').click();
-  await showMarketColumn(page, isMobile, "watch");
-  const firstToggle = page.locator("[data-market-result-toggle]").first();
-  await expect(firstToggle).toBeVisible();
-  await firstToggle.click();
+  // The announced/pending split tracks the live filing-deadline calendar, so the
+  // bucket that actually holds results shifts with the run date (e.g. nothing is
+  // "pending" once a quarter's filing window has closed). Find the first
+  // expandable result across the disclosure tabs and columns instead of assuming
+  // a fixed bucket, then verify its rule evidence renders.
+  let expanded = false;
+  for (const tab of ["announced", "pending"]) {
+    await page.locator(`[data-market-disclosure-tab="${tab}"]`).click();
+    for (const column of ["entry", "watch", "excluded"]) {
+      await showMarketColumn(page, isMobile, column);
+      const toggle = page.locator("[data-market-result-toggle]").first();
+      if ((await toggle.count()) > 0 && (await toggle.isVisible())) {
+        await toggle.click();
+        expanded = true;
+        break;
+      }
+    }
+    if (expanded) break;
+  }
+  expect(expanded).toBe(true);
   await expect(page.locator(".rule-evidence").first()).toBeVisible();
   await expect(page.locator("[data-evidence-width]").first()).toBeVisible();
 });
