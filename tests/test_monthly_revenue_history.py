@@ -187,3 +187,78 @@ def test_written_json_is_readable_format(tmp_path):
     # indent=2 means content has newlines and spaces
     assert "\n" in content
     assert "  " in content
+
+
+def test_month_key_handles_malformed_input():
+    # Non "YYYY-MM" shapes sort to the floor instead of raising.
+    assert _month_key("invalid") == (0, 0)
+    assert _month_key("2026") == (0, 0)
+    assert _month_key("") == (0, 0)
+
+
+def test_load_recovers_from_corrupt_json(tmp_path):
+    path = tmp_path / "rev_history.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    data = MonthlyRevenueHistoryStore(path).load()
+    assert data == {"schemaVersion": 1, "updatedAt": None, "months": {}}
+
+
+def test_load_recovers_from_non_dict_payload(tmp_path):
+    path = tmp_path / "rev_history.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    data = MonthlyRevenueHistoryStore(path).load()
+    assert data == {"schemaVersion": 1, "updatedAt": None, "months": {}}
+
+
+def test_load_normalizes_missing_keys_and_non_dict_months(tmp_path):
+    path = tmp_path / "rev_history.json"
+    path.write_text('{"months": "not-a-dict"}', encoding="utf-8")
+    data = MonthlyRevenueHistoryStore(path).load()
+    assert data["schemaVersion"] == 1
+    assert data["updatedAt"] is None
+    assert data["months"] == {}
+
+
+def test_load_returns_cached_payload_when_mtime_unchanged(tmp_path):
+    store = MonthlyRevenueHistoryStore(tmp_path / "rev_history.json")
+    store.merge_rows([_row("1101", "2026-04", yoy=15.2)])
+    first = store.load()
+    second = store.load()
+    assert second is first  # served from cache, not re-read
+
+
+def test_merge_rows_skips_rows_missing_code_or_month(tmp_path):
+    store = MonthlyRevenueHistoryStore(tmp_path / "rev_history.json")
+    status = store.merge_rows([_row("", "2026-04", yoy=1.0), _row("1101", "", yoy=2.0)])
+    assert status["companies"] == 0
+    assert status["updatedRows"] == 0
+
+
+def test_merge_rows_prunes_non_dict_and_emptied_companies(tmp_path):
+    path = tmp_path / "rev_history.json"
+    path.write_text(
+        '{"schemaVersion": 1, "updatedAt": null, "months": '
+        '{"1101": "corrupt", "2330": {}, "2317": {"2026-04": {"monthlyRevenueYoY": 5.0}}}}',
+        encoding="utf-8",
+    )
+    store = MonthlyRevenueHistoryStore(path)
+    status = store.merge_rows([])
+    # "1101" (non-dict) and "2330" (empty) are dropped; only "2317" survives.
+    assert status["companies"] == 1
+    assert set(store.load()["months"].keys()) == {"2317"}
+
+
+def test_previous_month_yoy_returns_none_for_invalid_month(tmp_path):
+    store = MonthlyRevenueHistoryStore(tmp_path / "rev_history.json")
+    store.merge_rows([_row("1101", "2026-04", yoy=10.0)])
+    assert store.previous_month_yoy("1101", "invalid") is None
+
+
+def test_trailing_avg_returns_none_for_unknown_stock(tmp_path):
+    store = MonthlyRevenueHistoryStore(tmp_path / "rev_history.json")
+    assert store.trailing_three_month_avg_yoy("9999", "2026-04") is None
+
+
+def test_jan_feb_combined_returns_none_for_unknown_stock(tmp_path):
+    store = MonthlyRevenueHistoryStore(tmp_path / "rev_history.json")
+    assert store.jan_feb_combined_yoy("9999", 2026) is None
