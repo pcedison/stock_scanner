@@ -129,3 +129,100 @@ def test_seed_quality_rejects_empty_companies_when_analysis_is_present(monkeypat
 
     with pytest.raises(RuntimeError, match="undersized company seed"):
         seed_build.assert_seed_quality(scan_payload, [], analysis_by_code, fallback_source=None)
+
+
+def test_period_key_parses_quarters_and_tolerates_garbage():
+    assert seed_build.period_key("2024Q4") == (2024, 4)
+    assert seed_build.period_key("garbage") == (0, 0)
+    assert seed_build.period_key(None) == (0, 0)
+
+
+def test_history_yoy_and_margin_delta():
+    records = {
+        "2023Q4": {"eps": 2.0, "grossMargin": 40.0},
+        "2024Q4": {"fiscalYear": 2024, "quarter": 4, "eps": 3.0, "grossMargin": 45.0},
+    }
+    current = records["2024Q4"]
+    assert seed_build.history_yoy(records, current, "eps") == 50.0
+    assert seed_build.history_margin_delta(records, current, "grossMargin") == 5.0
+    # Missing previous year, missing fields, and zero baseline all yield None.
+    assert seed_build.history_yoy({}, current, "eps") is None
+    assert seed_build.history_yoy(records, {"fiscalYear": 2024, "quarter": 4, "eps": None}, "eps") is None
+    assert seed_build.history_yoy({"2023Q4": {"eps": 0}}, current, "eps") is None
+    assert seed_build.history_margin_delta({"2023Q4": {}}, current, "grossMargin") is None
+
+
+def test_annual_financials_dedupes_q4_records_by_year():
+    records = {
+        "2023Q4": {"quarter": 4, "fiscalYear": 2023, "netIncome": 100},
+        "2024Q2": {"quarter": 2, "fiscalYear": 2024, "netIncome": 50},
+        "2024Q4": {"quarter": 4, "fiscalYear": 2024, "netIncome": 200},
+    }
+    annuals = seed_build.annual_financials_from_history(records)
+    assert [row["year"] for row in annuals] == [2023, 2024]
+    assert annuals[1]["netIncome"] == 200
+
+
+def test_inventory_turnover_from_history():
+    assert seed_build.inventory_turnover_from_history({"costOfRevenue": 400, "inventory": 100, "quarter": 4}) == 4.0
+    assert seed_build.inventory_turnover_from_history({"costOfRevenue": 400, "inventory": 0, "quarter": 4}) is None
+    assert seed_build.inventory_turnover_from_history({"inventory": 100, "quarter": 4}) is None
+
+
+def test_add_market_scan_summary_to_manifest():
+    after_latest = seed_build.add_market_scan_summary_to_manifest(
+        {"files": ["manifest.json", "market_scan_latest.json", "companies.json"]}
+    )
+    assert after_latest["files"] == [
+        "manifest.json",
+        "market_scan_latest.json",
+        "market_scan_summary.json",
+        "companies.json",
+    ]
+    appended = seed_build.add_market_scan_summary_to_manifest({"files": ["companies.json"]})
+    assert appended["files"][-1] == "market_scan_summary.json"
+    assert seed_build.add_market_scan_summary_to_manifest({})["files"] == ["market_scan_summary.json"]
+    # Idempotent: a second pass does not duplicate the entry.
+    assert after_latest["files"].count("market_scan_summary.json") == 1
+    assert seed_build.add_market_scan_summary_to_manifest(after_latest)["files"].count("market_scan_summary.json") == 1
+
+
+def test_compact_scan_result_encodes_objects_and_drops_non_objects():
+    encoded = seed_build.compact_scan_result(
+        ObjectResult(stockCode="1234", companyName="X", status="ENTRY", summary="s", reasons=[])
+    )
+    assert encoded["stockCode"] == "1234"
+    assert encoded["hasFullDetails"] is False
+    assert seed_build.compact_scan_result(["not", "a", "dict"]) == {}
+
+
+def test_seed_diagnostics_reports_counts(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    diagnostics = seed_build.seed_diagnostics(
+        {"universeSize": 5, "entry": [1], "watch": [2, 3], "excluded": []},
+        [None] * 10,
+        {"a": {}},
+        "cloudflare_seed_cache",
+    )
+    assert diagnostics["companies"] == 10
+    assert diagnostics["universeSize"] == 5
+    assert diagnostics["watch"] == 2
+    assert diagnostics["fallbackSource"] == "cloudflare_seed_cache"
+
+
+def test_assert_seed_quality_rejects_small_universe_and_analysis(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    with pytest.raises(RuntimeError, match="market scan seed"):
+        seed_build.assert_seed_quality(
+            {"universeSize": 5, "entry": [], "watch": [], "excluded": []},
+            [None] * 1000,
+            {str(index): {} for index in range(1000)},
+            fallback_source=None,
+        )
+    with pytest.raises(RuntimeError, match="analysis seed"):
+        seed_build.assert_seed_quality(
+            {"universeSize": 1000, "entry": [], "watch": [{} for _ in range(1000)], "excluded": []},
+            [None] * 1000,
+            {"only": {}},
+            fallback_source=None,
+        )
