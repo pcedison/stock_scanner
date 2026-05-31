@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -750,3 +751,672 @@ def test_worker_report_response_renders_markdown_and_csv(monkeypatch):
     assert "category,stockCode,companyName,status,summary" in csv_report.body
     assert "entry,2330,台積電,ENTRY,好" in csv_report.body
     assert csv_report.init["headers"]["content-type"] == "text/csv; charset=utf-8"
+
+
+# --------------------------------------------------------------------------- #
+# Stateful D1 harness — interprets the exact queries worker.py issues so every
+# DB-backed route runs end-to-end through Api.fetch (auth, holdings, admin,
+# settings, refresh jobs). Pairs with FakeR2Cache for the R2-seed read paths.
+# --------------------------------------------------------------------------- #
+class RoutingFakeStatement:
+    def __init__(self, db, sql):
+        self.db = db
+        self.sql = " ".join(sql.split())
+        self.params = ()
+
+    def bind(self, *params):
+        self.params = params
+        return self
+
+    async def run(self):
+        return self.db.run_sql(self.sql, self.params)
+
+    async def first(self):
+        return self.db.first_sql(self.sql, self.params)
+
+    async def all(self):
+        return {"results": self.db.all_sql(self.sql, self.params)}
+
+
+class RoutingFakeD1:
+    def __init__(self):
+        self.users = []
+        self.sessions = []
+        self.holdings = []
+        self.app_kv = {}
+        self.auth_attempts = []
+        self.refresh_jobs = []
+        self._next_user_id = 1
+
+    def prepare(self, sql):
+        return RoutingFakeStatement(self, sql)
+
+    async def batch(self, statements):
+        return [await statement.run() for statement in statements]
+
+    def _user_by_name(self, username):
+        return next((u for u in self.users if u["username"] == username), None)
+
+    def _attempt(self, identifier):
+        return next((a for a in self.auth_attempts if a["identifier"] == identifier), None)
+
+    def first_sql(self, sql, params):
+        if "FROM sessions" in sql and "JOIN users" in sql:
+            token, now = params
+            session = next((s for s in self.sessions if s["token_hash"] == token and s["expires_at"] > now), None)
+            if not session:
+                return None
+            user = next((u for u in self.users if u["id"] == session["user_id"]), None)
+            return None if user is None else {"id": user["id"], "username": user["username"], "display_name": user["display_name"]}
+        if "SELECT id FROM users WHERE username" in sql:
+            user = self._user_by_name(params[0])
+            return None if user is None else {"id": user["id"]}
+        if "password_hash FROM users WHERE username" in sql:
+            user = self._user_by_name(params[0])
+            return None if user is None else dict(user)
+        if "id, username, display_name FROM users WHERE username" in sql:
+            user = self._user_by_name(params[0])
+            return None if user is None else {"id": user["id"], "username": user["username"], "display_name": user["display_name"]}
+        if "SELECT id, username FROM users WHERE id" in sql:
+            user = next((u for u in self.users if u["id"] == params[0]), None)
+            return None if user is None else {"id": user["id"], "username": user["username"]}
+        if "FROM app_kv WHERE key" in sql:
+            return None if params[0] not in self.app_kv else {"value": self.app_kv[params[0]]}
+        if "SELECT locked_until FROM auth_attempts" in sql:
+            attempt = self._attempt(params[0])
+            return None if attempt is None else {"locked_until": attempt.get("locked_until")}
+        if "failure_count, first_failed_at FROM auth_attempts" in sql:
+            attempt = self._attempt(params[0])
+            return None if attempt is None else {"failure_count": attempt["failure_count"], "first_failed_at": attempt["first_failed_at"]}
+        if "FROM refresh_jobs" in sql and "status IN ('queued', 'running')" in sql:
+            cutoff = params[1]
+            return next(
+                (j for j in sorted(self.refresh_jobs, key=lambda r: r["queued_at"], reverse=True)
+                 if j["status"] in {"queued", "running"} and j["queued_at"] > cutoff),
+                None,
+            )
+        raise AssertionError(f"Unhandled first() SQL: {sql}")
+
+    def all_sql(self, sql, params):
+        if "FROM holdings WHERE user_id" in sql and "stock_code, name, shares" in sql:
+            rows = sorted((h for h in self.holdings if h["user_id"] == params[0]), key=lambda h: h["stock_code"])
+            return [{"stock_code": h["stock_code"], "name": h["name"], "shares": h["shares"], "average_cost": h["average_cost"]} for h in rows]
+        if "FROM users" in sql and "LEFT JOIN holdings" in sql:
+            now, super_user = params
+            ordered = sorted(self.users, key=lambda u: 0 if u["username"] == super_user else 1)
+            return [self._admin_row(user, now) for user in ordered]
+        if "FROM refresh_jobs" in sql and "ORDER BY queued_at DESC" in sql:
+            jobs = sorted(self.refresh_jobs, key=lambda r: r["queued_at"], reverse=True)[:10]
+            return [dict(j) for j in jobs]
+        raise AssertionError(f"Unhandled all() SQL: {sql}")
+
+    def _admin_row(self, user, now):
+        codes = {h["stock_code"] for h in self.holdings if h["user_id"] == user["id"]}
+        sessions = {s["token_hash"] for s in self.sessions if s["user_id"] == user["id"] and s["expires_at"] > now}
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "created_at": user["created_at"],
+            "holdings_count": len(codes),
+            "active_session_count": len(sessions),
+        }
+
+    def run_sql(self, sql, params):
+        if "INSERT INTO users" in sql:
+            username, display_name, password_hash, created_at = params
+            self.users.append({"id": self._next_user_id, "username": username, "display_name": display_name, "password_hash": password_hash, "created_at": created_at})
+            self._next_user_id += 1
+        elif "INSERT INTO sessions" in sql:
+            token_hash, user_id, created_at, expires_at = params
+            self.sessions.append({"token_hash": token_hash, "user_id": user_id, "created_at": created_at, "expires_at": expires_at})
+        elif "DELETE FROM sessions WHERE token_hash" in sql:
+            self.sessions = [s for s in self.sessions if s["token_hash"] != params[0]]
+        elif "INSERT INTO holdings" in sql:
+            user_id, stock_code, name, shares, average_cost, created_at, updated_at = params
+            existing = next((h for h in self.holdings if h["user_id"] == user_id and h["stock_code"] == stock_code), None)
+            if existing:
+                existing.update({"name": name, "shares": shares, "average_cost": average_cost, "updated_at": updated_at})
+            else:
+                self.holdings.append({"user_id": user_id, "stock_code": stock_code, "name": name, "shares": shares, "average_cost": average_cost, "created_at": created_at, "updated_at": updated_at})
+        elif "DELETE FROM holdings WHERE user_id" in sql and "stock_code" in sql:
+            user_id, stock_code = params
+            self.holdings = [h for h in self.holdings if not (h["user_id"] == user_id and h["stock_code"] == stock_code)]
+        elif "DELETE FROM holdings WHERE user_id" in sql:
+            self.holdings = [h for h in self.holdings if h["user_id"] != params[0]]
+        elif "DELETE FROM users WHERE id" in sql:
+            self.users = [u for u in self.users if u["id"] != params[0]]
+        elif "INSERT INTO app_kv" in sql:
+            key, value, _updated = params
+            self.app_kv[key] = value
+        elif "DELETE FROM auth_attempts" in sql and "first_failed_at <=" in sql:
+            stale_before = params[0]
+            self.auth_attempts = [a for a in self.auth_attempts if a.get("locked_until") or a["first_failed_at"] > stale_before]
+        elif "DELETE FROM auth_attempts WHERE identifier" in sql:
+            self.auth_attempts = [a for a in self.auth_attempts if a["identifier"] != params[0]]
+        elif "INSERT INTO auth_attempts" in sql:
+            identifier, failure_count, first_failed_at, last_failed_at, locked_until = params
+            row = {"identifier": identifier, "failure_count": failure_count, "first_failed_at": first_failed_at, "last_failed_at": last_failed_at, "locked_until": locked_until}
+            attempt = self._attempt(identifier)
+            attempt.update(row) if attempt else self.auth_attempts.append(row)
+        elif "DELETE FROM refresh_jobs WHERE queued_at" in sql:
+            self.refresh_jobs = [j for j in self.refresh_jobs if j["queued_at"] >= params[0]]
+        elif "INSERT INTO refresh_jobs" in sql:
+            keys = ("id", "job_type", "cache_key", "status", "reason", "queued_at", "updated_at")
+            self.refresh_jobs.append(dict(zip(keys, params, strict=True)))
+        else:
+            raise AssertionError(f"Unhandled run() SQL: {sql}")
+        return {"success": True, "meta": {"changes": 1}}
+
+
+def r2_seed(mapping):
+    return {key: FakeR2Object(value if isinstance(value, str) else json.dumps(value)) for key, value in mapping.items()}
+
+
+def build_router_api(monkeypatch, *, r2=None, super_user=None, github_repo=None):
+    worker = load_worker_module(monkeypatch)
+    db = RoutingFakeD1()
+    env_kwargs = {"DB": db, "CACHE": FakeR2Cache(r2_seed(r2 or {}))}
+    if super_user is not None:
+        env_kwargs["SUPER_USER_USERNAME"] = super_user
+    if github_repo is not None:
+        env_kwargs["GITHUB_REPOSITORY"] = github_repo
+    api = worker.Api(env=types.SimpleNamespace(**env_kwargs))
+    return worker, api, db
+
+
+def pin_worker_time(monkeypatch, worker, iso):
+    fixed = datetime.fromisoformat(iso)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(worker, "datetime", FixedDatetime)
+    return fixed
+
+
+class RouteRequest:
+    def __init__(self, method="GET", path="/api/health", headers=None, body=""):
+        self.method = method
+        self.url = f"https://stock-scanner-beta-api.example{path}"
+        self.headers = headers or {}
+        self._body = body
+        self.text_reads = 0
+
+    async def text(self):
+        self.text_reads += 1
+        return self._body
+
+
+def cookie_header(response):
+    return {"cookie": response.headers["set-cookie"].split(";", 1)[0]}
+
+
+def register_user(api, username, password="supersecret", display_name=None, source="203.0.113.7"):
+    response = asyncio.run(api.fetch(RouteRequest(
+        method="POST",
+        path="/api/auth/register",
+        headers={"x-forwarded-for": source},
+        body=json.dumps({"username": username, "password": password, "displayName": display_name or username}),
+    )))
+    return response
+
+
+def test_worker_on_fetch_entrypoint_serves_health(monkeypatch):
+    worker, _api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {"counts": {"companies": 1000, "analysis": 1000}}})
+    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
+    env = types.SimpleNamespace(DB=RoutingFakeD1(), CACHE=FakeR2Cache(r2_seed({"public/manifest.json": {"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}}})))
+
+    response = asyncio.run(worker.on_fetch(RouteRequest(path="/api/health"), env))
+
+    assert response.init["status"] == 200
+    assert response.headers["x-frame-options"] == "DENY"
+    assert json.loads(response.body)["status"] == "ok"
+
+
+def test_worker_set_response_header_supports_js_headers(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    captured = {}
+
+    class JsHeaders:
+        def set(self, key, value):
+            captured[key] = value
+
+    worker.set_response_header(types.SimpleNamespace(headers=JsHeaders()), "x-test", "1")
+    assert captured == {"x-test": "1"}
+
+
+def test_worker_db_all_handles_list_and_missing_results(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    class Stmt:
+        def __init__(self, value):
+            self.value = value
+
+        def bind(self, *params):
+            return self
+
+        async def all(self):
+            return self.value
+
+    class DB:
+        def __init__(self, value):
+            self.value = value
+
+        def prepare(self, sql):
+            return Stmt(self.value)
+
+    api_list = worker.Api(env=types.SimpleNamespace(DB=DB([{"id": 1}])))
+    api_none = worker.Api(env=types.SimpleNamespace(DB=DB(None)))
+
+    assert asyncio.run(api_list.db_all("SELECT 1")) == [{"id": 1}]
+    assert asyncio.run(api_none.db_all("SELECT 1")) == []
+
+
+def test_worker_request_json_empty_body_and_non_object(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+
+    assert asyncio.run(api.request_json(RouteRequest(body=""))) == {}
+
+    non_object = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/holdings", body="[1, 2]")))
+    assert non_object.init["status"] == 400
+    assert json.loads(non_object.body)["detail"] == "JSON 內容需為物件"
+
+
+def test_worker_auth_and_holdings_lifecycle(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+
+    register = register_user(api, "trader@example.com", display_name="Trader")
+    assert register.init["status"] == 200
+    body = json.loads(register.body)
+    assert body["authenticated"] is True
+    assert body["user"]["username"] == "trader@example.com"
+    assert body["user"]["isSuperUser"] is False
+    cookie = cookie_header(register)
+
+    me = asyncio.run(api.fetch(RouteRequest(path="/api/auth/me", headers=cookie)))
+    assert json.loads(me.body)["authenticated"] is True
+
+    asyncio.run(api.fetch(RouteRequest(
+        method="POST", path="/api/me/holdings", headers=cookie,
+        body=json.dumps({"holding": {"stockCode": "2330", "name": "台積電", "shares": 1000, "averageCost": 600}}),
+    )))
+    listed = asyncio.run(api.fetch(RouteRequest(path="/api/me/holdings", headers=cookie)))
+    holdings = json.loads(listed.body)["holdings"]
+    assert [h["stockCode"] for h in holdings] == ["2330"]
+    assert holdings[0]["averageCost"] == 600
+
+    asyncio.run(api.fetch(RouteRequest(
+        method="PUT", path="/api/me/holdings", headers=cookie,
+        body=json.dumps({"holdings": [{"stockCode": "2454", "name": "聯發科", "shares": 500, "averageCost": None}]}),
+    )))
+    after_put = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/me/holdings", headers=cookie))).body)["holdings"]
+    assert [h["stockCode"] for h in after_put] == ["2454"]
+    assert after_put[0]["averageCost"] is None
+
+    asyncio.run(api.fetch(RouteRequest(method="DELETE", path="/api/me/holdings/2454", headers=cookie)))
+    assert json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/me/holdings", headers=cookie))).body)["holdings"] == []
+
+    logout = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/auth/logout", headers=cookie)))
+    assert json.loads(logout.body)["authenticated"] is False
+    assert json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/auth/me", headers=cookie))).body)["authenticated"] is False
+
+
+def test_worker_me_routes_require_authentication(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/me/holdings")))
+    assert response.init["status"] == 401
+    assert json.loads(response.body)["detail"] == "請先登入"
+
+
+def test_worker_login_success_and_failure_lockout(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+    register_user(api, "locktest@example.com", password="supersecret")
+
+    ok = asyncio.run(api.fetch(RouteRequest(
+        method="POST", path="/api/auth/login",
+        body=json.dumps({"username": "locktest@example.com", "password": "supersecret"}),
+    )))
+    assert ok.init["status"] == 200
+    assert json.loads(ok.body)["authenticated"] is True
+
+    wrong = {"username": "locktest@example.com", "password": "wrong-password"}
+    statuses = []
+    for _ in range(6):
+        resp = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/auth/login", body=json.dumps(wrong))))
+        statuses.append(resp.init["status"])
+    assert 401 in statuses
+    assert statuses[-1] == 429
+    locked = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/auth/login", body=json.dumps(wrong))))
+    assert locked.init["status"] == 429
+    assert locked.headers["retry-after"].isdigit()
+
+
+def test_worker_login_rejects_invalid_username(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+    response = asyncio.run(api.fetch(RouteRequest(
+        method="POST", path="/api/auth/login",
+        body=json.dumps({"username": "bad name", "password": "supersecret"}),
+    )))
+    assert response.init["status"] == 401
+    assert json.loads(response.body)["detail"] == "帳號或密碼錯誤"
+
+
+def test_worker_register_validates_and_rejects_duplicates(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+
+    weak = asyncio.run(api.fetch(RouteRequest(
+        method="POST", path="/api/auth/register",
+        body=json.dumps({"username": "dup@example.com", "password": "short"}),
+    )))
+    assert weak.init["status"] == 400
+    assert "密碼" in json.loads(weak.body)["detail"]
+
+    assert register_user(api, "dup@example.com").init["status"] == 200
+    duplicate = register_user(api, "dup@example.com")
+    assert duplicate.init["status"] == 400
+    assert json.loads(duplicate.body)["detail"] == "帳號已存在"
+
+
+def test_worker_admin_user_management(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch, super_user="admin@example.com")
+    admin = register_user(api, "admin@example.com", source="198.51.100.1")
+    admin_cookie = cookie_header(admin)
+    assert json.loads(admin.body)["user"]["isSuperUser"] is True
+    member = register_user(api, "member@example.com", source="198.51.100.2")
+    member_cookie = cookie_header(member)
+    member_id = json.loads(member.body)["user"]["id"]
+
+    listing = asyncio.run(api.fetch(RouteRequest(path="/api/admin/users", headers=admin_cookie)))
+    payload = json.loads(listing.body)
+    assert payload["superUser"] == "admin@example.com"
+    usernames = {row["username"]: row for row in payload["users"]}
+    assert usernames["admin@example.com"]["isSuperUser"] is True
+    assert usernames["admin@example.com"]["canDelete"] is False
+    assert usernames["member@example.com"]["canDelete"] is True
+
+    forbidden = asyncio.run(api.fetch(RouteRequest(path="/api/admin/users", headers=member_cookie)))
+    assert forbidden.init["status"] == 403
+
+    deleted = asyncio.run(api.fetch(RouteRequest(method="DELETE", path=f"/api/admin/users/{member_id}", headers=admin_cookie)))
+    assert deleted.init["status"] == 200
+    assert "member@example.com" not in {row["username"] for row in json.loads(deleted.body)["users"]}
+
+    missing = asyncio.run(api.fetch(RouteRequest(method="DELETE", path="/api/admin/users/999", headers=admin_cookie)))
+    assert missing.init["status"] == 404
+
+    admin_id = json.loads(admin.body)["user"]["id"]
+    self_delete = asyncio.run(api.fetch(RouteRequest(method="DELETE", path=f"/api/admin/users/{admin_id}", headers=admin_cookie)))
+    assert self_delete.init["status"] == 400
+    assert "super user" in json.loads(self_delete.body)["detail"]
+
+
+def test_worker_settings_get_put_roundtrip_and_validation(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch, super_user="admin@example.com")
+    cookie = cookie_header(register_user(api, "admin@example.com"))
+
+    default = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/settings"))).body)
+    assert default["auto_scan_full_market"] is True
+
+    put = asyncio.run(api.fetch(RouteRequest(
+        method="PUT", path="/api/settings", headers=cookie,
+        body=json.dumps({**default, "auto_scan_full_market": False, "revenue_growth_mode": "monthly"}),
+    )))
+    assert put.init["status"] == 200
+    stored = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/settings"))).body)
+    assert stored["auto_scan_full_market"] is False
+    assert stored["revenue_growth_mode"] == "monthly"
+
+    invalid = asyncio.run(api.fetch(RouteRequest(
+        method="PUT", path="/api/settings", headers=cookie,
+        body=json.dumps({**default, "revenue_growth_mode": "nope"}),
+    )))
+    assert invalid.init["status"] == 422
+
+
+def test_worker_settings_get_falls_back_on_corrupt_value(monkeypatch):
+    worker, api, db = build_router_api(monkeypatch)
+    db.app_kv["settings"] = "{not json"
+    assert asyncio.run(api.get_settings()) == worker.DEFAULT_SETTINGS
+
+
+def test_worker_companies_list_and_search(monkeypatch):
+    companies = {"items": [
+        {"stockCode": "2330", "name": "台積電", "industryName": "半導體"},
+        {"stockCode": "2454", "name": "聯發科", "industryName": "半導體"},
+        {"stockCode": "2603", "name": "長榮", "industryName": "航運"},
+    ]}
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/companies.json": companies})
+
+    page = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/companies?page=1&limit=2"))).body)
+    assert [c["stockCode"] for c in page["items"]] == ["2330", "2454"]
+    assert page["total"] == 3
+    assert page["hasMore"] is True
+
+    bad = asyncio.run(api.fetch(RouteRequest(path="/api/companies?page=abc")))
+    assert bad.init["status"] == 400
+
+    search = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/companies/search?q=航運"))).body)
+    assert [c["stockCode"] for c in search["items"]] == ["2603"]
+    empty_q = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/companies/search?q="))).body)
+    assert len(empty_q["items"]) == 3
+
+
+def test_worker_scan_market_get_and_post_queue_refresh(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    scan = {"entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "好"}], "watch": [], "excluded": []}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan})
+    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
+
+    get = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
+    assert get["detailMode"] == "summary"
+    assert get["cacheStatus"]["isStale"] is True
+
+    post = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body=""))).body)
+    assert post["cacheStatus"]["refreshStatus"] == "queued"
+    assert len(db.refresh_jobs) == 1
+
+
+def test_worker_scan_market_get_serves_empty_when_seed_missing(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {}})
+    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
+    payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
+    assert payload["entry"] == []
+    assert payload["dataSource"] == "cloudflare_r2_seed"
+
+
+def test_worker_analyze_and_holdings_scan(monkeypatch):
+    analysis = {"public/analysis_shards/23.json": {"2330": {"stockCode": "2330", "status": "ENTRY", "summary": "好", "reasons": []}}}
+    holding_shard = {"public/holding_analysis_shards/24.json": {"2454": {"stockCode": "2454", "status": "WATCH", "reasons": [{"code": "X1", "passed": True}]}}}
+    worker, api, _db = build_router_api(monkeypatch, r2={**analysis, **holding_shard})
+
+    found = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/analyze/2330", body="")))
+    assert json.loads(found.body)["stockCode"] == "2330"
+    not_found = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/analyze/9999", body="")))
+    assert not_found.init["status"] == 404
+    invalid = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/analyze/12", body="")))
+    assert invalid.init["status"] == 404
+
+    scan = asyncio.run(api.fetch(RouteRequest(
+        method="POST", path="/api/scan/holdings",
+        body=json.dumps({"holdings": [
+            {"stockCode": "2454", "name": "聯發科", "shares": 100},
+            {"stockCode": "2330", "name": "台積電", "shares": 100},
+            {"stockCode": "1111", "name": "缺漏", "shares": 100},
+        ]}),
+    )))
+    payload = json.loads(scan.body)
+    assert {r["stockCode"] for r in payload["results"]} == {"2330", "2454"}
+    assert [m["stockCode"] for m in payload["missing"]] == ["1111"]
+
+
+def test_worker_reports_market_and_holdings(monkeypatch):
+    scan = {"entry": [{"stockCode": "2330", "companyName": "台積電", "status": "ENTRY", "summary": "好"}], "watch": [], "excluded": []}
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/market_scan_summary.json": scan, "public/analysis_shards/23.json": {"2330": {"stockCode": "2330", "status": "ENTRY", "reasons": []}}})
+
+    market = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=markdown", body="")))
+    assert "台股市場掃描報告" in market.body
+
+    holdings = asyncio.run(api.fetch(RouteRequest(
+        method="POST", path="/api/reports/holdings?report_format=csv",
+        body=json.dumps({"holdings": [{"stockCode": "2330", "name": "台積電", "shares": 100}]}),
+    )))
+    assert "category,stockCode,companyName,status,summary" in holdings.body
+
+
+def test_worker_cache_status_and_refresh(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest}, github_repo="pcedison/stock_scanner")
+    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
+
+    refresh = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/cache/refresh", body=""))).body)
+    assert refresh["status"] == "queued"
+
+    status = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/cache/status"))).body)
+    assert status["recentJobs"][0]["status"] == "queued"
+    assert status["recentJobs"][0]["ownerRunUrl"] is None
+
+
+def test_worker_ensure_refresh_job_fresh_and_existing(monkeypatch):
+    manifest = {"generatedAt": "2026-02-20T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-02-20T01:00:00+00:00")
+
+    fresh = asyncio.run(api.ensure_refresh_job(manifest, force=False))
+    assert fresh["status"] == "fresh"
+
+    db.refresh_jobs.append({"id": "existing", "job_type": "market_scan", "cache_key": "abc", "status": "running", "reason": "manual", "queued_at": "2026-02-20T00:59:00+00:00", "updated_at": "2026-02-20T00:59:00+00:00"})
+    existing = asyncio.run(api.ensure_refresh_job(manifest, force=True))
+    assert existing["status"] == "running"
+    assert existing["jobId"] == "existing"
+    assert existing["ownerRunUrl"] is None
+
+
+def test_worker_github_actions_run_url_requires_valid_repo(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    no_repo = worker.Api(env=types.SimpleNamespace())
+    assert no_repo.github_actions_run_url("123") is None
+    assert no_repo.github_actions_run_url(None) is None
+    bad_repo = worker.Api(env=types.SimpleNamespace(GITHUB_REPOSITORY="not-a-slug"))
+    assert bad_repo.github_actions_run_url("123") is None
+
+
+def test_worker_misc_readonly_routes(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch, r2={
+        "public/data_sources_status.json": {"activeProvider": "CloudflareR2Seed"},
+        "official/official_history_backfill_progress.json": {"done": 5},
+    })
+
+    data_sources = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/data-sources/status"))).body)
+    assert data_sources["activeProvider"] == "CloudflareR2Seed"
+
+    backfill = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/data-sources/backfill-history", body=""))).body)
+    assert backfill["progress"]["done"] == 5
+
+    calendar = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/calendar/2026"))).body)
+    assert calendar["year"] == 2026
+
+    wakeup = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scheduler/wakeup"))).body)
+    assert wakeup["status"] == "SLEEP"
+
+    integrations = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/integrations/status"))).body)
+    assert integrations["line"] is False
+
+    backtest = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/backtest"))).body)
+    assert "metrics" in backtest
+
+    not_found = asyncio.run(api.fetch(RouteRequest(path="/api/does-not-exist")))
+    assert not_found.init["status"] == 404
+
+
+def test_worker_auth_source_prefers_forwarded_headers(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+    assert api.auth_source(RouteRequest(headers={"x-forwarded-for": "1.1.1.1, 2.2.2.2"})) == "1.1.1.1"
+    assert api.auth_source(RouteRequest(headers={"cf-connecting-ip": "3.3.3.3"})) == "3.3.3.3"
+    assert api.auth_source(RouteRequest(headers={"x-real-ip": "4.4.4.4"})) == "4.4.4.4"
+    assert api.auth_source(RouteRequest(headers={})) == "unknown"
+
+
+def test_worker_r2_json_falls_back_on_invalid_json(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": "not-json{"})
+    result = asyncio.run(api.r2_json("public/manifest.json", {"fallback": True}))
+    assert result == {"fallback": True}
+
+
+def test_worker_fetch_maps_unexpected_error_to_500(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+
+    async def boom(key, fallback):
+        raise RuntimeError("boom")
+
+    api.r2_json = boom
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    assert response.init["status"] == 500
+    assert json.loads(response.body)["detail"].startswith("伺服器")
+
+
+def test_worker_cache_policy_windows(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+    api = worker.Api(env=types.SimpleNamespace())
+
+    pin_worker_time(monkeypatch, worker, "2026-03-31T04:00:00+00:00")
+    assert api.cache_policy()["reason"] == "financial_report_window"
+
+    pin_worker_time(monkeypatch, worker, "2026-02-10T04:00:00+00:00")
+    assert api.cache_policy()["reason"] == "monthly_revenue_window"
+
+    pin_worker_time(monkeypatch, worker, "2026-02-20T04:00:00+00:00")
+    assert api.cache_policy()["reason"] == "routine_refresh"
+
+
+def test_worker_subrouter_not_found_fallbacks(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+    cases = [
+        ("GET", "/api/auth/register"),
+        ("PATCH", "/api/me/holdings"),
+        ("GET", "/api/admin/unknown"),
+        ("GET", "/api/scan/unknown"),
+        ("GET", "/api/reports/market"),
+        ("GET", "/api/cache/unknown"),
+        ("POST", "/api/scheduler/wakeup"),
+        ("POST", "/api/data-sources/status"),
+        ("POST", "/api/calendar/2026"),
+        ("POST", "/api/companies"),
+    ]
+    for method, path in cases:
+        response = asyncio.run(api.fetch(RouteRequest(method=method, path=path, body="")))
+        assert response.init["status"] == 404, f"{method} {path}"
+
+
+def test_worker_scan_market_post_without_seed_queues_refresh(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
+    payload = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body=""))).body)
+    assert payload["entry"] == []
+    assert payload["cacheStatus"]["refreshStatus"] == "queued"
+    assert len(db.refresh_jobs) == 1
+
+
+def test_worker_holding_analysis_rejects_invalid_code(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch)
+    assert asyncio.run(api.holding_analysis_for_stock("12")) is None
+
+
+def test_worker_require_auth_attempt_allowed_clears_expired_lock(monkeypatch):
+    worker, api, db = build_router_api(monkeypatch)
+    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
+    request = RouteRequest(headers={})
+    identifier = api.auth_attempt_identifier("u@example.com", request)
+    db.auth_attempts.append({
+        "identifier": identifier,
+        "failure_count": 5,
+        "first_failed_at": "2026-02-19T00:00:00+00:00",
+        "last_failed_at": "2026-02-19T00:00:00+00:00",
+        "locked_until": "2026-02-19T23:00:00+00:00",
+    })
+    asyncio.run(api.require_auth_attempt_allowed("u@example.com", request))
+    assert db.auth_attempts == []
