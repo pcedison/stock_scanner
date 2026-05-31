@@ -43,7 +43,7 @@ jobs:
 
       - name: Run quality gates
         run: |
-          python -m pytest -q
+          python -m pytest -q --cov=backend --cov-report=term-missing --cov-fail-under=88
           python scripts/check_frontend_hygiene.py
           python scripts/check_operational_readiness.py
           python -m pip check
