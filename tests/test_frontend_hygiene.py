@@ -8,7 +8,7 @@ from scripts.check_frontend_hygiene import (
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260530-market-scan-split"
+APP_VERSION = "20260531-market-render-split"
 DOM_VERSION = "20260525-dom-hardening"
 
 
