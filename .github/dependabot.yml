@@ -8,6 +8,11 @@ updates:
       time: "09:00"
       timezone: "Asia/Taipei"
     open-pull-requests-limit: 5
+    # 只升「直接依賴」(requirements.txt 內明列者)。constraints.txt 裡的傳遞依賴
+    # (例如 pydantic-core,版本被 pydantic 嚴格 pin 死)不獨立升版,改由父套件帶版本,
+    # 避免 dependabot 把傳遞依賴升到沒有任何父套件相容的版本而造成 ResolutionImpossible。
+    allow:
+      - dependency-type: "direct"
     groups:
       python-dependencies:
         patterns:
