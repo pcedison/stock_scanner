@@ -6,7 +6,8 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -58,13 +59,35 @@ def missing_assets(remote_html: str, expected_assets: Iterable[str]) -> list[str
     return [asset for asset in expected_assets if asset not in remote_html]
 
 
-def validate_pages_frontend(url: str, index_path: Path = DEFAULT_INDEX, timeout: int = 10) -> dict[str, object]:
+def validate_pages_frontend(
+    url: str,
+    index_path: Path = DEFAULT_INDEX,
+    timeout: int = 10,
+    *,
+    attempts: int = 1,
+    retry_delay: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+    fetcher: Callable[[str, int], str] | None = None,
+) -> dict[str, object]:
+    # Cloudflare Pages 部署後,production 別名要數秒到一分鐘才會切到新內容。
+    # 部署完立刻檢查常會抓到舊 HTML,故對「抓取失敗」與「資產尚未出現」都重試,
+    # 容忍傳播延遲;全部嘗試用盡才視為真的失敗。
     expected = expected_cache_busted_assets(index_path)
-    html = fetch_pages_html(url, timeout)
-    missing = missing_assets(html, expected)
-    if missing:
-        raise RuntimeError(f"Pages frontend is missing cache-busted assets: {', '.join(missing)}")
-    return {"url": validate_pages_url(url), "checkedAssets": expected, "ok": True}
+    fetch = fetcher or fetch_pages_html
+    total = max(1, attempts)
+    last_error = "Pages frontend verification failed"
+    for attempt in range(1, total + 1):
+        try:
+            html = fetch(url, timeout)
+            missing = missing_assets(html, expected)
+            if not missing:
+                return {"url": validate_pages_url(url), "checkedAssets": expected, "ok": True}
+            last_error = f"Pages frontend is missing cache-busted assets: {', '.join(missing)}"
+        except RuntimeError as exc:
+            last_error = str(exc)
+        if attempt < total:
+            sleep(retry_delay)
+    raise RuntimeError(last_error)
 
 
 def fetch_pages_deployments(project_name: str, timeout: int = 30) -> list[dict[str, object]]:
@@ -133,6 +156,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--url", required=True)
     parser.add_argument("--index", type=Path, default=DEFAULT_INDEX)
     parser.add_argument("--timeout", type=int, default=10)
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=1,
+        help="抓取/比對的最大嘗試次數,用來容忍 Cloudflare Pages 部署後的傳播延遲(預設 1)。",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=10.0,
+        help="兩次嘗試之間的等待秒數(預設 10)。",
+    )
     parser.add_argument("--project", help="Cloudflare Pages project name for deployment metadata verification.")
     parser.add_argument("--expected-branch", default="")
     parser.add_argument("--expected-source", default="")
@@ -140,7 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        result = validate_pages_frontend(args.url, args.index, args.timeout)
+        result = validate_pages_frontend(
+            args.url,
+            args.index,
+            args.timeout,
+            attempts=args.attempts,
+            retry_delay=args.retry_delay,
+        )
         if args.project:
             deployments = fetch_pages_deployments(args.project, args.metadata_timeout)
             result["latestProductionDeployment"] = validate_pages_deployment_metadata(
