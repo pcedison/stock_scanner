@@ -75,13 +75,13 @@ def _quarter(value: Any) -> int | None:
 
 
 def _pick(row: dict[str, Any], *keys: str) -> Any:
+    # 用 dict.get 取值,避免下標 `row[key]` 與成員測試 `key in row` 被靜態分析
+    # 視為可能對 dict 做雜湊(py/hash-unhashable-value);語意與原本等價:
+    # key 不存在或值為 None / 空字串時略過。
     for key in keys:
-        if key in row:
-            value = row[key]
-            # 明確比較,不用 `value not in (None, "")`:成員測試會被靜態分析視為對
-            # 可能是 dict 的值做雜湊(unhashable),且語意上等價。
-            if value is not None and value != "":
-                return value
+        value = row.get(key)
+        if value is not None and value != "":
+            return value
     return None
 
 
