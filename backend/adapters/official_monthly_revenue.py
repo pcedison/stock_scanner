@@ -47,7 +47,7 @@ def roc_month_to_ad(value: Any) -> str:
     try:
         year = int(text[:-2]) + 1911
         month = int(text[-2:])
-    except ValueError:
+    except ValueError:  # pragma: no cover - text is all-digit and len>=5, int() cannot raise
         return ""
     if not 1 <= month <= 12:
         return ""

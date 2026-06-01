@@ -250,7 +250,7 @@ class OfficialFundamentalsHistoryStore:
     def status(self) -> dict[str, Any]:
         payload = self.load()
         quarters = payload.get("quarters", {})
-        if not isinstance(quarters, dict):
+        if not isinstance(quarters, dict):  # pragma: no cover - load() already normalizes quarters to a dict
             quarters = {}
         return {
             "enabled": True,
