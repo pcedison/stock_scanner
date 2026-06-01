@@ -76,8 +76,12 @@ def _quarter(value: Any) -> int | None:
 
 def _pick(row: dict[str, Any], *keys: str) -> Any:
     for key in keys:
-        if key in row and row[key] not in (None, ""):
-            return row[key]
+        if key in row:
+            value = row[key]
+            # 明確比較,不用 `value not in (None, "")`:成員測試會被靜態分析視為對
+            # 可能是 dict 的值做雜湊(unhashable),且語意上等價。
+            if value is not None and value != "":
+                return value
     return None
 
 
@@ -161,7 +165,11 @@ class OfficialFundamentalsAdapter:
                 last_exc = exc
                 if attempt < _FETCH_RETRIES:
                     time.sleep(_FETCH_RETRY_DELAY)
-        raise last_exc  # type: ignore[misc]
+        # 迴圈跑完仍未 return 代表每次都失敗;明確判斷而非直接 raise 可能為 None 的變數,
+        # 避免靜態分析認定可能 raise NoneType(會變成 TypeError)。
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"Failed to fetch official endpoint after {_FETCH_RETRIES + 1} attempts: {url}")
 
     def _fetch_many(self, urls: Iterable[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         rows: list[dict[str, Any]] = []

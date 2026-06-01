@@ -1,12 +1,6 @@
 import pytest
 
 import backend.services.calendar as calendar_module
-from backend.services.calendar import (
-    MarketCalendar,
-    _parse_twse_holiday_payload,
-    fetch_twse_market_calendar,
-    update_market_calendar,
-)
 
 
 def test_parse_twse_holiday_payload_keeps_trading_markers_open():
@@ -22,7 +16,7 @@ def test_parse_twse_holiday_payload_keeps_trading_markers_open():
         ],
     }
 
-    calendar = _parse_twse_holiday_payload(2026, payload)
+    calendar = calendar_module._parse_twse_holiday_payload(2026, payload)
 
     assert "2026-02-11" not in calendar["closedDates"]
     assert "2026-02-12" in calendar["closedDates"]
@@ -42,7 +36,7 @@ def test_parse_twse_holiday_payload_skips_blank_bad_and_foreign_year_rows():
             {"日期": "2026-02-12", "名稱": "市場無交易", "說明": ""},  # valid, in-year
         ],
     }
-    result = _parse_twse_holiday_payload(2026, payload)
+    result = calendar_module._parse_twse_holiday_payload(2026, payload)
     assert result["closedDates"] == ["2026-02-12"]
 
 
@@ -60,19 +54,19 @@ class _FakeResponse:
 def test_fetch_twse_market_calendar_parses_ok_payload(monkeypatch):
     payload = {"stat": "OK", "fields": ["日期", "名稱", "說明"], "data": [["2026-02-12", "市場無交易", ""]]}
     monkeypatch.setattr(calendar_module.httpx, "get", lambda *a, **k: _FakeResponse(payload))
-    result = fetch_twse_market_calendar(2026)
+    result = calendar_module.fetch_twse_market_calendar(2026)
     assert result["closedDates"] == ["2026-02-12"]
 
 
 def test_fetch_twse_market_calendar_rejects_invalid_payload(monkeypatch):
     monkeypatch.setattr(calendar_module.httpx, "get", lambda *a, **k: _FakeResponse({"stat": "error"}))
     with pytest.raises(ValueError, match="invalid payload"):
-        fetch_twse_market_calendar(2026)
+        calendar_module.fetch_twse_market_calendar(2026)
 
 
 def test_market_calendar_load_falls_back_when_file_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(calendar_module, "ROOT_DIR", tmp_path)  # empty dir, no calendar file
-    cal = MarketCalendar.load(2026)
+    cal = calendar_module.MarketCalendar.load(2026)
     assert cal.source == "weekend-only fallback"
     assert cal.closed_dates == set()
 
@@ -91,7 +85,7 @@ def test_update_market_calendar_writes_then_reloads(tmp_path, monkeypatch):
             "springFestivalDates": ["2026-02-15"],
         },
     )
-    cal = update_market_calendar(2026)
+    cal = calendar_module.update_market_calendar(2026)
     assert (tmp_path / "data" / "market_calendar_2026.json").exists()
     assert cal.source == "test feed"
     assert date_in(cal.closed_dates, "2026-02-12")

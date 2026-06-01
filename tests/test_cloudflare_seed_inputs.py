@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 
-import scripts.validate_cloudflare_seed_inputs as vsi
 from scripts.validate_cloudflare_seed_inputs import (
+    _load_json_from_zip,
     failed_company_summary,
+    main,
     render_seed_summary,
     validate_seed_freshness,
     validate_seed_zip,
@@ -291,7 +292,7 @@ def test_main_writes_summary_outputs_and_reports_failure(tmp_path, capsys):
     js = tmp_path / "out" / "summary.json"
     missing_csv = tmp_path / "none.csv"
 
-    rc = vsi.main([
+    rc = main([
         "--zip", str(valid),
         "--summary-md", str(md),
         "--summary-json", str(js),
@@ -302,14 +303,14 @@ def test_main_writes_summary_outputs_and_reports_failure(tmp_path, capsys):
     assert json.loads(js.read_text(encoding="utf-8"))["seed"]["seedCompanies"] == 1000
 
     empty = _zip_from(tmp_path, {"official_fundamentals_history.json": "{}"}, name="empty.zip")
-    assert vsi.main(["--zip", str(empty)]) == 1
+    assert main(["--zip", str(empty)]) == 1
 
 
 def test_load_json_from_zip_reports_missing_entry(tmp_path):
     path = _zip_from(tmp_path, {"present.json": "{}"})
     with zipfile.ZipFile(path) as archive:
         with pytest.raises(ValueError, match="Missing required seed entry"):
-            vsi._load_json_from_zip(archive, "absent.json")
+            _load_json_from_zip(archive, "absent.json")
 
 
 def test_validate_seed_zip_skips_malformed_quarter_entries(tmp_path):

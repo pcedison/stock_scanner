@@ -10,6 +10,7 @@ from backend.services.official_history_backfill import (
     _dedupe_periods,
     _full_quarterly_periods,
     _latest_annual_year,
+    _main,
     _strategy_backfill_periods,
 )
 
@@ -516,7 +517,6 @@ def test_backfill_main_runs_service_and_prints_json(monkeypatch, capsys):
     import sys
 
     import backend.services.official_data_provider as odp
-    import backend.services.official_history_backfill as bf
 
     class _FakeProvider:
         def __init__(self):
@@ -537,9 +537,9 @@ def test_backfill_main_runs_service_and_prints_json(monkeypatch, capsys):
             return _FakeResult()
 
     monkeypatch.setattr(odp, "OfficialDataProvider", _FakeProvider)
-    monkeypatch.setattr(bf, "OfficialHistoryBackfillService", _FakeService)
+    monkeypatch.setattr("backend.services.official_history_backfill.OfficialHistoryBackfillService", _FakeService)
     monkeypatch.setattr(sys, "argv", ["backfill", "--limit", "5", "--mode", "full_quarterly", "--reset-progress"])
 
-    bf._main()
+    _main()
 
     assert _json.loads(capsys.readouterr().out) == {"ok": True}
