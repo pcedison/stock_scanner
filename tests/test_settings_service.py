@@ -77,3 +77,72 @@ def test_save_settings_keeps_existing_file_when_replace_fails(tmp_path, monkeypa
     persisted = ScannerSettings.model_validate_json(path.read_text(encoding="utf-8"))
     assert persisted.manual_scan_enabled is True
     assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+def test_load_settings_returns_defaults_when_file_absent(tmp_path, monkeypatch):
+    path = tmp_path / "does-not-exist.json"
+    monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
+
+    result = settings_service.load_settings()
+
+    assert result.model_dump() == ScannerSettings().model_dump()
+    assert not path.exists()  # absent file isn't created on read
+
+
+def test_corrupt_settings_logs_when_default_rewrite_fails(tmp_path, monkeypatch):
+    path = tmp_path / "settings.local.json"
+    path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
+
+    def boom(_settings):
+        raise OSError("cannot save")
+
+    monkeypatch.setattr(settings_service, "save_settings", boom)
+
+    recovered = settings_service.load_settings()  # save failure is logged, not raised
+
+    assert recovered.model_dump() == ScannerSettings().model_dump()
+
+
+def test_load_settings_returns_cached_result_on_concurrent_population(tmp_path, monkeypatch):
+    path = tmp_path / "settings.local.json"
+    path.write_text(ScannerSettings().model_dump_json(), encoding="utf-8")
+    monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
+    sig = settings_service._file_sig(path)
+    sentinel = ScannerSettings(manual_scan_enabled=False)
+    real_validate = ScannerSettings.model_validate_json
+
+    def populate_then_parse(data):
+        # mimic another thread filling the cache for this sig mid-read
+        settings_service._settings_cache["sig"] = sig
+        settings_service._settings_cache["result"] = sentinel
+        return real_validate(data)
+
+    monkeypatch.setattr(settings_service.ScannerSettings, "model_validate_json", populate_then_parse)
+
+    assert settings_service.load_settings() is sentinel  # keeps the concurrently-cached result
+
+
+def test_save_settings_swallows_temp_cleanup_failure(tmp_path, monkeypatch):
+    path = tmp_path / "settings.local.json"
+    monkeypatch.setenv("SETTINGS_PATH", str(path))
+    settings_service._settings_cache.clear()
+    real_replace = Path.replace
+
+    def fail_replace(self, target):
+        if Path(target) == path:
+            raise OSError("replace failed")
+        return real_replace(self, target)
+
+    def fail_unlink(self, missing_ok=False):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    # The original replace error propagates; the cleanup failure is only logged.
+    with pytest.raises(OSError, match="replace failed"):
+        settings_service.save_settings(ScannerSettings())

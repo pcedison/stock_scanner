@@ -219,7 +219,7 @@ class AuthService:
                     (normalized_username, clean_display_name, self._hash_password(password), now),
                 )
                 last_row_id = cursor.lastrowid
-                if last_row_id is None:  # sqlite sets lastrowid after a successful INSERT
+                if last_row_id is None:  # pragma: no cover - sqlite always sets lastrowid after a successful INSERT
                     raise RuntimeError("user insert did not return a row id")
                 user_id = int(last_row_id)
         except sqlite3.IntegrityError as exc:

@@ -509,3 +509,37 @@ def test_backfill_saves_progress_at_interval(monkeypatch, tmp_path):
 
     assert result.requestedCompanies == 11
     assert result.completed is True
+
+
+def test_backfill_main_runs_service_and_prints_json(monkeypatch, capsys):
+    import json as _json
+    import sys
+
+    import backend.services.official_data_provider as odp
+    import backend.services.official_history_backfill as bf
+
+    class _FakeProvider:
+        def __init__(self):
+            self.history_store = object()
+
+        def list_companies(self):
+            return []
+
+    class _FakeResult:
+        def as_dict(self):
+            return {"ok": True}
+
+    class _FakeService:
+        def __init__(self, store):
+            self.store = store
+
+        def backfill(self, companies, **kwargs):
+            return _FakeResult()
+
+    monkeypatch.setattr(odp, "OfficialDataProvider", _FakeProvider)
+    monkeypatch.setattr(bf, "OfficialHistoryBackfillService", _FakeService)
+    monkeypatch.setattr(sys, "argv", ["backfill", "--limit", "5", "--mode", "full_quarterly", "--reset-progress"])
+
+    bf._main()
+
+    assert _json.loads(capsys.readouterr().out) == {"ok": True}

@@ -1,4 +1,4 @@
-from backend.services.backtest import BacktestRow, _entry_signal, _exit_signal, run_backtest
+from backend.services.backtest import BacktestRow, _entry_signal, _exit_signal, _load_rows, run_backtest
 
 
 def _row(**kwargs) -> BacktestRow:
@@ -82,3 +82,24 @@ def test_run_backtest_reports_missing_file(tmp_path):
 
     assert result["status"] == "NO_DATA"
     assert result["metrics"]["tradeCount"] == 0
+
+
+def test_load_rows_skips_incomplete_or_nonpositive_price_rows(tmp_path):
+    path = tmp_path / "backtest_history.csv"
+    path.write_text(
+        "\n".join(
+            [
+                "stock_code,period,close_price",
+                "2330,2025-01,100",  # valid
+                ",2025-01,100",  # missing stock_code -> skip
+                "2330,,100",  # missing period -> skip
+                "2330,2025-02,0",  # non-positive price -> skip
+                "2330,2025-03,abc",  # unparseable price -> None -> skip
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows = _load_rows(path)
+
+    assert [(row.stockCode, row.period) for row in rows] == [("2330", "2025-01")]

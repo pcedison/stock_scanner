@@ -3,10 +3,18 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
 
 from backend.models.settings import ScannerSettings
 from backend.services import scan_cache as scan_cache_module
-from backend.services.scan_cache import ScanCacheService, scan_cache_key
+from backend.services.scan_cache import (
+    ScanCacheService,
+    _parse_time,
+    _public_job,
+    scan_cache_key,
+)
 
 
 def test_scan_cache_returns_cached_payload_without_rebuilding(tmp_path):
@@ -137,3 +145,57 @@ def test_failed_background_refresh_redacts_error_details(tmp_path):
     assert job["hasError"] is True
     assert "error" not in job
     assert "private filesystem path" not in str(status)
+
+
+def test_parse_time_and_public_job_helpers():
+    assert _parse_time(None) is None
+    assert _parse_time("not-a-time") is None
+    assert _parse_time("2026-01-01T00:00:00") == datetime.fromisoformat("2026-01-01T00:00:00")
+    redacted = _public_job({"id": "j1", "error": "boom"})
+    assert "error" not in redacted and redacted["hasError"] is True
+    assert "hasError" not in _public_job({"id": "j1", "error": None})
+
+
+def test_status_reloads_cache_when_file_signature_changes(tmp_path):
+    service = ScanCacheService(tmp_path / "scan_cache.json", tmp_path / "refresh_state.json")
+    service.status()  # primes the in-memory signature (file absent)
+    (tmp_path / "scan_cache.json").write_text(
+        json.dumps({"version": 1, "items": {"abc": {"payload": {}}}}), encoding="utf-8"
+    )
+    service.status()  # signature changed -> reloads from disk
+    assert "abc" in service._memory_cache
+
+
+def test_read_json_returns_fallback_for_missing_and_unreadable(tmp_path):
+    service = ScanCacheService(tmp_path / "c.json", tmp_path / "s.json")
+    assert service._read_json(tmp_path / "nope.json", {"x": 1}) == {"x": 1}
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert service._read_json(bad, {"x": 2}) == {"x": 2}
+
+
+def test_write_json_cleans_up_temp_on_replace_failure(tmp_path, monkeypatch):
+    service = ScanCacheService(tmp_path / "c.json", tmp_path / "s.json")
+
+    def fail_replace(self, target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        service._write_json(tmp_path / "c.json", {"version": 1})
+    assert not list(tmp_path.glob(".c.json.*.tmp"))  # temp file removed
+
+
+def test_write_json_swallows_temp_cleanup_failure(tmp_path, monkeypatch):
+    service = ScanCacheService(tmp_path / "c.json", tmp_path / "s.json")
+
+    def fail_replace(self, target):
+        raise OSError("replace failed")
+
+    def fail_unlink(self, missing_ok=False):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(OSError, match="replace failed"):
+        service._write_json(tmp_path / "c.json", {"version": 1})
