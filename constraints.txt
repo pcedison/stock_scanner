@@ -37,11 +37,11 @@ h11==0.16.0
     #   uvicorn
 httpcore==1.0.9
     # via httpx
-httptools==0.7.1
+httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via -r requirements.txt
-idna==3.16
+idna==3.17
     # via
     #   anyio
     #   httpx
@@ -56,7 +56,7 @@ pydantic==2.13.4
     # via
     #   -r requirements.txt
     #   fastapi
-pydantic-core==2.46.4
+pydantic-core==2.47.0
     # via pydantic
 pygments==2.20.0
     # via pytest
@@ -68,7 +68,7 @@ pyyaml==6.0.3
     # via uvicorn
 requests==2.34.2
     # via -r requirements.txt
-starlette==1.1.0
+starlette==1.2.1
     # via fastapi
 typing-extensions==4.15.0
     # via
