@@ -16,6 +16,7 @@ data/settings.json
 data/settings.local.json
 data/settings.local.tmp
 data/official_fundamentals_history.json
+data/monthly_revenue_history.json
 data/official_history_backfill_progress.json
 data/official_history_backfill_run*.log
 data/app.sqlite3*
