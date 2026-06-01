@@ -144,7 +144,9 @@ jobs:
             --url "https://${CF_PAGES_PROJECT}.pages.dev/" \
             --project "$CF_PAGES_PROJECT" \
             --expected-branch "$CF_PAGES_PRODUCTION_BRANCH" \
-            --expected-source "$GITHUB_SHA"
+            --expected-source "$GITHUB_SHA" \
+            --attempts 6 \
+            --retry-delay 10
 
       - name: Verify deployed health freshness
         run: |
