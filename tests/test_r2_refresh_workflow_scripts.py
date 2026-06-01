@@ -7,19 +7,18 @@ import pytest
 
 import scripts.r2_refresh_decision as r2
 from scripts.cloudflare_seed_upload_plan import build_upload_plan
-from scripts.r2_refresh_decision import early_refresh_decision, find_count
 
 
 def test_r2_refresh_decision_reads_cloudflare_and_wrangler_count_shapes():
     cloudflare_payload = {"result": [{"results": [{"cnt": 3}]}]}
     wrangler_payload = [{"results": [{"pending_count": 2}]}]
 
-    assert find_count(cloudflare_payload) == 3
-    assert find_count(wrangler_payload) == 2
+    assert r2.find_count(cloudflare_payload) == 3
+    assert r2.find_count(wrangler_payload) == 2
 
 
 def test_r2_refresh_decision_treats_stale_health_as_refresh_trigger():
-    decision = early_refresh_decision(
+    decision = r2.early_refresh_decision(
         force=False,
         pending_count=0,
         health_payload={"cache": {"sourceLastCheckedAt": "2026-05-20T00:00:00+00:00"}},
@@ -35,7 +34,7 @@ def test_r2_refresh_decision_treats_stale_health_as_refresh_trigger():
 
 
 def test_r2_refresh_decision_force_bypasses_remote_checks():
-    decision = early_refresh_decision(
+    decision = r2.early_refresh_decision(
         force=True,
         pending_count=0,
         health_payload=None,
@@ -119,19 +118,19 @@ def test_health_age_hours_handles_missing_and_naive_now():
 
 
 def test_early_refresh_decision_branch_matrix():
-    on_error = early_refresh_decision(
+    on_error = r2.early_refresh_decision(
         force=False, pending_count=0, health_payload=None, health_error="boom",
         health_url_configured=True, max_cache_age_hours=36,
     )
     assert on_error["staleRefresh"] is True and on_error["runRefresh"] is True
 
-    missing_ts = early_refresh_decision(
+    missing_ts = r2.early_refresh_decision(
         force=False, pending_count=0, health_payload={"cache": {}}, health_error="",
         health_url_configured=True, max_cache_age_hours=36,
     )
     assert missing_ts["staleRefresh"] is True
 
-    fresh = early_refresh_decision(
+    fresh = r2.early_refresh_decision(
         force=False, pending_count=0,
         health_payload={"cache": {"sourceLastCheckedAt": "2026-05-22T00:00:00+00:00"}},
         health_error="", health_url_configured=True, max_cache_age_hours=36,
@@ -140,13 +139,13 @@ def test_early_refresh_decision_branch_matrix():
     assert fresh["staleRefresh"] is False and fresh["runRefresh"] is False
     assert any("fresh" in message for message in fresh["messages"])
 
-    configured_no_payload = early_refresh_decision(
+    configured_no_payload = r2.early_refresh_decision(
         force=False, pending_count=0, health_payload=None, health_error="",
         health_url_configured=True, max_cache_age_hours=36,
     )
     assert configured_no_payload["staleRefresh"] is True
 
-    pending_only = early_refresh_decision(
+    pending_only = r2.early_refresh_decision(
         force=False, pending_count=2, health_payload=None, health_error="",
         health_url_configured=False, max_cache_age_hours=36,
     )
