@@ -8,6 +8,8 @@ which is the correctness-critical part.
 
 from datetime import date
 
+import httpx
+
 from backend.adapters.official_fundamentals import (
     OfficialFundamentalsAdapter,
     _gross_margin,
@@ -209,6 +211,103 @@ def test_fetch_tpex_valuations_handles_fetch_error(monkeypatch):
     assert valuations == {}
     assert status["TPEX"]["ok"] is False
     assert "tpex offline" in status["TPEX"]["error"]
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_json_returns_payload(monkeypatch):
+    adapter = OfficialFundamentalsAdapter()
+    captured: dict[str, object] = {}
+
+    def fake_get(url, params=None, timeout=None, follow_redirects=None):
+        captured.update(url=url, params=params, timeout=timeout, follow_redirects=follow_redirects)
+        return _FakeResponse([{"公司代號": "2330"}])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    assert adapter._fetch_json("http://x", params={"a": 1}) == [{"公司代號": "2330"}]
+    assert captured == {"url": "http://x", "params": {"a": 1}, "timeout": adapter.timeout, "follow_redirects": True}
+
+
+def test_fetch_with_retry_recovers_after_transient_failures(monkeypatch):
+    adapter = OfficialFundamentalsAdapter()
+    monkeypatch.setattr("backend.adapters.official_fundamentals.time.sleep", lambda _s: None)
+    attempts = {"n": 0}
+
+    def flaky(url):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise httpx.RequestError("transient")
+        return [{"ok": True}]
+
+    monkeypatch.setattr(adapter, "_fetch_json", flaky)
+
+    assert adapter._fetch_with_retry("http://x") == [{"ok": True}]
+    assert attempts["n"] == 3  # two failures + one success
+
+
+def test_fetch_with_retry_raises_last_error_after_exhausting_retries(monkeypatch):
+    adapter = OfficialFundamentalsAdapter()
+    monkeypatch.setattr("backend.adapters.official_fundamentals.time.sleep", lambda _s: None)
+
+    def always_fail(url):
+        raise httpx.RequestError("down")
+
+    monkeypatch.setattr(adapter, "_fetch_json", always_fail)
+
+    try:
+        adapter._fetch_with_retry("http://x")
+    except httpx.RequestError as exc:
+        assert "down" in str(exc)
+    else:
+        raise AssertionError("expected the last error to propagate")
+
+
+def test_fetch_many_degrades_when_one_source_fails(monkeypatch):
+    adapter = OfficialFundamentalsAdapter()
+    good, bad = "http://good", "http://bad"
+
+    def per_url(url):
+        if url == bad:
+            raise httpx.RequestError("source offline")
+        return [{"row": 1}, {"row": 2}]
+
+    monkeypatch.setattr(adapter, "_fetch_with_retry", per_url)
+
+    rows, status = adapter._fetch_many([good, bad])
+
+    assert rows == [{"row": 1}, {"row": 2}]  # good source still contributes
+    assert status[good] == {"ok": True, "rows": 2}
+    assert status[bad]["ok"] is False
+    assert "source offline" in status[bad]["error"]
+
+
+def test_fetch_many_sequential_degrades_when_one_source_fails(monkeypatch):
+    adapter = OfficialFundamentalsAdapter()
+    good, bad = "http://good", "http://bad"
+
+    def per_url(url, params=None):
+        if url == bad:
+            raise httpx.RequestError("source offline")
+        return [{"row": 1}]
+
+    monkeypatch.setattr(adapter, "_fetch_json", per_url)
+
+    rows, status = adapter._fetch_many_sequential([good, bad])
+
+    assert rows == [{"row": 1}]
+    assert status[good] == {"ok": True, "rows": 1}
+    assert status[bad]["ok"] is False
+    assert "source offline" in status[bad]["error"]
 
 
 def test_fetch_bundle_aggregates_counts(monkeypatch):
