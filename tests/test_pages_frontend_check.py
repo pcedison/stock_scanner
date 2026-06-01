@@ -7,9 +7,75 @@ from scripts.check_pages_frontend import (
     expected_cache_busted_assets,
     missing_assets,
     validate_pages_deployment_metadata,
+    validate_pages_frontend,
     validate_pages_url,
     validate_project_name,
 )
+
+
+def _index_with(asset: str, tmp_path: Path) -> Path:
+    index = tmp_path / "index.html"
+    index.write_text(f'<script src="{asset}"></script>', encoding="utf-8")
+    return index
+
+
+def test_pages_frontend_retries_until_assets_propagate(tmp_path: Path):
+    # 模擬部署後傳播延遲:前兩次抓到舊 HTML,第三次才出現新資產。
+    index = _index_with("/app.js?v=new", tmp_path)
+    responses = ["<old/>", "<old/>", '<script src="/app.js?v=new"></script>']
+    slept: list[float] = []
+
+    result = validate_pages_frontend(
+        "https://stock-scanner-beta.pages.dev/",
+        index,
+        attempts=5,
+        retry_delay=10,
+        sleep=slept.append,
+        fetcher=lambda url, timeout: responses.pop(0),
+    )
+
+    assert result["ok"] is True
+    assert slept == [10, 10]  # 只在前兩次失敗後各等一次
+
+
+def test_pages_frontend_fails_after_exhausting_attempts(tmp_path: Path):
+    index = _index_with("/app.js?v=new", tmp_path)
+    slept: list[float] = []
+
+    with pytest.raises(RuntimeError, match="missing cache-busted assets"):
+        validate_pages_frontend(
+            "https://stock-scanner-beta.pages.dev/",
+            index,
+            attempts=3,
+            retry_delay=5,
+            sleep=slept.append,
+            fetcher=lambda url, timeout: "<old/>",
+        )
+
+    assert slept == [5, 5]  # 3 次嘗試之間睡 2 次,不在最後一次後多睡
+
+
+def test_pages_frontend_retries_on_fetch_error_then_succeeds(tmp_path: Path):
+    index = _index_with("/app.js?v=new", tmp_path)
+    calls = {"n": 0}
+
+    def flaky_fetch(url: str, timeout: int) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("pages.dev could not be fetched: timeout")
+        return '<script src="/app.js?v=new"></script>'
+
+    result = validate_pages_frontend(
+        "https://stock-scanner-beta.pages.dev/",
+        index,
+        attempts=3,
+        retry_delay=0,
+        sleep=lambda _: None,
+        fetcher=flaky_fetch,
+    )
+
+    assert result["ok"] is True
+    assert calls["n"] == 2
 
 
 def test_pages_frontend_expected_assets_are_read_from_index(tmp_path: Path):
