@@ -77,11 +77,22 @@ def test_filing_context_mirrors_active_event_and_always_has_revenue_period(today
 
 
 def test_latest_monthly_revenue_period_rolls_back_year():
-    assert latest_monthly_revenue_period(date(2026, 1, 8)) == "2025-12"
+    # 1/8 在每月 10 日前:12 月營收尚未公布(截止 1/10),故取再往前的 11 月。
+    assert latest_monthly_revenue_period(date(2026, 1, 8)) == "2025-11"
 
 
 def test_latest_monthly_revenue_period_is_previous_month():
+    # 6/15 已過 10 日:5 月營收(截止 6/10)已公布,取上個月。
     assert latest_monthly_revenue_period(date(2026, 6, 15)) == "2026-05"
+
+
+def test_latest_monthly_revenue_period_accounts_for_filing_lag():
+    # 申報時差核心案例:每月 1~10 日取「兩個月前」,11 日起取「上個月」。
+    assert latest_monthly_revenue_period(date(2026, 6, 1)) == "2026-04"   # 5 月營收尚未公布
+    assert latest_monthly_revenue_period(date(2026, 6, 10)) == "2026-04"  # 截止當日仍保守取 4 月
+    assert latest_monthly_revenue_period(date(2026, 6, 11)) == "2026-05"  # 隔日才取 5 月
+    # 跨年 + 兩個月前需正確 rollover
+    assert latest_monthly_revenue_period(date(2026, 2, 5)) == "2025-12"
 
 
 def test_today_taipei_returns_a_date():

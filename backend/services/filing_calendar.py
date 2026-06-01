@@ -26,11 +26,15 @@ def today_taipei() -> date:
 
 
 def latest_monthly_revenue_period(today: date) -> str:
+    # 台股月營收採「每月 10 日前公布上月營收」。因此每月 1~10 日時,上個月的營收
+    # 尚未(完整)公布,若直接取上個月會抓到還沒公布的期別,使營收年增率(E3 等)
+    # 全市場缺值。故 10 日(含)前往前推兩個月,11 日起才取上個月。
+    months_back = 2 if today.day <= 10 else 1
     year = today.year
-    month = today.month - 1
-    if month == 0:
+    month = today.month - months_back
+    while month <= 0:
         year -= 1
-        month = 12
+        month += 12
     return f"{year}-{month:02d}"
 
 
