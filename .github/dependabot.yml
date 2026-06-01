@@ -8,11 +8,13 @@ updates:
       time: "09:00"
       timezone: "Asia/Taipei"
     open-pull-requests-limit: 5
-    # 只升「直接依賴」(requirements.txt 內明列者)。constraints.txt 裡的傳遞依賴
-    # (例如 pydantic-core,版本被 pydantic 嚴格 pin 死)不獨立升版,改由父套件帶版本,
-    # 避免 dependabot 把傳遞依賴升到沒有任何父套件相容的版本而造成 ResolutionImpossible。
-    allow:
-      - dependency-type: "direct"
+    # pydantic-core 是 pydantic 的傳遞依賴(constraints.txt 內 `# via pydantic`),
+    # 版本被 pydantic 嚴格 pin 死,不該獨立升版。dependabot 會把 constraints.txt 的
+    # 鎖定項都視為 direct,故 allow: direct 無法排除它;必須明確 ignore,否則會升到
+    # 沒有任何父套件相容的版本而造成 ResolutionImpossible(見 #81/#87)。
+    # pydantic-core 應隨 pydantic 升版時一併更新,而非獨立升。
+    ignore:
+      - dependency-name: "pydantic-core"
     groups:
       python-dependencies:
         patterns:
