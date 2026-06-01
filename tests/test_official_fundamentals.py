@@ -109,13 +109,26 @@ def test_fetch_income_statements_parses_twse_and_tpex(monkeypatch):
 def test_fetch_balance_sheets_picks_inventory(monkeypatch):
     adapter = OfficialFundamentalsAdapter()
     row = {"公司代號": "2330", "公司名稱": "台積電", "年度": "113", "季別": "1", "存貨": "1,234"}
-    monkeypatch.setattr(adapter, "_fetch_many", lambda urls: ([row], {"ok": True}))
+    non_digit = {"公司代號": "00尾盤", "公司名稱": "非數字"}
+    monkeypatch.setattr(adapter, "_fetch_many", lambda urls: ([row, non_digit], {"ok": True}))
 
     balances, _ = adapter.fetch_balance_sheets()
 
+    assert set(balances) == {"2330"}  # non-digit code skipped
     assert balances["2330"].inventory == 1234.0
     assert balances["2330"].market == "TWSE"
     assert balances["2330"].source == "TWSE OpenAPI t187ap07"
+
+
+def test_fetch_valuations_merges_twse_and_tpex(monkeypatch):
+    adapter = OfficialFundamentalsAdapter()
+    monkeypatch.setattr(adapter, "fetch_twse_valuations", lambda: ({"2330": object()}, {"ok": True}))
+    monkeypatch.setattr(adapter, "fetch_tpex_valuations", lambda: ({"6488": object()}, {"ok": True}))
+
+    valuations, status = adapter.fetch_valuations()
+
+    assert set(valuations) == {"2330", "6488"}
+    assert status == {"TWSE": {"ok": True}, "TPEX": {"ok": True}}
 
 
 def test_fetch_twse_valuations_zips_fields_and_returns_first_ok_date(monkeypatch):

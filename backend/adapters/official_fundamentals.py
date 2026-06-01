@@ -59,7 +59,7 @@ def _roc_year(value: Any) -> int | None:
         return None
     try:
         return int(text) + 1911
-    except ValueError:
+    except ValueError:  # pragma: no cover - text is digit-filtered, int() cannot raise
         return None
 
 
@@ -69,7 +69,7 @@ def _quarter(value: Any) -> int | None:
         return None
     try:
         quarter = int(text)
-    except ValueError:
+    except ValueError:  # pragma: no cover - text is digit-filtered, int() cannot raise
         return None
     return quarter if 1 <= quarter <= 4 else None
 

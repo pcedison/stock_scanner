@@ -92,6 +92,44 @@ def test_mops_official_api_payload_parser_extracts_income_and_balance_rows():
     assert balances[0].inventory == 40.0
 
 
+def test_mops_parsers_return_empty_when_header_row_missing():
+    adapter = OfficialMopsHistoricalFundamentalsAdapter()
+    no_header = "<table><tr><td>其他</td><td>1</td></tr></table>"
+    assert adapter.parse_income_statement(no_header, "9999", "測試", "TWSE") == []
+    assert adapter.parse_balance_sheet(no_header, "9999", "測試", "TWSE") == []
+
+
+def test_mops_html_parsers_skip_unparseable_period_columns():
+    adapter = OfficialMopsHistoricalFundamentalsAdapter()
+    income = "<table><tr><td>會計項目</td><td>亂碼</td></tr><tr><td>營業收入合計</td><td>1</td></tr></table>"
+    balance = "<table><tr><td>會計項目</td><td>亂碼</td></tr><tr><td>存貨</td><td>1</td></tr></table>"
+    assert adapter.parse_income_statement(income, "9999", "測試", "TWSE") == []
+    assert adapter.parse_balance_sheet(balance, "9999", "測試", "TWSE") == []
+
+
+def test_mops_payload_parsers_reject_non_list_report_or_titles():
+    adapter = OfficialMopsHistoricalFundamentalsAdapter()
+    assert adapter.parse_income_payload({"reportList": "x", "titles": []}, "9999", "測試", "TWSE") == []
+    assert adapter.parse_balance_payload({"reportList": [], "titles": "x"}, "9999", "測試", "TWSE") == []
+
+
+def test_mops_payload_parsers_skip_unparseable_and_duplicate_periods():
+    adapter = OfficialMopsHistoricalFundamentalsAdapter()
+    income = {
+        "companyAbbreviation": "測試",
+        "titles": [{"main": "會計項目"}, {"main": "亂碼"}, {"main": "114年度"}, {"main": "114年度"}],
+        "reportList": [["營業收入合計", "1", "", "2", "", "3", ""]],
+    }
+    balance = {
+        "companyAbbreviation": "測試",
+        "titles": [{"main": "會計項目"}, {"main": "亂碼"}, {"main": "114年12月31日"}, {"main": "114年12月31日"}],
+        "reportList": [["存貨", "1", "", "2", "", "3", ""]],
+    }
+    # 亂碼 -> None (skipped), first 114 parsed, the duplicate 114 skipped via the seen-set.
+    assert [row.fiscalYear for row in adapter.parse_income_payload(income, "9999", "測試", "TWSE")] == [2025]
+    assert [row.fiscalYear for row in adapter.parse_balance_payload(balance, "9999", "測試", "TWSE")] == [2025]
+
+
 def test_history_store_merges_mops_rows_and_derives_yoy(tmp_path):
     adapter = OfficialMopsHistoricalFundamentalsAdapter()
     store = OfficialFundamentalsHistoryStore(tmp_path / "history.json")

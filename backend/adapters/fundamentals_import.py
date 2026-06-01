@@ -28,7 +28,7 @@ def _to_year(value: Any) -> int | None:
         return None
     try:
         year = int(text)
-    except ValueError:
+    except ValueError:  # pragma: no cover - text is digit-filtered, int() cannot raise
         return None
     return year + 1911 if year < 1911 else year
 
@@ -42,7 +42,7 @@ def _to_quarter(value: Any) -> int | None:
         return None
     try:
         quarter = int(digits[-1])
-    except ValueError:
+    except ValueError:  # pragma: no cover - digits[-1] is a single digit, int() cannot raise
         return None
     return quarter if 1 <= quarter <= 4 else None
 
