@@ -41,7 +41,7 @@ httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via -r requirements.txt
-idna==3.17
+idna==3.18
     # via
     #   anyio
     #   httpx
@@ -88,7 +88,7 @@ urllib3==2.7.0
     # via requests
 uvloop==0.22.1 ; sys_platform != "win32" and sys_platform != "cygwin"
     # via uvicorn
-uvicorn==0.48.0
+uvicorn==0.49.0
     # via -r requirements.txt
 watchfiles==1.2.0
     # via uvicorn
