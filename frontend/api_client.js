@@ -60,7 +60,7 @@ function configuredApiMode(explicitMode) {
   if (["direct", "fallback", "same-origin"].includes(runtimeMode)) return runtimeMode;
 
   if (typeof location !== "undefined" && String(location.hostname || "").endsWith(".pages.dev")) {
-    return "direct";
+    return "same-origin";
   }
 
   return "fallback";

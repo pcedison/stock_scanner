@@ -172,11 +172,10 @@ jobs:
             --max-cache-age-hours 36 \
             --reject-offline-seed
 
-      - name: Verify deployed Pages API redirect
+      - name: Verify deployed Pages API proxy
         run: |
           python scripts/check_pages_api_redirect.py \
-            --url "https://${CF_PAGES_PROJECT}.pages.dev/api/health" \
-            --expected-origin "https://stock-scanner-beta-api.pcedison.workers.dev"
+            --url "https://${CF_PAGES_PROJECT}.pages.dev/api/health"
 
       - name: Roll back Worker after failed post-deploy verification
         if: failure() && steps.deploy-worker.outcome == 'success'

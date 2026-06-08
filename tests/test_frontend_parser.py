@@ -223,6 +223,43 @@ const client = createApiClient({
     assert payload["mode"] == "direct"
 
 
+def test_pages_dev_api_client_defaults_to_same_origin_for_account_routes():
+    script = r"""
+const { createApiClient } = require("./frontend/api_client.js");
+global.location = { hostname: "stock-scanner-beta.pages.dev" };
+const calls = [];
+global.fetch = async (url, options) => {
+  calls.push({ url, method: options.method, credentials: options.credentials });
+  return { ok: true, status: 200, text: async () => '{"authenticated":true}', headers: { get: () => "application/json" } };
+};
+const client = createApiClient({
+  csrfHeaderName: "X-Stock-Scanner-CSRF",
+  csrfHeaderValue: "1",
+  fallbackOrigin: "https://worker.example",
+});
+(async () => {
+  await client.request("/api/auth/login", { method: "POST", body: "{}" });
+  console.log(JSON.stringify({ mode: client.apiMode(), calls, activeOrigin: client.activeOrigin() }));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["mode"] == "same-origin"
+    assert payload["calls"] == [{"url": "/api/auth/login", "method": "POST", "credentials": "same-origin"}]
+    assert payload["activeOrigin"] == ""
+
+
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
 const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");

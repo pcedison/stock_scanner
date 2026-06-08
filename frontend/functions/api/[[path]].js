@@ -19,15 +19,26 @@ function jsonError(detail, status = 502) {
   });
 }
 
-function redirectToWorker(upstreamUrl) {
-  return new Response(null, {
-    status: 307,
-    headers: {
-      location: upstreamUrl.toString(),
-      "cache-control": "no-store",
-      ...SECURITY_HEADERS,
-    },
-  });
+async function proxyToWorker(request, upstreamUrl) {
+  const headers = new Headers(request.headers);
+  headers.delete("host");
+
+  const init = {
+    method: request.method,
+    headers,
+    redirect: "manual",
+  };
+  if (!["GET", "HEAD"].includes(request.method)) {
+    init.body = request.body;
+  }
+
+  const upstreamResponse = await fetch(new Request(upstreamUrl, init));
+  const response = new Response(upstreamResponse.body, upstreamResponse);
+  response.headers.set("cache-control", "no-store");
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+    response.headers.set(key, value);
+  }
+  return response;
 }
 
 export async function onRequest(context) {
@@ -38,5 +49,5 @@ export async function onRequest(context) {
 
   const requestUrl = new URL(context.request.url);
   const upstreamUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, apiOrigin);
-  return redirectToWorker(upstreamUrl);
+  return proxyToWorker(context.request, upstreamUrl);
 }
