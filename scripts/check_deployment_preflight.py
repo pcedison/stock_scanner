@@ -67,6 +67,7 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "Python dependency audit": r"pip_audit\s+-r\s+constraints\.txt",
         "medium static security scan": r"bandit .*--severity-level medium",
         "Pages production metadata guard": r"check_pages_frontend\.py[\s\S]*--project[\s\S]*--expected-branch[\s\S]*--expected-source",
+        "Pages API proxy check": r"scripts/check_pages_api_redirect\.py[\s\S]*\.pages\.dev/api/health",
     }
     for label, pattern in required_patterns.items():
         if not re.search(pattern, text):
