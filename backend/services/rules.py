@@ -518,20 +518,37 @@ def _add_watch_rules(
 class RuleEngine:
     def evaluate_entry(self, snapshot: FundamentalSnapshot, settings: ScannerSettings) -> AnalysisResult:
         sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
-        reasons = _healthy_entry_rules(snapshot, settings, sorted_annuals=sorted_annuals)
+        entry_reasons = _healthy_entry_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         company = snapshot.company
-        if any(reason.code == "E6" and not reason.passed for reason in reasons):
+        entry_excluded = any(reason.code == "E6" and not reason.passed for reason in entry_reasons)
+        exit_reasons = (
+            [] if entry_excluded or company.isFinancial else _exit_rules(snapshot, settings, sorted_annuals=sorted_annuals)
+        )
+        triggered_exit_rules = [
+            reason
+            for reason in exit_reasons
+            if reason.code.startswith("X") and not reason.passed and reason.severity != "INSUFFICIENT_DATA"
+        ]
+        exit_data_missing = any(
+            reason.code.startswith("X") and reason.severity == "INSUFFICIENT_DATA" for reason in exit_reasons
+        )
+        reasons = [*entry_reasons, *exit_reasons]
+        if entry_excluded:
             status = "EXCLUDED"
             summary = "金融業或策略排除產業，未納入主策略。"
-        elif any(reason.severity == "INSUFFICIENT_DATA" for reason in reasons):
+        elif any(reason.severity == "INSUFFICIENT_DATA" for reason in entry_reasons) or exit_data_missing:
             status = "INSUFFICIENT_DATA"
             summary = "已有部分公開揭露資料，但完整策略因子待補，暫不硬給進場或排除結論。"
-        elif all(reason.passed for reason in reasons):
+        elif triggered_exit_rules:
+            status = "WATCH"
+            failed = "、".join(reason.code for reason in triggered_exit_rules)
+            summary = f"進場條件可能符合，但已觸發出場警戒：{failed}，暫不列入進場清單。"
+        elif all(reason.passed for reason in entry_reasons):
             status = "ENTRY"
             summary = "所有進場條件通過，列入適合進場清單。"
         else:
             status = "WATCH"
-            failed = "、".join(reason.code for reason in reasons if not reason.passed)
+            failed = "、".join(reason.code for reason in entry_reasons if not reason.passed)
             summary = f"尚未通過所有進場條件，需觀察：{failed}。"
 
         return AnalysisResult(

@@ -70,6 +70,58 @@ def test_e4_per_threshold_excludes_twenty_and_above():
     assert e4.severity == "WATCH"
 
 
+def test_entry_recommendation_blocks_triggered_x1_exit_warning():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            **_healthy_exit_overrides(base_snapshot),
+            "monthlyRevenue": base_snapshot.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 120.0,
+                    "previousMonthRevenueYoY": 120.0,
+                    "cumulativeRevenueYoY": 50.0,
+                }
+            ),
+        }
+    )
+
+    result = RuleEngine().evaluate_entry(snapshot, ScannerSettings())
+    x1 = next(reason for reason in result.reasons if reason.code == "X1")
+
+    assert result.status == "WATCH"
+    assert "X1" in result.summary
+    assert x1.passed is False
+    assert x1.severity == "WARNING"
+
+
+def test_entry_recommendation_blocks_latest_month_revenue_cooldown_x2():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            **_healthy_exit_overrides(base_snapshot),
+            "monthlyRevenue": base_snapshot.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 39.24,
+                    "previousMonthRevenueYoY": 111.99,
+                    "cumulativeRevenueYoY": 106.21,
+                }
+            ),
+        }
+    )
+
+    result = RuleEngine().evaluate_entry(snapshot, ScannerSettings())
+    x1 = next(reason for reason in result.reasons if reason.code == "X1")
+    x2 = next(reason for reason in result.reasons if reason.code == "X2")
+
+    assert result.status == "WATCH"
+    assert "X2" in result.summary
+    assert x1.passed is True
+    assert x2.passed is False
+    assert x2.severity == "WARNING"
+
+
 def test_financial_company_is_excluded_by_default():
     provider = MockDataProvider()
     result = RuleEngine().evaluate_entry(provider.get_snapshot("2881"), ScannerSettings())

@@ -161,6 +161,8 @@
 | E5 | 存貨週轉率大於 2.5 | Inventory Turnover > 2.5 |
 | E6 | 排除金融業 | 金融業預設不納入主策略 |
 
+通過 E1-E6 後，仍需確認 X1-X5 沒有觸發；若已出現出場警戒，不列入「適合進場清單」。
+
 ### 5.1 進場條件白話
 
 公司要長期有賺錢，近年獲利持續變好，而且現在仍處於高成長，股價估值也不能太貴。
@@ -693,8 +695,14 @@ def evaluate_entry(snapshot, settings):
         inventory_turnover(snapshot) > 2.5,
     ]
 
-    if all(checks):
+    exit_checks = [
+        x1_to_x5_not_triggered(snapshot, settings),
+    ]
+
+    if all(checks) and all(exit_checks):
         return ENTRY
+    if any_exit_warning(exit_checks):
+        return WATCH
     if mostly_pass(checks):
         return WARNING_OR_WATCHLIST
     return INSUFFICIENT_OR_NOT_QUALIFIED
