@@ -47,7 +47,7 @@ console.log(JSON.stringify({
     assert "&lt;img" in payload["setEmpty"].lower()
 
 
-def test_overview_counts_follow_active_market_disclosure_tab():
+def test_overview_counts_show_market_scan_totals():
     script = r"""
 const { state, activeMarketDisclosureKey, renderOverviewStats } = require("./frontend/app.js");
 const nodes = new Map();
@@ -99,8 +99,8 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
     )
     payload = json.loads(completed.stdout)
 
-    assert payload["announced"] == {"entry": "1", "watch": "1", "excluded": "1"}
-    assert payload["pending"] == {"entry": "1", "watch": "1", "excluded": "0"}
+    assert payload["announced"] == {"entry": "2", "watch": "2", "excluded": "1"}
+    assert payload["pending"] == {"entry": "2", "watch": "2", "excluded": "1"}
     assert payload["fallback"] == "announced"
 
 
