@@ -23,6 +23,7 @@ from backend.dependencies import (
     _paginated_items,
     _report_response,
     _scan_holdings_payload,
+    _scan_market_cache_context,
     _scan_market_payload,
     _scan_market_payload_after_official_refresh,
     engine,
@@ -45,7 +46,10 @@ def data_sources_status(check_network: bool = False) -> dict:
         settings,
         official_provider,
         mock_universe_size=len(mock_provider.list_companies()),
-        scan_cache_status=scan_cache_service.status(settings if not settings.use_mock_data else None),
+        scan_cache_status=scan_cache_service.status(
+            settings if not settings.use_mock_data else None,
+            _scan_market_cache_context(settings) if not settings.use_mock_data else None,
+        ),
     )
     if check_network:
         payload["networkCheck"] = OfficialMonthlyRevenueAdapter().health()
@@ -155,11 +159,13 @@ def scan_market(request: Request, payload: ScanMarketRequest | None = Body(defau
         return _scan_market_payload(settings)
     _check_scan_rate_limit(_auth_source(request))
     refresh_mode = payload.refreshMode if payload else "auto"
+    cache_context = _scan_market_cache_context(settings)
     return scan_cache_service.get_or_refresh(
         settings,
         build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
         build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
         refresh_mode=refresh_mode,
+        context=cache_context,
     )
 
 
@@ -171,11 +177,13 @@ def scan_market_cached() -> dict:
     settings = _effective_settings(None)
     if settings.use_mock_data:
         return _scan_market_payload(settings)
+    cache_context = _scan_market_cache_context(settings)
     return scan_cache_service.get_or_refresh(
         settings,
         build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
         build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
         refresh_mode="auto",
+        context=cache_context,
     )
 
 
@@ -183,7 +191,10 @@ def scan_market_cached() -> dict:
 def cache_status() -> dict:
     settings = deps.load_settings()
     return {
-        "marketScan": scan_cache_service.status(settings if not settings.use_mock_data else None),
+        "marketScan": scan_cache_service.status(
+            settings if not settings.use_mock_data else None,
+            _scan_market_cache_context(settings) if not settings.use_mock_data else None,
+        ),
         "officialHistory": official_provider.history_store.status(),
     }
 
@@ -203,11 +214,13 @@ def market_report(report_format: str = "markdown", payload: ReportFormatRequest 
     if settings.use_mock_data:
         scan_payload = _scan_market_payload(settings)
     else:
+        cache_context = _scan_market_cache_context(settings)
         scan_payload = scan_cache_service.get_or_refresh(
             settings,
             build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
             build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
             refresh_mode="auto",
+            context=cache_context,
         )
     return _report_response(scan_payload, report_format, "台股市場掃描報告", "market_scan")
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event, Lock, RLock
 from time import monotonic
 
@@ -55,6 +56,30 @@ auth_db_path = os.getenv("AUTH_DB_PATH")
 auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()
 SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+MARKET_SCAN_RULESET_VERSION = "20260612-entry-x-rules-v1"
+
+
+def _file_cache_signature(path: Path) -> dict:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return {"path": str(path), "missing": True}
+    return {"path": str(path), "mtimeNs": stat.st_mtime_ns, "size": stat.st_size}
+
+
+def _scan_market_cache_context(settings: ScannerSettings) -> dict:
+    context: dict = {
+        "ruleset": MARKET_SCAN_RULESET_VERSION,
+        "provider": "mock" if settings.use_mock_data else "official",
+    }
+    if settings.use_mock_data:
+        return context
+    context["data"] = {
+        "monthlyRevenueHistory": _file_cache_signature(official_provider.monthly_revenue_history.path),
+        "officialFundamentalsHistory": _file_cache_signature(official_provider.history_store.path),
+        "fundamentalsImport": _file_cache_signature(official_provider.import_adapter.path),
+    }
+    return context
 
 _backtest_cache: dict = {}
 _backtest_cache_lock = RLock()

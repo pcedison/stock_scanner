@@ -41,6 +41,39 @@ def test_scan_cache_returns_cached_payload_without_rebuilding(tmp_path):
     assert second["entry"][0]["stockCode"] == "2330"
 
 
+def test_scan_cache_key_includes_data_context():
+    settings = ScannerSettings(use_mock_data=False)
+
+    first = scan_cache_key(settings, {"ruleset": "v1", "data": {"monthly": {"mtimeNs": 1, "size": 10}}})
+    second = scan_cache_key(settings, {"ruleset": "v1", "data": {"monthly": {"mtimeNs": 2, "size": 10}}})
+
+    assert first != second
+
+
+def test_scan_cache_context_change_rebuilds_payload(tmp_path):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+    calls = {"count": 0}
+
+    def build():
+        calls["count"] += 1
+        return {
+            "generatedAt": f"2026-05-14T0{calls['count']}:00:00+00:00",
+            "entry": [{"stockCode": str(calls["count"])}],
+            "watch": [],
+            "excluded": [],
+        }
+
+    first = service.get_or_refresh(settings, build, refresh_mode="auto", context={"ruleset": "v1"})
+    second = service.get_or_refresh(settings, build, refresh_mode="auto", context={"ruleset": "v2"})
+
+    assert calls["count"] == 2
+    assert first["cacheStatus"]["cacheHit"] is False
+    assert second["cacheStatus"]["cacheHit"] is False
+    assert first["entry"][0]["stockCode"] == "1"
+    assert second["entry"][0]["stockCode"] == "2"
+
+
 def test_cache_only_with_empty_cache_does_not_call_builder(tmp_path):
     service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
     settings = ScannerSettings(use_mock_data=False)
