@@ -330,11 +330,11 @@ def _exit_rules(
     spring_support_ok = spring_support_growth is not None and spring_support_growth >= 30
 
     x1_threshold = monthly.monthlyRevenueYoY * 0.5 if monthly.monthlyRevenueYoY is not None else None
-    x1_triggered = (
-        x1_threshold is not None
-        and monthly.cumulativeRevenueYoY is not None
-        and monthly.cumulativeRevenueYoY < x1_threshold
-    )
+    x1_passed = False
+    x1_triggered = False
+    if x1_threshold is not None and monthly.cumulativeRevenueYoY is not None:
+        x1_passed = monthly.cumulativeRevenueYoY >= x1_threshold
+        x1_triggered = not x1_passed
     x2_triggered = yoy_drop is not None and yoy_drop > 20
     x1_message = (
         (
@@ -360,14 +360,14 @@ def _exit_rules(
     x1_rule = (
         _rule_missing(
             "X1",
-            "累計營收年增率需 >= 單月營收年增率的 50%",
+            "當年度的累計營收年增率 >= 最新當月份營收年增率的 50%",
             "缺少單月或累計營收年增率，不能確認 X1 出場條件。",
         )
         if monthly.monthlyRevenueYoY is None or monthly.cumulativeRevenueYoY is None
         else RuleResult(
             code="X1",
-            title="累計營收年增率需 >= 單月營收年增率的 50%",
-            passed=not x1_triggered or (spring_guard and spring_support_ok),
+            title="當年度的累計營收年增率 >= 最新當月份營收年增率的 50%",
+            passed=x1_passed or (spring_guard and spring_support_ok),
             severity="WATCH" if x1_triggered and spring_guard else ("WARNING" if x1_triggered else "INFO"),
             message=x1_message,
         )
