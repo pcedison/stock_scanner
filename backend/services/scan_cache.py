@@ -40,8 +40,13 @@ def _settings_payload(settings: ScannerSettings) -> dict:
     return settings.model_dump(mode="json")
 
 
-def scan_cache_key(settings: ScannerSettings) -> str:
-    payload = json.dumps(_settings_payload(settings), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def scan_cache_key(settings: ScannerSettings, context: dict | None = None) -> str:
+    payload = json.dumps(
+        {"settings": _settings_payload(settings), "context": context or {}},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -72,8 +77,9 @@ class ScanCacheService:
         build_sync: Callable[[], dict],
         build_refresh: Callable[[], dict] | None = None,
         refresh_mode: str = "auto",
+        context: dict | None = None,
     ) -> dict:
-        key = scan_cache_key(settings)
+        key = scan_cache_key(settings, context)
         policy = refresh_policy()
         cached = self._get_item(key)
 
@@ -83,22 +89,25 @@ class ScanCacheService:
 
         if refresh_mode == "force" or cached is None:
             payload = build_sync() if refresh_mode != "force" or build_refresh is None else build_refresh()
-            stored = self.store(key, settings, payload, policy)
+            stored = self.store(key, settings, payload, policy, context)
             return self._annotate(stored["payload"], key, stored["storedAt"], False, policy, "completed_sync")
 
         stored_at = cached.get("storedAt")
         due = self._is_due(stored_at, policy)
         refresh_status = "fresh"
         if refresh_mode != "cache_only" and due:
-            refresh_status = self._queue_refresh(key, settings, build_refresh or build_sync, policy)
+            refresh_status = self._queue_refresh(key, settings, build_refresh or build_sync, policy, context)
         elif refresh_mode == "cache_only":
             refresh_status = "cache_only"
         return self._annotate(cached["payload"], key, stored_at, True, policy, refresh_status)
 
-    def store(self, key: str, settings: ScannerSettings, payload: dict, policy: dict | None = None) -> dict:
+    def store(
+        self, key: str, settings: ScannerSettings, payload: dict, policy: dict | None = None, context: dict | None = None
+    ) -> dict:
         item = {
             "storedAt": utc_now(),
             "settings": _settings_payload(settings),
+            "context": copy.deepcopy(context or {}),
             "payload": copy.deepcopy(payload),
             "policy": policy or refresh_policy(),
         }
@@ -110,8 +119,8 @@ class ScanCacheService:
             self._memory_cache_signature = self._file_signature(self.scan_cache_path)
         return item
 
-    def status(self, settings: ScannerSettings | None = None) -> dict:
-        key = scan_cache_key(settings) if settings else None
+    def status(self, settings: ScannerSettings | None = None, context: dict | None = None) -> dict:
+        key = scan_cache_key(settings, context) if settings else None
         with self._lock:
             signature = self._file_signature(self.scan_cache_path)
             if signature != self._memory_cache_signature:
@@ -134,7 +143,9 @@ class ScanCacheService:
             "recentJobs": [_public_job(job) for job in jobs[-10:]],
         }
 
-    def _queue_refresh(self, key: str, settings: ScannerSettings, builder: Callable[[], dict], policy: dict) -> str:
+    def _queue_refresh(
+        self, key: str, settings: ScannerSettings, builder: Callable[[], dict], policy: dict, context: dict | None
+    ) -> str:
         with self._lock:
             existing = self._running.get(key)
             if existing and not existing.done():
@@ -147,7 +158,9 @@ class ScanCacheService:
                 "queuedAt": utc_now(),
             }
             self._append_job(job)
-            self._running[key] = self._executor.submit(self._run_refresh, key, settings, builder, policy, job["id"])
+            self._running[key] = self._executor.submit(
+                self._run_refresh, key, settings, builder, policy, job["id"], context
+            )
         return "queued"
 
     def wait_for_idle(self, timeout: float | None = None) -> bool:
@@ -159,12 +172,18 @@ class ScanCacheService:
         return not not_done
 
     def _run_refresh(
-        self, key: str, settings: ScannerSettings, builder: Callable[[], dict], policy: dict, job_id: str
+        self,
+        key: str,
+        settings: ScannerSettings,
+        builder: Callable[[], dict],
+        policy: dict,
+        job_id: str,
+        context: dict | None,
     ) -> None:
         self._update_job(job_id, status="running", startedAt=utc_now())
         try:
             payload = builder()
-            stored = self.store(key, settings, payload, policy)
+            stored = self.store(key, settings, payload, policy, context)
             self._update_job(
                 job_id,
                 status="success",
