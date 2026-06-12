@@ -122,6 +122,34 @@ def test_entry_recommendation_blocks_latest_month_revenue_cooldown_x2():
     assert x2.severity == "WARNING"
 
 
+def test_entry_exit_warning_is_not_hidden_by_missing_entry_field():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            **_healthy_exit_overrides(base_snapshot),
+            "monthlyRevenue": base_snapshot.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 39.24,
+                    "previousMonthRevenueYoY": 111.99,
+                    "cumulativeRevenueYoY": 106.21,
+                }
+            ),
+            "valuation": base_snapshot.valuation.model_copy(update={"per": None}),
+        }
+    )
+
+    result = RuleEngine().evaluate_entry(snapshot, ScannerSettings())
+    e4 = next(reason for reason in result.reasons if reason.code == "E4")
+    x2 = next(reason for reason in result.reasons if reason.code == "X2")
+
+    assert result.status == "WATCH"
+    assert "X2" in result.summary
+    assert e4.severity == "INSUFFICIENT_DATA"
+    assert x2.passed is False
+    assert x2.severity == "WARNING"
+
+
 def test_financial_company_is_excluded_by_default():
     provider = MockDataProvider()
     result = RuleEngine().evaluate_entry(provider.get_snapshot("2881"), ScannerSettings())

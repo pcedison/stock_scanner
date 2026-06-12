@@ -66,7 +66,7 @@ MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded", "results")
 SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
 REQUIRED_SCAN_SUMMARY_KEYS = ("stockCode", "companyName", "status")
 SUMMARY_REASON_KEYS = ("code", "title", "passed", "severity", "message")
-SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION"}
+SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X1", "X2", "X3", "X4", "X5"}
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -177,6 +177,28 @@ def period_key(period: str | None) -> tuple[int, int]:
         return 0, 0
 
 
+def month_key(month: str | None) -> tuple[int, int]:
+    try:
+        year, month_number = str(month or "").split("-", 1)
+        return int(year), int(month_number)
+    except (AttributeError, ValueError):
+        return 0, 0
+
+
+def latest_monthly_history_record(months_by_code: dict, stock_code: str) -> tuple[str | None, dict | None]:
+    company_months = months_by_code.get(stock_code)
+    if not isinstance(company_months, dict):
+        return None, None
+    valid_months = [
+        (month, record)
+        for month, record in company_months.items()
+        if isinstance(month, str) and isinstance(record, dict) and month_key(month) != (0, 0)
+    ]
+    if not valid_months:
+        return None, None
+    return max(valid_months, key=lambda item: month_key(item[0]))
+
+
 def history_yoy(records: dict, record: dict, field: str) -> float | None:
     fiscal_year = record.get("fiscalYear")
     quarter = record.get("quarter")
@@ -230,6 +252,10 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
     quarters = payload.get("quarters", {})
     if not isinstance(quarters, dict):
         return []
+    monthly_payload = official_provider.monthly_revenue_history.load()
+    months_by_code = monthly_payload.get("months", {}) if isinstance(monthly_payload, dict) else {}
+    if not isinstance(months_by_code, dict):
+        months_by_code = {}
 
     snapshots: list[FundamentalSnapshot] = []
     for stock_code, records in quarters.items():
@@ -256,8 +282,15 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
             continue
         if market == "TPEX" and not settings.scan_tpex:
             continue
-        quarter_month = max(1, min(12, int(record.get("quarter") or 1) * 3))
         fiscal_year = int(record.get("fiscalYear") or period_key(latest_period)[0] or 1970)
+        quarter_month = max(1, min(12, int(record.get("quarter") or 1) * 3))
+        fallback_month = f"{fiscal_year}-{quarter_month:02d}"
+        monthly_month, monthly_record = latest_monthly_history_record(months_by_code, stock_code)
+        snapshot_month = monthly_month or fallback_month
+        try:
+            snapshot_year = int(snapshot_month[:4])
+        except (ValueError, TypeError):
+            snapshot_year = 0
         company = Company(
             stockCode=stock_code,
             name=company_name,
@@ -270,12 +303,20 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
                 {
                     "company": company.model_dump(),
                     "monthlyRevenue": {
-                        "month": f"{fiscal_year}-{quarter_month:02d}",
-                        "monthlyRevenueYoY": None,
-                        "previousMonthRevenueYoY": None,
-                        "cumulativeRevenueYoY": None,
-                        "trailingThreeMonthAverageYoY": None,
-                        "janFebCombinedRevenueYoY": None,
+                        "month": snapshot_month,
+                        "monthlyRevenueYoY": monthly_record.get("monthlyRevenueYoY") if monthly_record else None,
+                        "previousMonthRevenueYoY": official_provider.monthly_revenue_history.previous_month_yoy(
+                            stock_code, snapshot_month
+                        ),
+                        "cumulativeRevenueYoY": monthly_record.get("cumulativeRevenueYoY") if monthly_record else None,
+                        "trailingThreeMonthAverageYoY": official_provider.monthly_revenue_history.trailing_three_month_avg_yoy(
+                            stock_code, snapshot_month
+                        ),
+                        "janFebCombinedRevenueYoY": official_provider.monthly_revenue_history.jan_feb_combined_yoy(
+                            stock_code, snapshot_year
+                        )
+                        if snapshot_year
+                        else None,
                         "isSpringFestivalMonth": False,
                     },
                     "quarterlyFinancial": {

@@ -1,6 +1,9 @@
+import json
+
 import pytest
 
 import scripts.build_cloudflare_seed as seed_build
+from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 
 
 class ObjectResult:
@@ -39,6 +42,14 @@ def test_compact_market_scan_payload_strips_heavy_evidence():
                         "severity": "INFO",
                         "message": "PER 為 12.3。",
                         "evidence": [{"label": "heavy"}],
+                    },
+                    {
+                        "code": "X2",
+                        "title": "Revenue cooldown",
+                        "passed": False,
+                        "severity": "WARNING",
+                        "message": "drop",
+                        "evidence": [{"label": "heavy"}],
                     }
                 ],
             }
@@ -53,8 +64,8 @@ def test_compact_market_scan_payload_strips_heavy_evidence():
     assert compact["entry"][0]["stockCode"] == "1234"
     assert compact["entry"][0]["detailsAvailable"] is True
     assert "largeField" not in compact["entry"][0]
-    assert [reason["code"] for reason in compact["entry"][0]["reasons"]] == ["E4"]
-    assert "evidence" not in compact["entry"][0]["reasons"][0]
+    assert [reason["code"] for reason in compact["entry"][0]["reasons"]] == ["E4", "X2"]
+    assert all("evidence" not in reason for reason in compact["entry"][0]["reasons"])
 
 
 def test_lazy_market_scan_payload_is_rebuilt_from_analysis_results():
@@ -167,6 +178,82 @@ def test_inventory_turnover_from_history():
     assert seed_build.inventory_turnover_from_history({"costOfRevenue": 400, "inventory": 100, "quarter": 4}) == 4.0
     assert seed_build.inventory_turnover_from_history({"costOfRevenue": 400, "inventory": 0, "quarter": 4}) is None
     assert seed_build.inventory_turnover_from_history({"inventory": 100, "quarter": 4}) is None
+
+
+def test_history_seed_snapshots_rehydrates_monthly_revenue_history(tmp_path, monkeypatch):
+    monthly_history_path = tmp_path / "monthly_revenue_history.json"
+    monthly_history_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "updatedAt": "2026-06-12T00:00:00+00:00",
+                "months": {
+                    "3231": {
+                        "2026-04": {
+                            "monthlyRevenue": 207488649,
+                            "monthlyRevenueYoY": 111.99,
+                            "cumulativeRevenue": 696384052,
+                            "cumulativeRevenueYoY": 130.59,
+                        },
+                        "2026-05": {
+                            "monthlyRevenue": 290144591,
+                            "monthlyRevenueYoY": 39.24,
+                            "cumulativeRevenue": 986528642,
+                            "cumulativeRevenueYoY": 106.21,
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeHistoryStore:
+        def load(self):
+            return {
+                "quarters": {
+                    "3231": {
+                        "2025Q1": {"fiscalYear": 2025, "quarter": 1, "eps": 1.85, "netIncome": 5332000},
+                        "2026Q1": {
+                            "fiscalYear": 2026,
+                            "quarter": 1,
+                            "eps": 3.06,
+                            "netIncome": 9630739,
+                            "revenue": 567000000,
+                            "grossMargin": 5.21,
+                            "costOfRevenue": 537000000,
+                            "inventory": 409000000,
+                        },
+                    }
+                }
+            }
+
+    class FakeProvider:
+        history_store = FakeHistoryStore()
+        monthly_revenue_history = MonthlyRevenueHistoryStore(monthly_history_path)
+
+        def list_companies(self):
+            return [
+                seed_build.Company(
+                    stockCode="3231",
+                    name="緯創",
+                    market="TWSE",
+                    industryName="電腦及週邊設備業",
+                    isFinancial=False,
+                )
+            ]
+
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+
+    snapshots = seed_build.history_seed_snapshots(seed_build.ScannerSettings())
+
+    assert len(snapshots) == 1
+    monthly = snapshots[0].monthlyRevenue
+    assert monthly.month == "2026-05"
+    assert monthly.monthlyRevenueYoY == 39.24
+    assert monthly.previousMonthRevenueYoY == 111.99
+    assert monthly.cumulativeRevenueYoY == 106.21
+    assert monthly.trailingThreeMonthAverageYoY == pytest.approx(75.615)
 
 
 def test_add_market_scan_summary_to_manifest():

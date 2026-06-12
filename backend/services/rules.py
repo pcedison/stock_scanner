@@ -536,13 +536,13 @@ class RuleEngine:
         if entry_excluded:
             status = "EXCLUDED"
             summary = "金融業或策略排除產業，未納入主策略。"
-        elif any(reason.severity == "INSUFFICIENT_DATA" for reason in entry_reasons) or exit_data_missing:
-            status = "INSUFFICIENT_DATA"
-            summary = "已有部分公開揭露資料，但完整策略因子待補，暫不硬給進場或排除結論。"
         elif triggered_exit_rules:
             status = "WATCH"
             failed = "、".join(reason.code for reason in triggered_exit_rules)
             summary = f"進場條件可能符合，但已觸發出場警戒：{failed}，暫不列入進場清單。"
+        elif any(reason.severity == "INSUFFICIENT_DATA" for reason in entry_reasons) or exit_data_missing:
+            status = "INSUFFICIENT_DATA"
+            summary = "已有部分公開揭露資料，但完整策略因子待補，暫不硬給進場或排除結論。"
         elif all(reason.passed for reason in entry_reasons):
             status = "ENTRY"
             summary = "所有進場條件通過，列入適合進場清單。"
