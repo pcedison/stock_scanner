@@ -227,7 +227,7 @@
 
 | 編號 | 條件 | 預設判斷 |
 |---|---|---|
-| X1 | 月營收年增率掉到 30% 以下 | monthly_revenue_yoy < 30% |
+| X1 | 累計營收年增率低於單月營收年增率的一半 | cumulative_revenue_yoy < monthly_revenue_yoy * 0.5 |
 | X2 | 月營收年增率較上月突然少超過 20 個百分點 | previous_month_revenue_yoy - current_month_revenue_yoy > 20 |
 | X3 | 每股獲利 EPS 衰退 | latest_quarter_eps_yoy < 0 |
 | X4 | 季度 EPS 減少超過 10% | latest_quarter_eps_yoy <= -10% |
@@ -243,7 +243,7 @@
 
 1. X4 季度 EPS 減少超過 10% → 高優先 EXIT
 2. X5 淨利衰退 → 高優先 EXIT 或 WARNING，依衰退幅度與連續性
-3. X1 月營收年增率跌破 30% → WARNING 或 EXIT
+3. X1 累計營收年增率低於單月營收年增率的一半 → WARNING 或 EXIT
 4. X2 月營收年增率突然降溫 → WARNING，非春節才可能升級 EXIT
 5. X3 EPS 衰退 → WARNING，若衰退幅度 > 10% 則走 X4
 
@@ -265,7 +265,7 @@
 
 | 一般月份規則 | 春節月份改法 |
 |---|---|
-| 單月營收年增率 < 30% 可列出場警訊 | 先標記為 SPRING_FESTIVAL_WATCH，不直接 EXIT |
+| 累計營收年增率低於單月營收年增率的一半可列出場警訊 | 先標記為 SPRING_FESTIVAL_WATCH，不直接 EXIT |
 | 單月營收年增率比上月少超過 20 個百分點 | 先看前後月與合併營收 |
 | 單月數字可直接判斷 | 改看 1+2 月合併營收、近 3 個月平均、Q1 財報 |
 

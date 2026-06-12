@@ -1062,14 +1062,16 @@ function renderStrategyRulesGrid() {
   setSafeHtml(target, renderStrategyRuleCards());
 }
 
-function renderOverviewStats(scan = state.marketScan) {
+function renderOverviewStats(scan = state.marketScan, activeTab = state.activeMarketDisclosureTab) {
   if (typeof document === "undefined") return;
   const metricKeys = ["entry", "watch", "excluded"];
   const values = Object.fromEntries(metricKeys.map((key) => [key, "--"]));
   const note = scan?.generatedAt ? `${new Date(scan.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
   if (scan) {
+    const grouped = groupMarketScanResults(scan);
+    const tabKey = activeMarketDisclosureKey(activeTab);
     for (const key of metricKeys) {
-      values[key] = Array.isArray(scan?.[key]) ? scan[key].length : 0;
+      values[key] = grouped?.[tabKey]?.[key]?.length ?? 0;
     }
   }
   for (const key of metricKeys) {

@@ -16,7 +16,7 @@ def _healthy_exit_overrides(base):
     """Monthly + quarterly values that keep every X1-X5 exit rule passing."""
     return {
         "monthlyRevenue": base.monthlyRevenue.model_copy(
-            update={"monthlyRevenueYoY": 60.0, "previousMonthRevenueYoY": 60.0}
+            update={"monthlyRevenueYoY": 60.0, "previousMonthRevenueYoY": 60.0, "cumulativeRevenueYoY": 60.0}
         ),
         "quarterlyFinancial": base.quarterlyFinancial.model_copy(
             update={"epsYoY": 10.0, "netIncomeYoY": 10.0, "grossMarginYoY": 5.0}
@@ -198,22 +198,65 @@ def test_entry_and_exit_helpers_sort_annuals_when_not_provided():
     assert any(rule.code == "X1" for rule in exit_rules)
 
 
+def test_x1_flags_cumulative_revenue_below_half_of_monthly_growth():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            "monthlyRevenue": base_snapshot.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 80.0,
+                    "previousMonthRevenueYoY": 80.0,
+                    "cumulativeRevenueYoY": 39.9,
+                }
+            )
+        }
+    )
+
+    x1 = next(rule for rule in _exit_rules(snapshot, ScannerSettings()) if rule.code == "X1")
+
+    assert x1.passed is False
+    assert x1.severity == "WARNING"
+    assert "40.0%" in x1.message
+
+
+def test_x1_allows_cumulative_revenue_at_half_of_monthly_growth():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            "monthlyRevenue": base_snapshot.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 80.0,
+                    "previousMonthRevenueYoY": 80.0,
+                    "cumulativeRevenueYoY": 40.0,
+                }
+            )
+        }
+    )
+
+    x1 = next(rule for rule in _exit_rules(snapshot, ScannerSettings()) if rule.code == "X1")
+
+    assert x1.passed is True
+    assert x1.severity == "INFO"
+
+
 def test_spring_support_growth_annotates_and_rescues_x1():
     base = MockDataProvider().get_snapshot("2357")
     spring = base.model_copy(
         update={
             "monthlyRevenue": MonthlyRevenue(
                 month="2026-02",
-                monthlyRevenueYoY=12.0,  # below 30 -> X1 would trigger
-                previousMonthRevenueYoY=20.0,
-                cumulativeRevenueYoY=40.0,
+                monthlyRevenueYoY=90.0,
+                previousMonthRevenueYoY=90.0,
+                cumulativeRevenueYoY=20.0,  # below half of monthly -> X1 would trigger
                 janFebCombinedRevenueYoY=40.0,  # spring support present and >= 30
                 isSpringFestivalMonth=True,
             )
         }
     )
     x1 = next(rule for rule in _exit_rules(spring, ScannerSettings(spring_festival_guard=True)) if rule.code == "X1")
-    assert "輔助營收年增率為 40.0%" in x1.message
+    assert "40.0%" in x1.message
     assert x1.passed is True  # spring guard + adequate support rescues X1
 
 

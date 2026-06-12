@@ -43,10 +43,16 @@ def _annual_net_income_message(rows: list[AnnualFinancial], years: int, *, growt
     if len(rows) < years or len(available_values) < years:
         return f"已取得 {len(available_values)} / {years} 年年度淨利，仍有年度待補；詳見年度表格。"
     if growth_rule:
-        is_growing = all(later > earlier for earlier, later in zip(available_values, available_values[1:], strict=False))
+        is_growing = all(
+            later > earlier for earlier, later in zip(available_values, available_values[1:], strict=False)
+        )
         return "近 3 年年度淨利連續成長；詳見年度表格。" if is_growing else "近 3 年年度淨利未連續成長；詳見年度表格。"
     loss_count = sum(1 for value in available_values if value < 0)
-    return f"近 {years} 年年度淨利有 {loss_count} 年虧損；詳見年度表格。" if loss_count else f"近 {years} 年年度淨利皆為正；詳見年度表格。"
+    return (
+        f"近 {years} 年年度淨利有 {loss_count} 年虧損；詳見年度表格。"
+        if loss_count
+        else f"近 {years} 年年度淨利皆為正；詳見年度表格。"
+    )
 
 
 def _annual_net_income_yoy(sorted_annuals: list[AnnualFinancial]) -> float | None:
@@ -78,7 +84,9 @@ def _revenue_growth_for_entry(snapshot: FundamentalSnapshot, settings: ScannerSe
 
 
 def _rule_missing(code: str, title: str, message: str, evidence: list[dict] | None = None) -> RuleResult:
-    return RuleResult(code=code, title=title, passed=False, severity="INSUFFICIENT_DATA", message=message, evidence=evidence)
+    return RuleResult(
+        code=code, title=title, passed=False, severity="INSUFFICIENT_DATA", message=message, evidence=evidence
+    )
 
 
 def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
@@ -162,7 +170,9 @@ def _financial_entry_rules(snapshot: FundamentalSnapshot) -> list[RuleResult]:
     return rules
 
 
-def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted_annuals: list[AnnualFinancial] | None = None) -> list[RuleResult]:
+def _healthy_entry_rules(
+    snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted_annuals: list[AnnualFinancial] | None = None
+) -> list[RuleResult]:
     company = snapshot.company
     if sorted_annuals is None:
         sorted_annuals = sorted(snapshot.annualFinancials, key=lambda item: item.year)
@@ -188,7 +198,9 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
         )
     )
     e4 = (
-        _rule_missing("E4", f"本益比小於 {ENTRY_PER_THRESHOLD}", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。")
+        _rule_missing(
+            "E4", f"本益比小於 {ENTRY_PER_THRESHOLD}", "官方估值未提供 PER 或 PER 不適用，不能判定估值是否不貴。"
+        )
         if snapshot.valuation.per is None
         else RuleResult(
             code="E4",
@@ -299,7 +311,9 @@ def _healthy_entry_rules(snapshot: FundamentalSnapshot, settings: ScannerSetting
     return rules
 
 
-def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted_annuals: list[AnnualFinancial] | None = None) -> list[RuleResult]:
+def _exit_rules(
+    snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted_annuals: list[AnnualFinancial] | None = None
+) -> list[RuleResult]:
     monthly = snapshot.monthlyRevenue
     quarterly = snapshot.quarterlyFinancial
     spring_guard = _is_spring_month(snapshot, settings)
@@ -315,12 +329,21 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted
         spring_support_growth = monthly.trailingThreeMonthAverageYoY
     spring_support_ok = spring_support_growth is not None and spring_support_growth >= 30
 
-    x1_triggered = monthly.monthlyRevenueYoY is not None and monthly.monthlyRevenueYoY < 30
+    x1_threshold = monthly.monthlyRevenueYoY * 0.5 if monthly.monthlyRevenueYoY is not None else None
+    x1_triggered = (
+        x1_threshold is not None
+        and monthly.cumulativeRevenueYoY is not None
+        and monthly.cumulativeRevenueYoY < x1_threshold
+    )
     x2_triggered = yoy_drop is not None and yoy_drop > 20
     x1_message = (
-        f"月營收年增率為 {monthly.monthlyRevenueYoY:.1f}%。"
-        if monthly.monthlyRevenueYoY is not None
-        else "缺少月營收年增率資料。"
+        (
+            f"單月營收年增率為 {monthly.monthlyRevenueYoY:.1f}%，"
+            f"累計營收年增率為 {monthly.cumulativeRevenueYoY:.1f}%，"
+            f"門檻為單月的一半 {x1_threshold:.1f}%。"
+        )
+        if x1_threshold is not None and monthly.cumulativeRevenueYoY is not None
+        else "缺少單月或累計營收年增率資料。"
     )
     x2_message = (
         f"本月較上月年增率降溫 {yoy_drop:.1f} 個百分點。"
@@ -335,11 +358,15 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted
         x1_message += f" 輔助營收年增率為 {spring_support_growth:.1f}%。"
 
     x1_rule = (
-        _rule_missing("X1", "月營收年增率不可低於 30%", "缺少月營收年增率，不能確認是否低於出場門檻。")
-        if monthly.monthlyRevenueYoY is None
+        _rule_missing(
+            "X1",
+            "累計營收年增率需 >= 單月營收年增率的 50%",
+            "缺少單月或累計營收年增率，不能確認 X1 出場條件。",
+        )
+        if monthly.monthlyRevenueYoY is None or monthly.cumulativeRevenueYoY is None
         else RuleResult(
             code="X1",
-            title="月營收年增率不可低於 30%",
+            title="累計營收年增率需 >= 單月營收年增率的 50%",
             passed=not x1_triggered or (spring_guard and spring_support_ok),
             severity="WATCH" if x1_triggered and spring_guard else ("WARNING" if x1_triggered else "INFO"),
             message=x1_message,
@@ -364,22 +391,22 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted
             _rule_missing("X3", "EPS 不可衰退", "缺少最新季 EPS 年增率，不能確認 EPS 是否轉弱。")
             if quarterly.epsYoY is None
             else RuleResult(
-            code="X3",
-            title="EPS 不可衰退",
-            passed=quarterly.epsYoY >= 0,
-            severity="WARNING" if quarterly.epsYoY < 0 else "INFO",
-            message=f"最新季 EPS 年增率為 {quarterly.epsYoY:.1f}%。",
+                code="X3",
+                title="EPS 不可衰退",
+                passed=quarterly.epsYoY >= 0,
+                severity="WARNING" if quarterly.epsYoY < 0 else "INFO",
+                message=f"最新季 EPS 年增率為 {quarterly.epsYoY:.1f}%。",
             )
         ),
         (
             _rule_missing("X4", "季度 EPS 不可減少超過 10%", "缺少最新季 EPS 年增率，不能確認是否大幅衰退。")
             if quarterly.epsYoY is None
             else RuleResult(
-            code="X4",
-            title="季度 EPS 不可減少超過 10%",
-            passed=quarterly.epsYoY > -10,
-            severity="EXIT" if quarterly.epsYoY <= -10 else "INFO",
-            message=f"最新季 EPS 年增率為 {quarterly.epsYoY:.1f}%。",
+                code="X4",
+                title="季度 EPS 不可減少超過 10%",
+                passed=quarterly.epsYoY > -10,
+                severity="EXIT" if quarterly.epsYoY <= -10 else "INFO",
+                message=f"最新季 EPS 年增率為 {quarterly.epsYoY:.1f}%。",
             )
         ),
         (
@@ -422,7 +449,9 @@ def _exit_rules(snapshot: FundamentalSnapshot, settings: ScannerSettings, sorted
     return rules
 
 
-def _add_watch_rules(entry_reasons: list[RuleResult], exit_reasons: list[RuleResult], snapshot: FundamentalSnapshot) -> list[RuleResult]:
+def _add_watch_rules(
+    entry_reasons: list[RuleResult], exit_reasons: list[RuleResult], snapshot: FundamentalSnapshot
+) -> list[RuleResult]:
     entry_ok = all(reason.passed for reason in entry_reasons)
     exit_ok = all(reason.passed for reason in exit_reasons if reason.code.startswith("X"))
     monthly = snapshot.monthlyRevenue
@@ -525,6 +554,7 @@ class RuleEngine:
         entry_reasons = _healthy_entry_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         exit_reasons = _exit_rules(snapshot, settings, sorted_annuals=sorted_annuals)
         add_reasons = _add_watch_rules(entry_reasons, exit_reasons, snapshot)
+
         # A missing X-rule is INSUFFICIENT_DATA (passed=False). For a holding we do
         # not turn "data missing" into an EXIT/出清 verdict — only a *genuine* rule
         # failure (severity WARNING/EXIT) drives that. Missing exit data instead
@@ -539,10 +569,7 @@ class RuleEngine:
             reason
             for reason in exit_reasons
             if _genuinely_failed(reason)
-            and (
-                reason.code in {"X1", "X2", "T3"}
-                or (reason.code == "X3" and not high_priority_exit)
-            )
+            and (reason.code in {"X1", "X2", "T3"} or (reason.code == "X3" and not high_priority_exit))
         ]
         exit_data_missing = any(
             reason.code.startswith("X") and reason.severity == "INSUFFICIENT_DATA" for reason in exit_reasons

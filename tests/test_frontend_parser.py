@@ -47,7 +47,7 @@ console.log(JSON.stringify({
     assert "&lt;img" in payload["setEmpty"].lower()
 
 
-def test_overview_counts_show_market_scan_totals():
+def test_overview_counts_follow_active_disclosure_tab():
     script = r"""
 const { state, activeMarketDisclosureKey, renderOverviewStats } = require("./frontend/app.js");
 const nodes = new Map();
@@ -99,8 +99,8 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
     )
     payload = json.loads(completed.stdout)
 
-    assert payload["announced"] == {"entry": "2", "watch": "2", "excluded": "1"}
-    assert payload["pending"] == {"entry": "2", "watch": "2", "excluded": "1"}
+    assert payload["announced"] == {"entry": "1", "watch": "1", "excluded": "1"}
+    assert payload["pending"] == {"entry": "1", "watch": "1", "excluded": "0"}
     assert payload["fallback"] == "announced"
 
 
@@ -381,7 +381,7 @@ const orderedHtml = renderAnalysisCard({
   summary: "order test",
   reasons: [
     { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "持股狀態" },
-    { code: "X1", title: "月營收年增率不可低於 30%", passed: true, severity: "INFO", message: "X1" },
+    { code: "X1", title: "累計營收年增率需 >= 單月營收年增率的 50%", passed: true, severity: "INFO", message: "X1" },
     { code: "T3", title: "毛利率追蹤", passed: true, severity: "INFO", message: "T3" },
     { code: "E1", title: "近 5 年沒有虧損", passed: true, severity: "INFO", message: "E1" },
     { code: "OFFICIAL_Q", title: "最新季官方財報資料", passed: true, severity: "INFO", message: "OFFICIAL_Q" },
@@ -395,7 +395,7 @@ const exitHoldingResult = {
   status: "EXIT",
   summary: "已觸發高優先出場條件，建議出清或至少大幅降低部位。",
   reasons: [
-    { code: "X1", title: "月營收年增率不可低於 30%", passed: false, severity: "WARNING", message: "X1" },
+    { code: "X1", title: "累計營收年增率需 >= 單月營收年增率的 50%", passed: false, severity: "WARNING", message: "X1" },
     { code: "X4", title: "季度 EPS 不可減少超過 10%", passed: false, severity: "EXIT", message: "X4" },
     { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "目前 1000 股" },
   ],
@@ -493,9 +493,9 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert "管理 API 尚未部署" in payload["adminErrors"]["notFound"]
     assert payload["adminErrors"]["normal"] == "使用者清單讀取失敗：請先登入"
     assert payload["auth"]["normalizedSuperUsername"] == "pcedison@gmail.com"
-    assert payload["auth"]["pcedisonFromUsername"]["isSuperUser"] is True   # API flag trusted
-    assert payload["auth"]["pcedisonMissingFlag"]["isSuperUser"] is True    # API flag trusted
-    assert payload["auth"]["normalWithFlag"]["isSuperUser"] is False        # API flag trusted
+    assert payload["auth"]["pcedisonFromUsername"]["isSuperUser"] is True  # API flag trusted
+    assert payload["auth"]["pcedisonMissingFlag"]["isSuperUser"] is True  # API flag trusted
+    assert payload["auth"]["normalWithFlag"]["isSuperUser"] is False  # API flag trusted
     assert payload["auth"]["pcedisonIdentity"] is True
     assert payload["auth"]["normalIdentity"] is False
     assert payload["auth"]["superState"] is True
@@ -532,7 +532,15 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert "3008" in payload["exitAlertBanner"]
     assert "data-open-holding-alert-details" in payload["exitAlertBanner"]
     assert "出場 X1、X4" in payload["exitSignalHtml"]
-    assert payload["strategyDetailLabels"] == ["進場 E1-E6", "加碼 A1-A7", "出場 X1-X5", "T 系列追蹤", "春節輔助營收", "金融業不套主策略", "待補資料不硬判斷"]
+    assert payload["strategyDetailLabels"] == [
+        "進場 E1-E6",
+        "加碼 A1-A7",
+        "出場 X1-X5",
+        "T 系列追蹤",
+        "春節輔助營收",
+        "金融業不套主策略",
+        "待補資料不硬判斷",
+    ]
     assert "strategy-rule-card" in payload["strategyCardsHtml"]
     assert "營收 YoY &gt;= 50%" in payload["strategyCardsHtml"]
     assert "PER &lt; 20" in payload["strategyCardsHtml"]

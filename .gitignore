@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
 .coverage.*
 htmlcov/
@@ -22,6 +24,7 @@ data/official_history_backfill_run*.log
 data/app.sqlite3*
 data/market_scan_cache.json
 data/cache_refresh_state.json
+data/latest_scan_results/
 data/official_cache_seed_*.zip
 data/official_cache_seed_*.sha256
 !data/official_cache_seed_2026-05-14.zip
@@ -35,3 +38,7 @@ cloudflare/__pycache__/
 node_modules/
 .claude/
 .env
+
+# Local conflict/backup copies from synced workstations
+*-Marcus_Office
+*-Marcus_Office.*

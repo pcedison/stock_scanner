@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +25,12 @@ def test_scan_cache_returns_cached_payload_without_rebuilding(tmp_path):
 
     def build():
         calls["count"] += 1
-        return {"generatedAt": "2026-05-14T00:00:00+00:00", "entry": [{"stockCode": "2330"}], "watch": [], "excluded": []}
+        return {
+            "generatedAt": "2026-05-14T00:00:00+00:00",
+            "entry": [{"stockCode": "2330"}],
+            "watch": [],
+            "excluded": [],
+        }
 
     first = service.get_or_refresh(settings, build, refresh_mode="auto")
     second = service.get_or_refresh(settings, build, refresh_mode="cache_only")
@@ -71,7 +77,12 @@ def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     def refresh():
         calls["count"] += 1
         time.sleep(0.2)
-        return {"generatedAt": "2026-05-14T01:00:00+00:00", "entry": [{"stockCode": "2454"}], "watch": [], "excluded": []}
+        return {
+            "generatedAt": "2026-05-14T01:00:00+00:00",
+            "entry": [{"stockCode": "2454"}],
+            "watch": [],
+            "excluded": [],
+        }
 
     response = service.get_or_refresh(settings, refresh, build_refresh=refresh, refresh_mode="auto")
     duplicate = service.get_or_refresh(settings, refresh, build_refresh=refresh, refresh_mode="auto")
@@ -114,7 +125,7 @@ def test_scan_cache_write_uses_unique_atomic_temp_file(tmp_path, monkeypatch):
     assert list(tmp_path.glob(".*.tmp")) == []
 
 
-def test_failed_background_refresh_redacts_error_details(tmp_path):
+def test_failed_background_refresh_redacts_error_details(tmp_path, caplog):
     service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
     settings = ScannerSettings(use_mock_data=False)
     key = scan_cache_key(settings)
@@ -132,7 +143,9 @@ def test_failed_background_refresh_redacts_error_details(tmp_path):
     def refresh():
         raise RuntimeError("private filesystem path C:/Users/example/secret.json")
 
-    service.get_or_refresh(settings, refresh, build_refresh=refresh, refresh_mode="auto")
+    with caplog.at_level(logging.WARNING, logger="backend.services.scan_cache"):
+        service.get_or_refresh(settings, refresh, build_refresh=refresh, refresh_mode="auto")
+        assert service.wait_for_idle(timeout=3)
 
     deadline = time.time() + 3
     status = service.status(settings)
@@ -145,6 +158,9 @@ def test_failed_background_refresh_redacts_error_details(tmp_path):
     assert job["hasError"] is True
     assert "error" not in job
     assert "private filesystem path" not in str(status)
+    assert "Background scan cache refresh failed" in caplog.text
+    assert "private filesystem path" not in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_parse_time_and_public_job_helpers():

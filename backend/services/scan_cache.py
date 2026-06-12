@@ -7,7 +7,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -150,7 +150,17 @@ class ScanCacheService:
             self._running[key] = self._executor.submit(self._run_refresh, key, settings, builder, policy, job["id"])
         return "queued"
 
-    def _run_refresh(self, key: str, settings: ScannerSettings, builder: Callable[[], dict], policy: dict, job_id: str) -> None:
+    def wait_for_idle(self, timeout: float | None = None) -> bool:
+        with self._lock:
+            futures = [future for future in self._running.values() if not future.done()]
+        if not futures:
+            return True
+        _, not_done = wait(futures, timeout=timeout)
+        return not not_done
+
+    def _run_refresh(
+        self, key: str, settings: ScannerSettings, builder: Callable[[], dict], policy: dict, job_id: str
+    ) -> None:
         self._update_job(job_id, status="running", startedAt=utc_now())
         try:
             payload = builder()
@@ -165,14 +175,19 @@ class ScanCacheService:
                 watchCount=len(payload.get("watch", [])),
                 excludedCount=len(payload.get("excluded", [])),
             )
-        except Exception as exc:  # pragma: no cover - depends on network/runtime timing
-            logger.exception("Background scan cache refresh failed for key=%s: %s", key, exc)
+        except Exception:  # pragma: no cover - depends on network/runtime timing
+            logger.warning(
+                "Background scan cache refresh failed for key=%s; job marked failed for retry.",
+                key,
+            )
             self._update_job(job_id, status="failed", finishedAt=utc_now(), hasError=True)
         finally:
             with self._lock:
                 self._running.pop(key, None)
 
-    def _annotate(self, payload: dict, key: str, stored_at: str | None, cache_hit: bool, policy: dict, refresh_status: str) -> dict:
+    def _annotate(
+        self, payload: dict, key: str, stored_at: str | None, cache_hit: bool, policy: dict, refresh_status: str
+    ) -> dict:
         served = copy.deepcopy(payload)
         stored_time = _parse_time(stored_at)
         next_refresh = stored_time + timedelta(seconds=policy["minIntervalSeconds"]) if stored_time else None

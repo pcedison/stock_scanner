@@ -33,9 +33,9 @@ def test_entry_signal_none_returns_false():
     assert _entry_signal(_row()) is False
 
 
-def test_exit_signal_monthly_revenue():
-    assert _exit_signal(_row(monthlyRevenueYoY=29.9)) is True
-    assert _exit_signal(_row(monthlyRevenueYoY=30.0)) is False
+def test_exit_signal_revenue_trend():
+    assert _exit_signal(_row(monthlyRevenueYoY=60.0, cumulativeRevenueYoY=29.9)) is True
+    assert _exit_signal(_row(monthlyRevenueYoY=60.0, cumulativeRevenueYoY=30.0)) is False
 
 
 def test_exit_signal_eps_drop():
@@ -59,11 +59,11 @@ def test_run_backtest_from_csv(tmp_path):
             [
                 "stock_code,period,close_price,cumulative_revenue_yoy,monthly_revenue_yoy,eps_yoy,net_income_yoy,per,inventory_turnover",
                 "2357,2025-01,100,55,60,20,20,12,3",
-                "2357,2025-02,120,58,28,18,18,13,3",
+                "2357,2025-02,120,10,28,18,18,13,3",
                 "5274,2025-01,80,66,70,30,35,10,4",
                 "5274,2025-02,72,67,65,-12,30,11,4",
                 "9999,2025-01,50,70,75,25,25,18,4",
-                "9999,2025-02,55,72,20,25,25,18,4",
+                "9999,2025-02,55,9,20,25,25,18,4",
             ]
         ),
         encoding="utf-8",

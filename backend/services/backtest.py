@@ -38,7 +38,9 @@ def _load_rows(path: Path) -> list[BacktestRow]:
                     stockCode=stock_code,
                     period=period,
                     closePrice=close_price,
-                    cumulativeRevenueYoY=_to_float(raw.get("cumulative_revenue_yoy") or raw.get("cumulativeRevenueYoY")),
+                    cumulativeRevenueYoY=_to_float(
+                        raw.get("cumulative_revenue_yoy") or raw.get("cumulativeRevenueYoY")
+                    ),
                     monthlyRevenueYoY=_to_float(raw.get("monthly_revenue_yoy") or raw.get("monthlyRevenueYoY")),
                     epsYoY=_to_float(raw.get("eps_yoy") or raw.get("epsYoY")),
                     netIncomeYoY=_to_float(raw.get("net_income_yoy") or raw.get("netIncomeYoY")),
@@ -62,7 +64,11 @@ def _entry_signal(row: BacktestRow) -> bool:
 
 def _exit_signal(row: BacktestRow) -> bool:
     return (
-        (row.monthlyRevenueYoY is not None and row.monthlyRevenueYoY < 30)
+        (
+            row.monthlyRevenueYoY is not None
+            and row.cumulativeRevenueYoY is not None
+            and row.cumulativeRevenueYoY < row.monthlyRevenueYoY * 0.5
+        )
         or (row.epsYoY is not None and row.epsYoY <= -10)
         or (row.netIncomeYoY is not None and row.netIncomeYoY < 0)
     )
