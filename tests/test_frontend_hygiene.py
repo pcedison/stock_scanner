@@ -8,7 +8,8 @@ from scripts.check_frontend_hygiene import (
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
-APP_VERSION = "20260531-market-render-split"
+APP_VERSION = "20260612-x1-exit-rule"
+STRATEGY_CONTENT_VERSION = "20260612-x1-exit-rule"
 DOM_VERSION = "20260525-dom-hardening"
 
 
@@ -118,7 +119,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert f'src="/dom.js?v={DOM_VERSION}"' in index_html
     assert 'src="/auth.js?v=20260521-auth-helpers"' in index_html
     assert 'src="/reference_data.js?v=20260522-frontend-split"' in index_html
-    assert 'src="/strategy_content.js?v=20260522-frontend-split"' in index_html
+    assert f'src="/strategy_content.js?v={STRATEGY_CONTENT_VERSION}"' in index_html
     assert 'src="/storage.js?v=20260522-frontend-split"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
     assert 'src="/api_client.js?v=20260530-cacheable-scan-get"' in index_html
@@ -151,11 +152,7 @@ async function loadDetails(result) {
 
 
 def test_nested_template_literals_have_no_false_positive():
-    source = (
-        'setSafeHtml(target, `<div>${rows'
-        '.map((r) => `<span>${escapeHtml(r.label)}</span>`)'
-        '.join("")}</div>`);\n'
-    )
+    source = 'setSafeHtml(target, `<div>${rows.map((r) => `<span>${escapeHtml(r.label)}</span>`).join("")}</div>`);\n'
     assert dangerous_inner_html_assignments(source) == []
 
 
