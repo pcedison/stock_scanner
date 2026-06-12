@@ -63,12 +63,12 @@ def _entry_signal(row: BacktestRow) -> bool:
 
 
 def _exit_signal(row: BacktestRow) -> bool:
+    x1_triggered = False
+    if row.monthlyRevenueYoY is not None and row.cumulativeRevenueYoY is not None:
+        x1_passed = row.cumulativeRevenueYoY >= row.monthlyRevenueYoY * 0.5
+        x1_triggered = not x1_passed
     return (
-        (
-            row.monthlyRevenueYoY is not None
-            and row.cumulativeRevenueYoY is not None
-            and row.cumulativeRevenueYoY < row.monthlyRevenueYoY * 0.5
-        )
+        x1_triggered
         or (row.epsYoY is not None and row.epsYoY <= -10)
         or (row.netIncomeYoY is not None and row.netIncomeYoY < 0)
     )

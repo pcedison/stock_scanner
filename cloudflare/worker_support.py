@@ -250,7 +250,7 @@ def holding_note(holding: dict) -> dict:
 
 def missing_exit_rule(code: str) -> dict:
     titles = {
-        "X1": "累計營收年增率需 >= 單月營收年增率的 50%",
+        "X1": "當年度的累計營收年增率 >= 最新當月份營收年增率的 50%",
         "X2": "月營收年增率不可突然降溫超過 20 個百分點",
         "X3": "EPS 不可衰退",
         "X4": "季度 EPS 不可減少超過 10%",

@@ -381,7 +381,7 @@ const orderedHtml = renderAnalysisCard({
   summary: "order test",
   reasons: [
     { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "持股狀態" },
-    { code: "X1", title: "累計營收年增率需 >= 單月營收年增率的 50%", passed: true, severity: "INFO", message: "X1" },
+    { code: "X1", title: "當年度的累計營收年增率 >= 最新當月份營收年增率的 50%", passed: true, severity: "INFO", message: "X1" },
     { code: "T3", title: "毛利率追蹤", passed: true, severity: "INFO", message: "T3" },
     { code: "E1", title: "近 5 年沒有虧損", passed: true, severity: "INFO", message: "E1" },
     { code: "OFFICIAL_Q", title: "最新季官方財報資料", passed: true, severity: "INFO", message: "OFFICIAL_Q" },
@@ -395,7 +395,7 @@ const exitHoldingResult = {
   status: "EXIT",
   summary: "已觸發高優先出場條件，建議出清或至少大幅降低部位。",
   reasons: [
-    { code: "X1", title: "累計營收年增率需 >= 單月營收年增率的 50%", passed: false, severity: "WARNING", message: "X1" },
+    { code: "X1", title: "當年度的累計營收年增率 >= 最新當月份營收年增率的 50%", passed: false, severity: "WARNING", message: "X1" },
     { code: "X4", title: "季度 EPS 不可減少超過 10%", passed: false, severity: "EXIT", message: "X4" },
     { code: "HOLDING", title: "目前持股", passed: true, severity: "INFO", message: "目前 1000 股" },
   ],
