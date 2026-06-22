@@ -17,6 +17,12 @@ class ToolError(RuntimeError):
     pass
 
 
+def configure_stdout_encoding() -> None:
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+    if encoding != "utf-8" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _run(args: Sequence[str], *, cwd: Path = ROOT_DIR, check: bool = True) -> subprocess.CompletedProcess[str]:
     try:
         completed = subprocess.run(
@@ -284,6 +290,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_stdout_encoding()
     args = parse_args(argv)
     try:
         summary, exit_code = build_summary(args)
