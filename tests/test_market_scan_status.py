@@ -104,7 +104,9 @@ def test_data_sources_status_reports_financial_freshness_gate(monkeypatch):
     assert freshness["blocksDeployment"] is True
 
 
-def test_scan_market_payload_reports_financial_freshness_without_changing_scan_groups():
+def test_scan_market_payload_reports_financial_freshness_without_changing_scan_groups(monkeypatch):
+    _patch_filing_context(monkeypatch)
+
     payload = scan_market_payload(
         ScannerSettings(use_mock_data=False),
         FakeStatusProvider(),
