@@ -1,0 +1,880 @@
+:root {
+  --ops-bg: #f6f7f9;
+  --ops-surface: #ffffff;
+  --ops-surface-soft: #fbfcfd;
+  --ops-text: #1e2430;
+  --ops-text-soft: #3a4250;
+  --ops-muted: #697186;
+  --ops-muted-2: #8a93a3;
+  --ops-line: #e4e7ec;
+  --ops-line-strong: #d3d8e0;
+  --ops-primary: #2563c9;
+  --ops-primary-soft: #eaf1fc;
+  --ops-primary-ink: #1a4ea3;
+  --ops-green: #1f9d57;
+  --ops-green-bg: #e7f6ee;
+  --ops-green-ink: #176e3e;
+  --ops-amber: #c6841a;
+  --ops-amber-bg: #fcf2df;
+  --ops-amber-ink: #8a5a10;
+  --ops-red: #d2483b;
+  --ops-red-bg: #fcebe9;
+  --ops-red-ink: #9a2f25;
+  --ops-slate-bg: #eef0f3;
+  --ops-slate-ink: #404a5c;
+  --ops-radius: 8px;
+  --ops-radius-sm: 6px;
+  --ops-shadow: 0 1px 2px rgba(20, 28, 44, 0.04), 0 1px 1px rgba(20, 28, 44, 0.03);
+  --ops-font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+body[data-ui-version="ops-dashboard"] {
+  background: var(--ops-bg);
+  color: var(--ops-text);
+  letter-spacing: 0;
+}
+
+body[data-ui-version="ops-dashboard"] *,
+body[data-ui-version="ops-dashboard"] *::before,
+body[data-ui-version="ops-dashboard"] *::after {
+  box-sizing: border-box;
+}
+
+body[data-ui-version="ops-dashboard"] .mobile-topbar,
+body[data-ui-version="ops-dashboard"] .app-sidebar,
+body[data-ui-version="ops-dashboard"] .top-header,
+body[data-ui-version="ops-dashboard"] .panel,
+body[data-ui-version="ops-dashboard"] .card,
+body[data-ui-version="ops-dashboard"] .market-result-item,
+body[data-ui-version="ops-dashboard"] .strategy-rule-card,
+body[data-ui-version="ops-dashboard"] .admin-user-card {
+  border-color: var(--ops-line);
+  border-radius: var(--ops-radius);
+  background: var(--ops-surface);
+  box-shadow: var(--ops-shadow);
+}
+
+body[data-ui-version="ops-dashboard"] .app-shell {
+  grid-template-columns: 236px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+body[data-ui-version="ops-dashboard"] .app-sidebar {
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 0;
+  border-width: 0 1px 0 0;
+  box-shadow: none;
+}
+
+body[data-ui-version="ops-dashboard"] .brand-block {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .brand-block h1 {
+  margin: 2px 0 4px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+body[data-ui-version="ops-dashboard"] .brand-block p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ops-muted);
+}
+
+body[data-ui-version="ops-dashboard"] .nav-group-label {
+  padding: 14px 10px 6px;
+  color: var(--ops-muted-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+body[data-ui-version="ops-dashboard"] .nav-item,
+body[data-ui-version="ops-dashboard"] .nav-subitem {
+  min-height: 38px;
+  border-radius: var(--ops-radius-sm);
+  color: var(--ops-text-soft);
+  font-size: 13.5px;
+}
+
+body[data-ui-version="ops-dashboard"] .nav-item:hover,
+body[data-ui-version="ops-dashboard"] .nav-item.active,
+body[data-ui-version="ops-dashboard"] .nav-subitem:hover,
+body[data-ui-version="ops-dashboard"] .nav-subitem.active {
+  background: var(--ops-primary-soft);
+  color: var(--ops-primary-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .content-shell {
+  width: 100%;
+  max-width: 1240px;
+  padding: 22px;
+}
+
+body[data-ui-version="ops-dashboard"] .top-header,
+body[data-ui-version="ops-dashboard"].scan-view-active .top-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  grid-template-columns: minmax(0, 1fr) auto minmax(280px, auto);
+  align-items: center;
+  gap: 14px;
+  margin: -22px -22px 18px;
+  padding: 11px 22px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: saturate(160%) blur(8px);
+  box-shadow: none;
+}
+
+body[data-ui-version="ops-dashboard"] .top-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+
+body[data-ui-version="ops-dashboard"] .top-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+body[data-ui-version="ops-dashboard"] #view-subtitle {
+  margin: 1px 0 0;
+  color: var(--ops-muted);
+  font-size: 11.5px;
+}
+
+body[data-ui-version="ops-dashboard"] .status-pill {
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+body[data-ui-version="ops-dashboard"] .status-entry,
+body[data-ui-version="ops-dashboard"] .status-hold,
+body[data-ui-version="ops-dashboard"] .status-add_watch {
+  background: var(--ops-green-bg);
+  color: var(--ops-green-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .status-watch,
+body[data-ui-version="ops-dashboard"] .status-warning,
+body[data-ui-version="ops-dashboard"] .status-insufficient_data,
+body[data-ui-version="ops-dashboard"] .status-partial_data,
+body[data-ui-version="ops-dashboard"] .status-partial_holding {
+  background: var(--ops-primary-soft);
+  color: var(--ops-primary-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .status-exit,
+body[data-ui-version="ops-dashboard"] .status-excluded {
+  background: var(--ops-red-bg);
+  color: var(--ops-red-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .neutral {
+  background: var(--ops-slate-bg);
+  color: var(--ops-slate-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .primary-btn {
+  background: var(--ops-primary);
+  border-color: var(--ops-primary);
+}
+
+body[data-ui-version="ops-dashboard"] .secondary-btn {
+  background: var(--ops-primary-soft);
+  color: var(--ops-primary-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .ghost-btn,
+body[data-ui-version="ops-dashboard"] .mini-btn {
+  background: var(--ops-surface);
+}
+
+body[data-ui-version="ops-dashboard"] .panel,
+body[data-ui-version="ops-dashboard"] .card,
+body[data-ui-version="ops-dashboard"] .strategy-rule-card,
+body[data-ui-version="ops-dashboard"] .admin-user-card,
+body[data-ui-version="ops-dashboard"] .market-result-item {
+  box-shadow: var(--ops-shadow);
+}
+
+body[data-ui-version="ops-dashboard"] .status-pill,
+body[data-ui-version="ops-dashboard"] .nav-item,
+body[data-ui-version="ops-dashboard"] .nav-subitem {
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+body[data-ui-version="ops-dashboard"] .status-pill,
+body[data-ui-version="ops-dashboard"] .nav-item,
+body[data-ui-version="ops-dashboard"] .nav-subitem {
+  border: 1px solid transparent;
+}
+
+body[data-ui-version="ops-dashboard"] .nav-subitems {
+  border-left-color: var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .nav-subitem {
+  padding-inline: 10px;
+}
+
+body[data-ui-version="ops-dashboard"] .nav-group-toggle .nav-group-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--ops-slate-bg);
+  color: var(--ops-slate-ink);
+  font-size: 14px;
+  line-height: 1;
+}
+
+body[data-ui-version="ops-dashboard"] .scan-view-active .top-header {
+  display: grid;
+}
+
+body[data-ui-version="ops-dashboard"] .account-panel {
+  border-color: var(--ops-line);
+  background: var(--ops-surface-soft);
+}
+
+body[data-ui-version="ops-dashboard"] .section-heading h2 {
+  font-size: 21px;
+}
+
+body[data-ui-version="ops-dashboard"] .settings-grid label {
+  border-bottom-color: var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .settings-grid small,
+body[data-ui-version="ops-dashboard"] .section-subtitle,
+body[data-ui-version="ops-dashboard"] #view-subtitle {
+  color: var(--ops-muted);
+}
+
+body[data-ui-version="ops-dashboard"] .nav-item.active {
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 201, 0.08);
+}
+
+body[data-ui-version="ops-dashboard"] .top-header > div:first-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .top-header > div:first-child > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 680px) {
+  body[data-ui-version="ops-dashboard"] .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-ui-version="ops-dashboard"] .content-shell {
+    max-width: none;
+    padding: 16px 14px;
+  }
+
+  body[data-ui-version="ops-dashboard"] .top-header,
+  body[data-ui-version="ops-dashboard"].scan-view-active .top-header {
+    position: static;
+    grid-template-columns: 1fr;
+    margin: 0 0 12px;
+    padding: 0 0 12px;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  body[data-ui-version="ops-dashboard"] .top-status-strip {
+    display: flex;
+  }
+
+  body[data-ui-version="ops-dashboard"] .app-sidebar {
+    position: fixed;
+    width: 280px;
+    max-width: calc(100vw - 32px);
+    transform: translateX(-100%);
+    transition: none;
+  }
+
+  body[data-ui-version="ops-dashboard"].mobile-menu-open .app-sidebar {
+    transform: translateX(0);
+  }
+}
+
+@media (min-width: 681px) and (max-width: 1020px) {
+  body[data-ui-version="ops-dashboard"] .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-ui-version="ops-dashboard"] .content-shell {
+    max-width: none;
+    padding: 16px;
+  }
+
+  body[data-ui-version="ops-dashboard"] .app-sidebar {
+    position: static;
+    top: auto;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    overflow-x: visible;
+    overflow-y: visible;
+    border-width: 0 0 1px;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body[data-ui-version="ops-dashboard"] .top-header,
+  body[data-ui-version="ops-dashboard"].scan-view-active .top-header {
+    position: static;
+    grid-template-columns: 1fr;
+    align-items: start;
+    margin: 0 0 16px;
+    padding: 16px;
+    border-radius: var(--ops-radius);
+    background: var(--ops-surface);
+    backdrop-filter: none;
+  }
+}
+
+@media (max-width: 1020px) {
+  body[data-ui-version="ops-dashboard"] .side-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body[data-ui-version="ops-dashboard"] .nav-group-label {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  body[data-ui-version="ops-dashboard"] .nav-subitems {
+    grid-column: 1 / -1;
+    margin-left: 0;
+  }
+}
+
+body[data-ui-version="ops-dashboard"] .summary-grid.kpi-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .kpi-card {
+  min-height: 130px;
+  padding: 16px 18px;
+}
+
+body[data-ui-version="ops-dashboard"] .kpi-value strong {
+  font-size: 30px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-status-strip {
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-strip-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .ops-strip-head h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-strip-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+body[data-ui-version="ops-dashboard"] .ops-status-cell {
+  padding: 14px 16px;
+  border-right: 1px solid var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .ops-status-cell:last-child {
+  border-right: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-status-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ops-muted);
+  font-size: 11.5px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-status-cell strong {
+  display: block;
+  font-size: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-status-cell small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ops-muted-2);
+  font-size: 11px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-next-actions {
+  padding: 0;
+  overflow: hidden;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-action-list {
+  display: grid;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-action-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--ops-line);
+  background: transparent;
+  padding: 14px 16px;
+  color: inherit;
+  text-align: left;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-action-row:hover {
+  background: var(--ops-surface-soft);
+}
+
+body[data-ui-version="ops-dashboard"] .ops-action-row strong,
+body[data-ui-version="ops-dashboard"] .ops-action-row small {
+  display: block;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-action-row small {
+  color: var(--ops-muted);
+}
+
+body[data-ui-version="ops-dashboard"] .ops-action-arrow {
+  color: var(--ops-primary-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 1020px) {
+  body[data-ui-version="ops-dashboard"] .summary-grid.kpi-strip,
+  body[data-ui-version="ops-dashboard"] .ops-strip-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-ui-version="ops-dashboard"] .ops-status-cell {
+    border-right: 0;
+    border-bottom: 1px solid var(--ops-line);
+  }
+
+  body[data-ui-version="ops-dashboard"] .ops-status-cell:last-child {
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  body[data-ui-version="ops-dashboard"] .ops-action-row {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  body[data-ui-version="ops-dashboard"] .ops-action-arrow {
+    grid-column: 2;
+    width: fit-content;
+  }
+}
+
+body[data-ui-version="ops-dashboard"] .scan-action-row,
+body[data-ui-version="ops-dashboard"] .results-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-cache-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border-color: var(--ops-line, var(--line));
+  background: var(--ops-surface-soft, var(--surface-soft));
+  color: var(--ops-text-soft, var(--text-soft));
+}
+
+body[data-ui-version="ops-dashboard"] .market-disclosure-tabs {
+  border-bottom: 1px solid var(--ops-line, var(--line));
+  padding: 0 8px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-disclosure-tabs .tab {
+  min-height: 40px;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ops-muted, var(--muted));
+}
+
+body[data-ui-version="ops-dashboard"] .market-disclosure-tabs .tab.active {
+  border-bottom-color: var(--ops-primary, var(--primary));
+  background: transparent;
+  color: var(--ops-primary-ink, var(--primary-ink));
+}
+
+body[data-ui-version="ops-dashboard"] .result-column {
+  overflow: hidden;
+}
+
+body[data-ui-version="ops-dashboard"] .result-column-head {
+  border-bottom: 1px solid var(--ops-line, var(--line));
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-list {
+  gap: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-item {
+  border-radius: 0;
+  border-width: 0 0 1px;
+  box-shadow: none;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-summary {
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr) auto 34px;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  min-height: 72px;
+  padding: 13px 16px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-code strong,
+body[data-ui-version="ops-dashboard"] .market-result-code small,
+body[data-ui-version="ops-dashboard"] .market-result-name,
+body[data-ui-version="ops-dashboard"] .market-result-meta {
+  display: block;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-code strong {
+  font-family: var(--ops-font-mono);
+  font-size: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-code small,
+body[data-ui-version="ops-dashboard"] .market-result-meta {
+  color: var(--ops-muted, var(--muted));
+  font-size: 11.5px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-name {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+body[data-ui-version="ops-dashboard"] .market-rule-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+body[data-ui-version="ops-dashboard"] .rule-chip {
+  border: 1px solid #d6e3f5;
+  border-radius: 5px;
+  background: var(--ops-primary-soft, var(--primary-soft));
+  color: var(--ops-primary-ink, var(--primary-ink));
+  padding: 2px 7px;
+  font-family: var(--ops-font-mono);
+  font-size: 11.5px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-result-details {
+  border-top: 1px solid var(--ops-line, var(--line));
+  background: var(--ops-surface-soft, var(--surface-soft));
+  padding: 14px 16px 16px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-evidence-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+body[data-ui-version="ops-dashboard"] .market-evidence-grid h4 {
+  margin: 0 0 8px;
+  color: var(--ops-muted-2, var(--muted-2));
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 680px) {
+  body[data-ui-version="ops-dashboard"] .scan-action-row,
+  body[data-ui-version="ops-dashboard"] .results-heading-actions {
+    justify-content: flex-start;
+  }
+
+  body[data-ui-version="ops-dashboard"] .market-result-summary {
+    grid-template-columns: minmax(0, 1fr) 34px;
+    grid-template-areas:
+      "code icon"
+      "body icon"
+      "status icon";
+    gap: 8px 12px;
+  }
+
+  body[data-ui-version="ops-dashboard"] .market-result-code {
+    grid-area: code;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  body[data-ui-version="ops-dashboard"] .market-result-body {
+    grid-area: body;
+  }
+
+  body[data-ui-version="ops-dashboard"] .market-result-summary > .status-pill {
+    grid-area: status;
+    width: fit-content;
+  }
+
+  body[data-ui-version="ops-dashboard"] .market-expand-icon {
+    grid-area: icon;
+  }
+
+  body[data-ui-version="ops-dashboard"] .market-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .account-panel,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .account-head,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .auth-form,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .auth-user {
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+  }
+
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .account-head,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .auth-form {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .account-head {
+    justify-items: start;
+  }
+
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .auth-form input,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .auth-form button,
+  body[data-ui-version="ops-dashboard"] .mobile-account-panel-slot .auth-user button {
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+body[data-ui-version="ops-dashboard"] .holding-form {
+  border: 1px solid var(--ops-line);
+  border-radius: var(--ops-radius);
+  background: var(--ops-surface-soft);
+}
+
+body[data-ui-version="ops-dashboard"] .holding-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+body[data-ui-version="ops-dashboard"] .holding-row-main {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+body[data-ui-version="ops-dashboard"] .holding-id .stock-title {
+  margin: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .holding-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .holding-metrics div,
+body[data-ui-version="ops-dashboard"] .ops-kv div {
+  display: grid;
+  gap: 2px;
+}
+
+body[data-ui-version="ops-dashboard"] .holding-metrics dt,
+body[data-ui-version="ops-dashboard"] .ops-kv dt {
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+body[data-ui-version="ops-dashboard"] .holding-metrics dd,
+body[data-ui-version="ops-dashboard"] .ops-kv dd {
+  margin: 0;
+  font-family: var(--ops-font-mono);
+  font-weight: 700;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-console-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-console-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .ops-card-head h3 {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-card-head > :last-child {
+  margin-left: auto;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-kv {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 14px 16px;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-kv div {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .ops-kv div:last-child {
+  border-bottom: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .ops-scheduler-strip,
+body[data-ui-version="ops-dashboard"] .settings-permission-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  border: 1px solid var(--ops-line);
+  border-radius: var(--ops-radius);
+  background: var(--ops-surface);
+  padding: 12px 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .settings-permission-note {
+  margin-bottom: 14px;
+  background: var(--ops-primary-soft);
+  color: var(--ops-primary-ink);
+}
+
+body[data-ui-version="ops-dashboard"] .settings-grid {
+  grid-template-columns: 1fr;
+  gap: 0;
+  border: 1px solid var(--ops-line);
+  border-radius: var(--ops-radius);
+  background: var(--ops-surface);
+  overflow: hidden;
+}
+
+body[data-ui-version="ops-dashboard"] .settings-grid label {
+  border: 0;
+  border-bottom: 1px solid var(--ops-line);
+  border-radius: 0;
+  background: var(--ops-surface);
+}
+
+body[data-ui-version="ops-dashboard"] .settings-grid label:last-child {
+  border-bottom: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .strategy-rule-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+body[data-ui-version="ops-dashboard"] .strategy-rule-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+body[data-ui-version="ops-dashboard"] .strategy-rule-card > div:first-child {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+body[data-ui-version="ops-dashboard"] .strategy-rule-list {
+  padding: 0;
+}
+
+body[data-ui-version="ops-dashboard"] .strategy-rule-item {
+  padding: 12px 16px;
+}
+
+@media (max-width: 900px) {
+  body[data-ui-version="ops-dashboard"] .holding-row-main,
+  body[data-ui-version="ops-dashboard"] .ops-console-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  body[data-ui-version="ops-dashboard"] .holding-metrics,
+  body[data-ui-version="ops-dashboard"] .compact-actions {
+    gap: 10px;
+  }
+
+  body[data-ui-version="ops-dashboard"] .ops-kv div {
+    grid-template-columns: 1fr;
+  }
+}

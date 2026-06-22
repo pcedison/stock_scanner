@@ -7,8 +7,10 @@
     <title>台股財報事件驅動掃描器</title>
     <link rel="preload" href="/styles.css?v=20260519-design-refresh" as="style" />
     <link rel="stylesheet" href="/styles.css?v=20260519-design-refresh" />
+    <link rel="preload" href="/ops_dashboard.css?v=20260622-ops-dashboard" as="style" />
+    <link rel="stylesheet" href="/ops_dashboard.css?v=20260622-ops-dashboard" />
   </head>
-  <body>
+  <body data-ui-version="ops-dashboard">
     <header class="mobile-topbar" aria-label="手機版功能列">
       <div class="mobile-topbar-title">
         <span>台股財報掃描器</span>
@@ -29,6 +31,7 @@
           <p>非逐筆行情；預設使用官方上市櫃清單與最新月營收。</p>
         </div>
         <nav class="side-nav">
+          <div class="nav-group-label">營運</div>
           <button class="nav-item active" type="button" data-view="overview">總覽</button>
           <button class="nav-item" type="button" data-view="search">搜尋與單檔分析</button>
           <button class="nav-item" type="button" data-view="holdings">我的持股</button>
@@ -41,6 +44,7 @@
             <button class="nav-subitem" type="button" data-market-column-nav="watch">接近觀察</button>
             <button class="nav-subitem" type="button" data-market-column-nav="excluded">排除清單</button>
           </div>
+          <div class="nav-group-label">系統</div>
           <button id="admin-nav-item" class="nav-item hidden" type="button" data-view="admin">使用者管理</button>
           <button class="nav-item" type="button" data-view="settings">設定</button>
           <button class="nav-item" type="button" data-view="strategy">策略規則</button>
@@ -64,7 +68,12 @@
       <div class="content-shell">
         <header class="top-header">
           <div>
-            <span id="api-status" class="status-pill neutral">連線中</span>
+            <div class="top-status-strip" aria-label="系統狀態">
+              <span id="api-status" class="status-pill neutral">連線中</span>
+              <span id="top-source-status" class="status-pill neutral">資料源檢查中</span>
+              <span id="top-cache-status" class="status-pill neutral">快取狀態待讀取</span>
+              <span id="top-filing-status" class="status-pill neutral">申報窗待讀取</span>
+            </div>
             <h2 id="view-title">總覽</h2>
             <p id="view-subtitle">快速查看資料來源、持股狀態與策略完成度。</p>
           </div>
@@ -108,18 +117,60 @@
                 <div class="kpi-value"><strong id="overview-excluded-count">--</strong><span>檔</span><small id="overview-excluded-note">等待掃描</small></div>
               </article>
             </div>
-            <div class="overview-copy-grid">
-              <article class="panel summary-card">
-                <span class="status-pill status-entry">核心策略</span>
-                <h3>長期賺錢 + 高成長 + 估值不貴</h3>
-                <p>進場、續抱、加碼觀察、警戒與出場都會列出原因。</p>
-              </article>
-              <article class="panel summary-card">
-                <span class="status-pill neutral">下一步</span>
-                <h3>選擇下一步</h3>
-                <p>先搜尋單檔、建立持股，再到掃描結果查看股市清單或我的持股。</p>
-              </article>
-            </div>
+            <section class="panel ops-status-strip" aria-label="概覽作業狀態">
+              <div class="ops-strip-head">
+                <h2>作業狀態總覽</h2>
+                <p class="section-subtitle">先看資料來源、快取與申報脈絡，再決定要往哪個工作區處理。</p>
+              </div>
+              <div class="ops-strip-grid">
+                <article class="ops-status-cell">
+                  <span class="ops-status-label">資料來源</span>
+                  <strong id="overview-source-state">未載入</strong>
+                  <small id="overview-source-note">等待資料來源狀態</small>
+                </article>
+                <article class="ops-status-cell">
+                  <span class="ops-status-label">快取</span>
+                  <strong id="overview-cache-state">未知</strong>
+                  <small id="overview-cache-note">等待快取狀態</small>
+                </article>
+                <article class="ops-status-cell">
+                  <span class="ops-status-label">申報脈絡</span>
+                  <strong id="overview-filing-state">未知</strong>
+                  <small id="overview-filing-note">等待申報資訊</small>
+                </article>
+                <article class="ops-status-cell">
+                  <span class="ops-status-label">持股風險</span>
+                  <strong id="overview-holding-risk-state">未知</strong>
+                  <small id="overview-holding-risk-note">依 X1-X5 風險訊號判斷</small>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel ops-next-actions" aria-label="下一步作業">
+              <div class="section-heading">
+                <div>
+                  <h2>下一步作業</h2>
+                  <p class="section-subtitle">依目前狀態快速切換到持股、篩選或資料頁。</p>
+                </div>
+              </div>
+              <div class="ops-action-list">
+                <button class="ops-action-row" type="button" data-action-view="holdings">
+                  <span class="status-dot status-warning" aria-hidden="true"></span>
+                  <span><strong>檢查持股風險</strong><small id="overview-action-holdings">先看 X1-X5 是否有需要處理的持股。</small></span>
+                  <span class="ops-action-arrow">前往</span>
+                </button>
+                <button class="ops-action-row" type="button" data-action-view="scan">
+                  <span class="status-dot status-entry" aria-hidden="true"></span>
+                  <span><strong>查看篩選結果</strong><small id="overview-action-scan">切到市場或持股分析結果。</small></span>
+                  <span class="ops-action-arrow">前往</span>
+                </button>
+                <button class="ops-action-row" type="button" data-action-view="data">
+                  <span class="status-dot neutral" aria-hidden="true"></span>
+                  <span><strong>檢查資料同步</strong><small id="overview-action-data">確認資料來源與排程更新狀態。</small></span>
+                  <span class="ops-action-arrow">前往</span>
+                </button>
+              </div>
+            </section>
             <section class="panel">
               <div class="section-heading">
                 <div>
@@ -209,7 +260,7 @@
                 <button class="tab active" type="button" data-tab="market">股市清單</button>
                 <button class="tab" type="button" data-tab="holdings">我的持股</button>
               </div>
-              <div class="report-actions" aria-label="匯出報告">
+              <div class="report-actions scan-action-row" aria-label="匯出報告">
                 <button id="export-market-md-btn" class="ghost-btn" type="button">匯出市場 Markdown</button>
                 <button id="export-market-csv-btn" class="ghost-btn" type="button">匯出市場 CSV</button>
                 <button id="export-holdings-md-btn" class="ghost-btn" type="button">匯出持股 Markdown</button>
@@ -243,6 +294,10 @@
                 </div>
                 <span id="settings-status" class="status-pill neutral">讀取中</span>
               </div>
+              <div class="settings-permission-note" aria-live="polite">
+                <strong>權限</strong>
+                <span>設定對所有人可見，但只有管理員與超級使用者可以修改並儲存。</span>
+              </div>
               <div class="settings-grid">
                 <label><input type="checkbox" data-setting="auto_scan_full_market" /><span><strong>自動掃描市場</strong><small>官方模式會掃描 TWSE / TPEx 月營收 universe</small></span></label>
                 <label><input type="checkbox" data-setting="manual_scan_enabled" /><span><strong>允許手動掃描</strong><small>開啟掃描結果分頁的手動掃描</small></span></label>
@@ -274,7 +329,7 @@
                   <p class="section-subtitle">已整合官方月營收、最新季損益、資產負債表與估值；歷史快取會自動補 YoY、Q4 年度淨利與存貨週轉率，舊年度缺口可用 CSV 回補。</p>
                 </div>
               </div>
-              <div id="data-source-status" class="data-status-grid"></div>
+              <div id="data-source-status" class="data-status-grid ops-console-grid"></div>
               <div id="scheduler-status" class="data-source-note"></div>
             </section>
           </section>
@@ -360,7 +415,9 @@
     <script src="/normalize.js?v=20260530-normalize-split" defer></script>
     <script src="/api_client.js?v=20260530-cacheable-scan-get" defer></script>
     <script src="/market_scan.js?v=20260530-market-scan-split" defer></script>
-    <script src="/market_render.js?v=20260531-market-render-split" defer></script>
-    <script src="/app.js?v=20260612-x1-exit-rule" defer></script>
+    <script src="/market_render.js?v=20260622-ops-dashboard" defer></script>
+    <script src="/ops_status.js?v=20260622-ops-dashboard" defer></script>
+    <script src="/ops_view_renderers.js?v=20260622-ops-dashboard" defer></script>
+    <script src="/app.js?v=20260622-ops-dashboard" defer></script>
   </body>
 </html>

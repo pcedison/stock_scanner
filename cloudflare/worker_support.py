@@ -218,6 +218,15 @@ def manifest_quality(manifest):
         problems.append(f"analysis below {MIN_CACHE_ANALYSIS}")
     if universe < MIN_CACHE_ANALYSIS:
         problems.append(f"universe below {MIN_CACHE_ANALYSIS}")
+    freshness = manifest.get("financialFreshness") if isinstance(manifest, dict) else None
+    if not isinstance(freshness, dict):
+        problems.append("financial freshness missing from manifest")
+    elif freshness.get("blocksDeployment") is True:
+        problems.append(
+            "financial freshness blocks deployment: "
+            f"expected {freshness.get('expectedFinancialPeriod')}, "
+            f"latest cached {freshness.get('latestCachedFinancialPeriod')}"
+        )
     return {
         "ok": not problems,
         "problems": problems,

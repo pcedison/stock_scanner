@@ -275,11 +275,46 @@ def test_worker_manifest_quality_flags_undersized_seed(monkeypatch):
     worker = load_worker_module(monkeypatch)
 
     bad = worker.manifest_quality({"counts": {"companies": 10, "entry": 1, "watch": 2, "excluded": 3, "analysis": 9}})
-    good = worker.manifest_quality({"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}})
+    good = worker.manifest_quality(
+        {
+            "counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000},
+            "financialFreshness": {"status": "ok", "blocksDeployment": False},
+        }
+    )
 
     assert bad["ok"] is False
     assert bad["problems"]
     assert good["ok"] is True
+
+
+def test_worker_manifest_quality_flags_blocking_financial_freshness(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    quality = worker.manifest_quality(
+        {
+            "counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000},
+            "financialFreshness": {
+                "status": "stale",
+                "blocksDeployment": True,
+                "expectedFinancialPeriod": "2026Q1",
+                "latestCachedFinancialPeriod": "2025Q4",
+            },
+        }
+    )
+
+    assert quality["ok"] is False
+    assert any("financial freshness" in problem for problem in quality["problems"])
+
+
+def test_worker_manifest_quality_flags_missing_financial_freshness(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    quality = worker.manifest_quality(
+        {"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}}
+    )
+
+    assert quality["ok"] is False
+    assert any("financial freshness" in problem for problem in quality["problems"])
 
 
 def test_worker_settings_payload_validation(monkeypatch):
@@ -967,7 +1002,19 @@ def register_user(api, username, password="supersecret", display_name=None, sour
 def test_worker_on_fetch_entrypoint_serves_health(monkeypatch):
     worker, _api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {"counts": {"companies": 1000, "analysis": 1000}}})
     pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
-    env = types.SimpleNamespace(DB=RoutingFakeD1(), CACHE=FakeR2Cache(r2_seed({"public/manifest.json": {"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}}})))
+    env = types.SimpleNamespace(
+        DB=RoutingFakeD1(),
+        CACHE=FakeR2Cache(
+            r2_seed(
+                {
+                    "public/manifest.json": {
+                        "counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000},
+                        "financialFreshness": {"status": "ok", "blocksDeployment": False},
+                    }
+                }
+            )
+        ),
+    )
 
     response = asyncio.run(worker.on_fetch(RouteRequest(path="/api/health"), env))
 
