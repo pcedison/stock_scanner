@@ -12,6 +12,8 @@ const STORAGE_HELPERS = _mod("StockScannerStorage", "./storage.js");
 const RENDERER_HELPERS = _mod("StockScannerRenderers", "./renderers.js");
 const DOM_HELPERS = _mod("StockScannerDom", "./dom.js");
 const HOLDING_SIGNAL_HELPERS = _mod("StockScannerHoldingSignals", "./holding_signals.js");
+const OPS_STATUS_HELPERS = _mod("StockScannerOpsStatus", "./ops_status.js");
+const OPS_VIEW_RENDERER_HELPERS = _mod("StockScannerOpsViewRenderers", "./ops_view_renderers.js");
 const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
 const API_CLIENT_HELPERS = _mod("StockScannerApiClient", "./api_client.js");
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
@@ -246,6 +248,12 @@ const {
   strategyStatusDetails: STRATEGY_STATUS_DETAILS,
   strategyRuleThresholds: STRATEGY_RULE_THRESHOLDS,
 });
+const { renderDataConsole, renderHoldingCard, renderSchedulerStatus } = OPS_VIEW_RENDERER_HELPERS.createOpsViewRenderers({
+  escapeHtml,
+  safeCompanyName,
+  renderHoldingSignal,
+  displayResultStatus,
+});
 
 const MARKET_RENDER_HELPERS = _mod("StockScannerMarketRender", "./market_render.js");
 const {
@@ -330,6 +338,7 @@ function holdingExitAlerts(scan = state.holdingsScan) {
     });
 }
 
+const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({ query: $, getState: () => state, holdingExitAlerts });
 function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
   if (!alerts.length) return "";
   const exitCount = alerts.filter((item) => item.status === "EXIT").length;
@@ -893,67 +902,22 @@ function renderSelectedCompany() {
 
 function renderHoldings() {
   renderHoldingExitAlerts();
+  renderOverviewOpsStatus(state.marketScan);
   const target = $("#holdings-list");
   if (!state.holdings.length) {
-    setEmptyState(target, "目前沒有持股");
+    setEmptyState(target, "尚未儲存持股");
     return;
   }
 
   setSafeHtml(target, state.holdings
     .map((holding) => {
-      const name = safeCompanyName(holding);
       const stockCode = safeText(holding.stockCode, "未知代碼");
-      const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
-      const averageCost = optionalNumber(holding.averageCost);
-      const isEditing = state.editingHoldingCode === stockCode;
-      const analysis = holdingScanResultByCode(stockCode);
-      const missing = holdingScanMissingByCode(stockCode);
-      return `
-        <article class="card holding-card" data-holding-code="${escapeHtml(stockCode)}">
-          <div class="card-head">
-            <div>
-              <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(name)}</h3>
-              <p class="muted">目前 ${escapeHtml(shares)} 股，平均成本 ${escapeHtml(averageCost ?? "未填")}</p>
-              ${renderHoldingSignal(analysis, missing)}
-            </div>
-            <div class="button-row compact-actions">
-              ${
-                isEditing
-                  ? `<button class="ghost-btn" type="button" data-action="cancel-edit">取消</button>`
-                  : `<button class="secondary-btn" type="button" data-action="edit">編輯</button>`
-              }
-              <button class="danger-btn" type="button" data-action="delete">刪除</button>
-            </div>
-          </div>
-          ${
-            isEditing
-              ? `
-                <div class="holding-edit">
-                  <div class="field">
-                    <label>目前股數</label>
-                    <input type="number" min="0" step="1" data-field="shares" value="${escapeHtml(shares)}" aria-label="目前股數" />
-                    <span class="field-help">修改後按「儲存修改」。</span>
-                  </div>
-                  <div class="field">
-                    <label>平均成本</label>
-                    <input type="number" min="0" step="0.01" data-field="averageCost" value="${escapeHtml(averageCost ?? "")}" aria-label="平均成本" />
-                    <span class="field-help">選填，可留空。</span>
-                  </div>
-                  <div class="field">
-                    <label>減碼股數</label>
-                    <input type="number" min="0" step="1" data-field="reduce" placeholder="例如：500" aria-label="減碼股數" />
-                    <span class="field-help">只在按「減碼」時使用。</span>
-                  </div>
-                </div>
-                <div class="button-row">
-                  <button class="primary-btn" type="button" data-action="save">儲存修改</button>
-                  <button class="secondary-btn" type="button" data-action="reduce">減碼</button>
-                </div>
-              `
-              : ""
-          }
-        </article>
-      `;
+      return renderHoldingCard({
+        holding: { ...holding, stockCode },
+        isEditing: state.editingHoldingCode === stockCode,
+        analysis: holdingScanResultByCode(stockCode),
+        missing: holdingScanMissingByCode(stockCode),
+      });
     })
     .join(""));
 }
@@ -1080,6 +1044,7 @@ function renderOverviewStats(scan = state.marketScan, activeTab = state.activeMa
     if (count) count.textContent = String(values[key]);
     if (noteEl) noteEl.textContent = note;
   }
+  renderOverviewOpsStatus(scan);
 }
 
 function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDisclosureTab) {
@@ -1174,49 +1139,26 @@ function renderDataAndScheduler() {
   const schedulerTarget = $("#scheduler-status");
   if (dataTarget) {
     if (!state.dataSourceStatus) {
-      setEmptyState(dataTarget, "尚未讀取資料來源狀態");
+      setEmptyState(dataTarget, "資料來源狀態暫時無法讀取");
     } else {
       const status = state.dataSourceStatus;
-      setSafeHtml(dataTarget, `
-        <article class="card">
-          <h3 class="stock-title">目前啟用資料源</h3>
-          <p class="muted">${escapeHtml(status.activeProvider)}</p>
-          <p class="muted">Realtime：${status.activeProviderIsRealtime ? "是" : "否"}；全市場 universe：${status.activeProviderIsFullMarket ? "是" : "否"}；完整財報因子：${status.activeProviderHasCompleteFundamentals ? "是" : "否"}</p>
-        </article>
-        <article class="card">
-          <h3 class="stock-title">Mock Universe</h3>
-          <p class="muted">目前示範樣本 ${escapeHtml(status.mockUniverseSize)} 檔。</p>
-        </article>
-        <article class="card">
-          <h3 class="stock-title">官方 TWSE / TPEx</h3>
-          <p class="muted">Universe：${escapeHtml(status.officialUniverseSize ?? "尚未啟用")}；月營收快照：${escapeHtml(status.officialMonthlySnapshotSize ?? "尚未啟用")}。</p>
-          <p class="muted">最新季損益：${escapeHtml(status.officialIncomeStatementSize ?? "尚未啟用")}；資產負債：${escapeHtml(status.officialBalanceSheetSize ?? "尚未啟用")}；估值：${escapeHtml(status.officialValuationSize ?? "尚未啟用")}。</p>
-          <p class="muted">官方歷史快取：${escapeHtml(status.officialHistoryRows ?? 0)} 筆；財報匯入：${escapeHtml(status.fundamentalsImportRows ?? 0)} 筆。</p>
-          <p class="muted">${escapeHtml(status.officialHistoricalFundamentals?.note || "已整合官方最新季 EPS、淨利、毛利率與 PER/PBR；缺口會列為待補。")}</p>
-        </article>
-        <article class="card">
-          <h3 class="stock-title">外部整合</h3>
-          <p class="muted">通知：${escapeHtml((state.integrationStatus?.notifications || []).filter((item) => item.configured).length)} 個已設定；券商同步：${state.integrationStatus?.broker?.configured ? "已設定" : "未設定"}；AI 摘要：${state.integrationStatus?.aiSummary?.configured ? "已設定" : "未設定"}。</p>
-          <p class="muted">未設定金鑰或授權前，系統不會對外發送訊息或讀取真實券商持股。</p>
-        </article>
-        <article class="card">
-          <h3 class="stock-title">回測資料</h3>
-          <p class="muted">狀態：${escapeHtml(state.backtestStatus?.status || "未讀取")}；交易數：${escapeHtml(state.backtestStatus?.metrics?.tradeCount ?? 0)}。</p>
-          <p class="muted">${escapeHtml(state.backtestStatus?.note || "匯入 data/backtest_history.csv 後可模擬進出場與績效。")}</p>
-        </article>
-      `);
+      setSafeHtml(dataTarget, renderDataConsole({
+        status,
+        integrationStatus: state.integrationStatus,
+        backtestStatus: state.backtestStatus,
+      }));
     }
   }
 
   if (schedulerTarget) {
     if (!state.schedulerStatus) {
-      setSafeHtml(schedulerTarget, `<strong>排程狀態：</strong><span>尚未讀取</span>`);
+      setSafeHtml(schedulerTarget, "<strong>排程狀態</strong><span>排程狀態暫時無法讀取</span>");
     } else {
-      const autoAction = state.schedulerAutoScan?.action || "未執行";
-      setSafeHtml(schedulerTarget, `
-        <strong>排程狀態：${escapeHtml(state.schedulerStatus.status)}</strong>
-        <span>事件：${escapeHtml((state.schedulerStatus.events || []).join("、") || "無")}；下一交易日：${escapeHtml(state.schedulerStatus.nextTradingDay)}；自動掃描：${escapeHtml(autoAction)}</span>
-      `);
+      const autoAction = state.schedulerAutoScan?.action || "--";
+      setSafeHtml(schedulerTarget, renderSchedulerStatus({
+        schedulerStatus: state.schedulerStatus,
+        autoAction,
+      }));
     }
   }
 }
@@ -1339,6 +1281,7 @@ async function loadDataStatus() {
     state.backtestStatus = null;
   }
   renderDataAndScheduler();
+  renderOverviewOpsStatus(state.marketScan);
 }
 
 async function saveSettings() {
@@ -1628,6 +1571,14 @@ function bindEvents() {
       }
       showView(navButton.dataset.view);
       closeMobileMenu();
+    });
+  }
+  const overviewActions = document.querySelector(".ops-next-actions");
+  if (overviewActions) {
+    overviewActions.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action-view]");
+      if (!button || !overviewActions.contains(button)) return;
+      showView(button.dataset.actionView);
     });
   }
 
