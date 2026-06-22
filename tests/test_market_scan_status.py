@@ -1,5 +1,13 @@
+from datetime import date
+
 from backend.models.settings import ScannerSettings
+from backend.services.filing_calendar import filing_context
 from backend.services.market_scan import data_sources_status_payload, scan_market_payload
+
+
+def _patch_filing_context(monkeypatch, today=None):
+    target_date = today or date(2026, 6, 22)
+    monkeypatch.setattr("backend.services.market_scan.filing_context", lambda: filing_context(target_date))
 
 
 class FakeStatusProvider:
@@ -38,8 +46,9 @@ class FakeRefreshingStatusProvider(FakeStatusProvider):
         payload = super().status(refresh=refresh, expected_period=expected_period)
         history = payload["sourceStatus"]["officialFundamentalsHistory"]
         if self.refreshed:
-            history["latestFinancialPeriod"] = "2026Q1"
-            history["periodCoverage"] = {"2026Q1": 5}
+            period = expected_period or "2026Q1"
+            history["latestFinancialPeriod"] = period
+            history["periodCoverage"] = {period: 5}
             history["expectedPeriodCoverage"] = 5
         return payload
 
@@ -79,7 +88,9 @@ def test_data_sources_status_redacts_scan_cache_job_error_details():
     assert "private cache path" not in str(payload)
 
 
-def test_data_sources_status_reports_financial_freshness_gate():
+def test_data_sources_status_reports_financial_freshness_gate(monkeypatch):
+    _patch_filing_context(monkeypatch)
+
     payload = data_sources_status_payload(
         ScannerSettings(use_mock_data=False),
         FakeStatusProvider(),
@@ -106,7 +117,9 @@ def test_scan_market_payload_reports_financial_freshness_without_changing_scan_g
     assert payload["financialFreshness"]["status"] == "stale"
 
 
-def test_scan_market_payload_checks_financial_freshness_after_provider_refresh():
+def test_scan_market_payload_checks_financial_freshness_after_provider_refresh(monkeypatch):
+    _patch_filing_context(monkeypatch, date(2026, 11, 15))
+
     payload = scan_market_payload(
         ScannerSettings(use_mock_data=False),
         FakeRefreshingStatusProvider(),
@@ -114,4 +127,5 @@ def test_scan_market_payload_checks_financial_freshness_after_provider_refresh()
     )
 
     assert payload["financialFreshness"]["status"] == "ok"
-    assert payload["financialFreshness"]["latestCachedFinancialPeriod"] == "2026Q1"
+    assert payload["financialFreshness"]["expectedFinancialPeriod"] == "2026Q3"
+    assert payload["financialFreshness"]["latestCachedFinancialPeriod"] == "2026Q3"

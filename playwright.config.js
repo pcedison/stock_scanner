@@ -1,11 +1,12 @@
 const { defineConfig, devices } = require("@playwright/test");
+const path = require("node:path");
 
 const port = Number(process.env.E2E_PORT || 8010);
 const baseURL = `http://127.0.0.1:${port}`;
 
 module.exports = defineConfig({
-  testDir: __dirname,
-  testMatch: /tests[\\/]e2e[\\/].*\.spec\.ts/,
+  testDir: path.join(__dirname, "tests", "e2e"),
+  testMatch: /.*\.spec\.ts/,
   timeout: 30_000,
   workers: 1,
   expect: {
