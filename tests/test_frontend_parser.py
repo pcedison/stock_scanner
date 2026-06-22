@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+MOJIBAKE_CONTROL_RE = re.compile(r"[\u0080-\u009f\ue000-\uf8ff]")
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +17,18 @@ def _require_node() -> None:
     # coverage.
     if shutil.which("node") is None:
         pytest.fail("Node.js is required for the frontend parser tests; install Node to run them.", pytrace=False)
+
+
+def _run_node_json(script: str) -> dict:
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    return json.loads(completed.stdout)
 
 
 def test_frontend_dom_helpers_escape_empty_state_html():
@@ -45,6 +59,68 @@ console.log(JSON.stringify({
     assert "&lt;script" in payload["empty"].lower()
     assert "<img" not in payload["setEmpty"].lower()
     assert "&lt;img" in payload["setEmpty"].lower()
+
+
+def test_market_render_column_includes_sr_only_stock_identity():
+    script = r"""
+const { createMarketRender } = require("./frontend/market_render.js");
+const renderer = createMarketRender({
+  getState: () => ({ marketListPages: { announced: { watch: 0 } }, expandedMarketResultIds: new Set() }),
+  escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  },
+  safeText(value, fallback = "") {
+    const text = value == null ? "" : String(value).trim();
+    return text || fallback;
+  },
+  safeCompanyName(result) {
+    return result?.companyName || "";
+  },
+  displayResultStatus(result) {
+    return { status: result?.status || "WATCH", summary: result?.summary || "" };
+  },
+  statusClass(status) {
+    return String(status || "").toLowerCase();
+  },
+  statusLabel(status) {
+    return status || "";
+  },
+  renderRule() {
+    return "";
+  },
+  resultActionButtons() {
+    return "";
+  },
+  sortRulesForDisplay(rules) {
+    return Array.isArray(rules) ? rules : [];
+  },
+  sortMarketResultsForDisplay(_columnKey, results) {
+    return Array.isArray(results) ? results : [];
+  },
+  marketColumnNote() {
+    return "";
+  },
+  marketResultId(result, disclosureGroup, columnKey) {
+    return `${disclosureGroup}:${columnKey}:${result.stockCode}`;
+  },
+  MARKET_LIST_PAGE_SIZE: 12,
+  MARKET_RESULT_COLUMNS: [["watch", "Watch"]],
+  MARKET_DISCLOSURE_TABS: [{ key: "announced" }],
+});
+const html = renderer.renderMarketColumn("announced", "watch", "Watch", [
+  { stockCode: "1101", companyName: "台泥", status: "WATCH", reasons: [] },
+]);
+console.log(JSON.stringify({ html }));
+"""
+    payload = _run_node_json(script)
+
+    assert '<span class="sr-only">1101 台泥</span>' in payload["html"]
+    assert 'data-market-result-toggle="announced:watch:1101"' in payload["html"]
 
 
 def test_overview_counts_follow_active_disclosure_tab():
@@ -600,3 +676,164 @@ console.log(JSON.stringify({
         assert "<img" not in lowered
         assert "<svg" not in lowered
         assert "&lt;" in rendered
+
+
+def test_task5_ops_copy_is_localized_without_mojibake():
+    index_text = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    app_text = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    ops_text = (ROOT / "frontend" / "ops_view_renderers.js").read_text(encoding="utf-8")
+    script = r"""
+const { createOpsViewRenderers } = require("./frontend/ops_view_renderers.js");
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const renderers = createOpsViewRenderers({
+  escapeHtml,
+  safeCompanyName(holding = {}) {
+    return String(holding.name || holding.companyName || "未知公司");
+  },
+  renderHoldingSignal() {
+    return '<span class="holding-signal">持股訊號</span>';
+  },
+  displayResultStatus(result = {}) {
+    return { status: result.status || "持有", summary: result.summary || "摘要" };
+  },
+});
+
+console.log(JSON.stringify({
+  holdingHtml: renderers.renderHoldingCard({
+    holding: { stockCode: "", name: "", shares: 1000, averageCost: 623.5 },
+    isEditing: true,
+    analysis: null,
+    missing: { stockCode: "2330" },
+  }),
+  dataHtml: renderers.renderDataConsole({
+    status: {
+      activeProvider: "TWSE",
+      activeProviderIsRealtime: true,
+      activeProviderIsFullMarket: false,
+      activeProviderHasCompleteFundamentals: true,
+      mockUniverseSize: 8,
+      officialUniverseSize: 1200,
+      officialMonthlySnapshotSize: 950,
+      officialHistoryRows: 4321,
+      officialIncomeStatementSize: 1200,
+      officialBalanceSheetSize: 1200,
+      officialValuationSize: 1180,
+      fundamentalsImportRows: 3600,
+      officialHistoricalFundamentals: { note: "官方基本面資料已匯入。" },
+    },
+    integrationStatus: {
+      notifications: [{ configured: true }, { configured: false }],
+      broker: { configured: true },
+      aiSummary: { configured: false },
+    },
+    backtestStatus: {
+      metrics: { tradeCount: 42 },
+      note: "回測交易摘要已同步。",
+    },
+  }),
+  schedulerHtml: renderers.renderSchedulerStatus({
+    schedulerStatus: {
+      status: "執行中",
+      events: ["daily-scan", "refresh"],
+      nextTradingDay: "2026-06-23",
+    },
+    autoAction: "自動掃描",
+  }),
+}));
+"""
+    payload = _run_node_json(script)
+    rendered_text = "\n".join(payload.values())
+
+    assert "<strong>權限</strong>" in index_text
+    assert "設定對所有人可見，但只有管理員與超級使用者可以修改並儲存。" in index_text
+    assert "Access" not in index_text
+    assert "Settings stay visible for everyone" not in index_text
+
+    for expected in [
+        "尚未儲存持股",
+        "資料來源狀態暫時無法讀取",
+        "排程狀態暫時無法讀取",
+        "未知代碼",
+        "未知公司",
+    ]:
+        assert expected in app_text
+
+    for forbidden in [
+        "No saved holdings yet",
+        "Data source status unavailable",
+        "Status unavailable",
+        '"Unknown"',
+        "'Unknown'",
+    ]:
+        assert forbidden not in app_text
+
+    for expected in [
+        "持股股數",
+        "平均成本",
+        "減碼股數",
+        "取消",
+        "刪除",
+        "儲存",
+        "減碼",
+        "是",
+        "否",
+        "已設定",
+        "未設定",
+        "資料源",
+        "即時資料",
+        "股票池",
+        "基本面",
+        "官方股票池",
+        "月營收快照",
+        "歷史列數",
+        "損益表",
+        "資產負債表",
+        "估值資料",
+        "匯入列數",
+        "整合與通知",
+        "券商",
+        "AI 摘要",
+        "交易筆數",
+        "排程狀態",
+        "事件",
+        "下個交易日",
+        "自動掃描",
+        "未知代碼",
+        "未知公司",
+    ]:
+        assert expected in rendered_text
+
+    for forbidden in [
+        "Yes",
+        "No",
+        "Configured",
+        "Missing",
+        "Provider",
+        "Realtime",
+        "Universe",
+        "Fundamentals",
+        "Official Universe",
+        "Monthly Snapshot",
+        "History Rows",
+        "Income Statement",
+        "Balance Sheet",
+        "Valuation",
+        "Import Rows",
+        "Integrations",
+        "Broker",
+        "Trades",
+        "configured",
+    ]:
+        assert forbidden not in rendered_text
+
+    for text in [ops_text, rendered_text]:
+        assert not MOJIBAKE_CONTROL_RE.search(text), repr(MOJIBAKE_CONTROL_RE.search(text).group(0))

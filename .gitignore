@@ -37,6 +37,7 @@ cloudflare/__pycache__/
 .wrangler/
 node_modules/
 .claude/
+.worktrees/
 .env
 
 # Local conflict/backup copies from synced workstations

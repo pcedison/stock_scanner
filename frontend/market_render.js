@@ -1,18 +1,8 @@
 (function exposeMarketRenderHelpers(root, factory) {
   const helpers = factory();
-  if (typeof module !== "undefined" && module.exports) {
-    module.exports = helpers;
-  }
-  if (root) {
-    root.StockScannerMarketRender = helpers;
-  }
+  if (typeof module !== "undefined" && module.exports) module.exports = helpers;
+  if (root) root.StockScannerMarketRender = helpers;
 })(typeof globalThis !== "undefined" ? globalThis : null, function createMarketRenderModule() {
-  // Market-scan result presentation: list pagination state, result row/column/
-  // detail rendering, and the cache-status note. The only app-state coupling
-  // (per-column page offsets and the set of expanded result ids) is injected via
-  // `getState()`; rendering primitives and classification helpers are borrowed
-  // from the renderers / market-scan modules. Bodies are otherwise unchanged
-  // from app.js.
   function createMarketRender({
     getState,
     escapeHtml,
@@ -32,19 +22,13 @@
     MARKET_DISCLOSURE_TABS,
   }) {
     function getMarketPage(groupKey, columnKey) {
-      const state = getState();
-      return Math.max(0, Number(state.marketListPages?.[groupKey]?.[columnKey]) || 0);
+      return Math.max(0, Number(getState().marketListPages?.[groupKey]?.[columnKey]) || 0);
     }
-
     function resetMarketListUi() {
       const state = getState();
-      state.marketListPages = {
-        announced: { entry: 0, watch: 0, excluded: 0 },
-        pending: { entry: 0, watch: 0, excluded: 0 },
-      };
+      state.marketListPages = { announced: { entry: 0, watch: 0, excluded: 0 }, pending: { entry: 0, watch: 0, excluded: 0 } };
       state.expandedMarketResultIds = new Set();
     }
-
     function clampMarketListPages(grouped) {
       const state = getState();
       for (const tab of MARKET_DISCLOSURE_TABS) {
@@ -55,15 +39,12 @@
         }
       }
     }
-
     function renderMarketPagination(groupKey, columnKey, total) {
       const page = getMarketPage(groupKey, columnKey);
       const totalPages = Math.max(1, Math.ceil(total / MARKET_LIST_PAGE_SIZE));
       const start = total ? page * MARKET_LIST_PAGE_SIZE + 1 : 0;
       const end = Math.min(total, (page + 1) * MARKET_LIST_PAGE_SIZE);
-      if (totalPages <= 1) {
-        return total ? `<div class="market-pagination"><span>顯示 ${escapeHtml(start)}-${escapeHtml(end)} / ${escapeHtml(total)}</span></div>` : "";
-      }
+      if (totalPages <= 1) return total ? `<div class="market-pagination"><span>顯示 ${escapeHtml(start)}-${escapeHtml(end)} / ${escapeHtml(total)}</span></div>` : "";
       return `
         <div class="market-pagination">
           <span>顯示 ${escapeHtml(start)}-${escapeHtml(end)} / ${escapeHtml(total)}，第 ${escapeHtml(page + 1)} / ${escapeHtml(totalPages)} 頁</span>
@@ -74,54 +55,62 @@
         </div>
       `;
     }
-
     function renderMarketResultDetails(result, options = {}) {
       const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
       const { status: displayStatus, summary } = displayResultStatus(result, options.disclosureGroup);
+      const passed = reasons.filter((rule) => rule?.passed && rule?.severity !== "INSUFFICIENT_DATA");
+      const warnings = reasons.filter((rule) => !rule?.passed || rule?.severity === "INSUFFICIENT_DATA");
+      const renderRuleGroup = (items, emptyText) => (items.length ? items.map(renderRule).join("") : `<p class="muted">${escapeHtml(emptyText)}</p>`);
       return `
         <div class="market-result-details">
-          ${result.detailLoading ? `<p class="muted">正在載入完整細項...</p>` : ""}
+          ${result.detailLoading ? `<p class="muted">資料載入中...</p>` : ""}
           ${result.detailError ? `<p class="form-error">${escapeHtml(result.detailError)}</p>` : ""}
           <div class="detail-summary">
             <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
             <p class="muted">${escapeHtml(summary)}</p>
           </div>
-          <div class="rules">${reasons.map(renderRule).join("")}</div>
+          <div class="market-evidence-grid">
+            <section>
+              <h4>通過條件</h4>
+              <div class="rules">${renderRuleGroup(passed, "目前沒有通過的規則")}</div>
+            </section>
+            <section>
+              <h4>警示 / 例外</h4>
+              <div class="rules">${renderRuleGroup(warnings, "目前沒有警示或例外")}</div>
+            </section>
+          </div>
           ${resultActionButtons(result, options)}
         </div>
       `;
     }
-
     function renderMarketResultRow(result, options = {}) {
       const state = getState();
       const companyName = result.companyName || safeCompanyName(result);
-      const stockCode = safeText(result.stockCode, "未知代碼");
+      const stockCode = safeText(result.stockCode, "未知代號");
       const resultId = marketResultId(result, options.disclosureGroup, options.columnKey);
       const expanded = state.expandedMarketResultIds.has(resultId);
       const reasons = sortRulesForDisplay(Array.isArray(result.reasons) ? result.reasons.filter(Boolean) : []);
       const { status: displayStatus } = displayResultStatus(result, options.disclosureGroup);
-      const metaParts = [safeText(result.industryName || result.industry, ""), safeText(result.market, "")].filter(Boolean);
-      const meta = metaParts.length ? metaParts.join(" · ") : statusLabel(displayStatus);
-      const rulePreview = reasons
-        .slice(0, 3)
-        .map((rule) => `<span class="rule-chip">${escapeHtml(rule.code || "")}</span>`)
-        .join("");
+      const industry = safeText(result.industryName || result.industry, "產業資訊");
+      const market = safeText(result.market, "市場別");
+      const rulePreview = reasons.slice(0, 4).map((rule) => `<span class="rule-chip">${escapeHtml(rule.code || "")}</span>`).join("");
       return `
-        <article class="market-result-item ${expanded ? "expanded" : ""}">
+        <article class="market-result-item ${expanded ? "expanded" : ""}" data-market-result-status="${escapeHtml(displayStatus)}">
           <button class="market-result-summary" type="button" data-market-result-toggle="${escapeHtml(resultId)}" aria-expanded="${expanded ? "true" : "false"}">
-            <span class="status-dot ${statusClass(displayStatus)}" aria-hidden="true"></span>
+            <span class="market-result-code"><strong>${escapeHtml(stockCode)}</strong><small>${escapeHtml(market)}</small></span>
             <span class="market-result-body">
-              <span class="market-result-name">${escapeHtml(stockCode)} ${escapeHtml(companyName)}</span>
-              <span class="market-result-meta">${escapeHtml(meta)}</span>
+              <span class="sr-only">${escapeHtml(`${stockCode} ${companyName}`)}</span>
+              <span class="market-result-name">${escapeHtml(companyName)}</span>
+              <span class="market-result-meta">${escapeHtml(industry)}</span>
+              <span class="market-rule-preview">${rulePreview}</span>
             </span>
-            <span class="market-rule-preview">${rulePreview}</span>
-            <span class="market-expand-icon" aria-hidden="true">${expanded ? "−" : "+"}</span>
+            <span class="status-pill ${statusClass(displayStatus)}">${escapeHtml(statusLabel(displayStatus))}</span>
+            <span class="market-expand-icon" aria-hidden="true">${expanded ? "-" : "+"}</span>
           </button>
           ${expanded ? renderMarketResultDetails(result, options) : ""}
         </article>
       `;
     }
-
     function renderMarketColumn(groupKey, columnKey, title, results) {
       const page = getMarketPage(groupKey, columnKey);
       const pageStart = page * MARKET_LIST_PAGE_SIZE;
@@ -134,72 +123,36 @@
             <h3>${escapeHtml(title)} (${escapeHtml(sortedResults.length)})</h3>
             ${note ? `<span class="result-column-note">${escapeHtml(note)}</span>` : ""}
           </div>
-          ${
-            visibleResults.length
-              ? `<div class="market-result-list">${visibleResults
-                  .map((result) =>
-                    renderMarketResultRow(result, {
-                      allowAddAction: true,
-                      disclosureGroup: groupKey,
-                      columnKey,
-                    })
-                  )
-                  .join("")}</div>`
-              : `<div class="empty-state">無資料</div>`
-          }
+          ${visibleResults.length ? `<div class="market-result-list">${visibleResults.map((result) => renderMarketResultRow(result, { allowAddAction: true, disclosureGroup: groupKey, columnKey })).join("")}</div>` : `<div class="empty-state">沒有結果</div>`}
           ${renderMarketPagination(groupKey, columnKey, sortedResults.length)}
         </div>
       `;
     }
-
     function formatCacheTime(value) {
-      if (!value) return "尚無紀錄";
+      if (!value) return "未記錄";
       const date = new Date(value);
-      if (Number.isNaN(date.getTime())) return "尚無紀錄";
+      if (Number.isNaN(date.getTime())) return "未記錄";
       return date.toLocaleString();
     }
-
     function cacheRefreshLabel(status = "") {
-      const labels = {
-        completed_sync: "已同步建立快取",
-        fresh: "快取仍有效",
-        queued: "已排入背景更新",
-        running: "背景更新中",
-        success: "背景更新完成",
-        failed: "背景更新失敗",
-        cache_only: "僅讀取快取",
-      };
-      return labels[status] || status || "未請求更新";
+      const labels = { completed_sync: "同步完成", fresh: "最新", queued: "排隊中", running: "更新中", success: "更新成功", failed: "更新失敗", cache_only: "僅快取" };
+      return labels[status] || status || "未知";
     }
-
     function renderScanCacheStatus(scan = {}) {
       const cache = scan.cacheStatus;
       if (!cache) return "";
-      const staleText = cache.isStale ? "快取已過期，會低負載補資料" : "快取仍在有效期限內";
+      const staleText = cache.isStale ? "快取已過期，將在下次更新時重新整理" : "目前使用最新快取";
       return `
-        <div class="cache-status-note">
-          <span><strong>快取狀態</strong>：${cache.cacheHit ? "先讀已存快取" : "同步建立新快取"}</span>
-          <span>刷新狀態：${escapeHtml(cacheRefreshLabel(cache.refreshStatus))}</span>
-          <span>資料時間：${escapeHtml(formatCacheTime(cache.storedAt))}</span>
-          <span>下次檢查：${escapeHtml(formatCacheTime(cache.nextRefreshAfter))}</span>
+        <div class="cache-status-note ops-cache-strip">
+          <span><strong>快取命中</strong> ${cache.cacheHit ? "是" : "否"}</span>
+          <span><strong>狀態</strong> ${escapeHtml(cacheRefreshLabel(cache.refreshStatus))}</span>
+          <span><strong>建立時間</strong> ${escapeHtml(formatCacheTime(cache.storedAt))}</span>
+          <span><strong>下次更新</strong> ${escapeHtml(formatCacheTime(cache.nextRefreshAfter))}</span>
           <span>${escapeHtml(staleText)}</span>
         </div>
       `;
     }
-
-    return {
-      getMarketPage,
-      resetMarketListUi,
-      clampMarketListPages,
-      renderMarketPagination,
-      renderMarketResultDetails,
-      renderMarketResultRow,
-      renderMarketColumn,
-      formatCacheTime,
-      cacheRefreshLabel,
-      renderScanCacheStatus,
-    };
+    return { getMarketPage, resetMarketListUi, clampMarketListPages, renderMarketPagination, renderMarketResultDetails, renderMarketResultRow, renderMarketColumn, formatCacheTime, cacheRefreshLabel, renderScanCacheStatus };
   }
-
   return { createMarketRender };
 });
