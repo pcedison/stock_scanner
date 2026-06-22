@@ -402,12 +402,15 @@ class OfficialDataProvider:
             snapshots.append(snapshot)
         return sorted(snapshots, key=lambda snapshot: snapshot.company.stockCode)
 
-    def status(self, refresh: bool = False) -> dict:
+    def status(self, refresh: bool = False, expected_period: str | None = None) -> dict:
         if refresh:
             self._safe_refresh_snapshots()
         elif not self._companies:
             self._safe_refresh_companies()
-        history_status = self._source_status.get("officialFundamentalsHistory") or self.history_store.status()
+        previous_history_status = self._source_status.get("officialFundamentalsHistory")
+        history_status = self.history_store.status(expected_period=expected_period)
+        if isinstance(previous_history_status, dict):
+            history_status = {**previous_history_status, **history_status}
         source_status = {**self._source_status, "officialFundamentalsHistory": history_status}
         return {
             "companies": len(self._companies),

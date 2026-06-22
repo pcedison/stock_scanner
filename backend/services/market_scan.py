@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from backend.services.filing_calendar import filing_context
+from backend.services.financial_freshness import build_financial_freshness_status
 
 if TYPE_CHECKING:
     from backend.models.settings import ScannerSettings
@@ -47,6 +48,37 @@ _THIRD_PARTY_PLATFORMS = {
 _PUBLIC_STATUS_ERROR_KEYS = frozenset({"error", "exception", "traceback", "lastError"})
 
 
+def _expected_financial_period(context: dict[str, Any]) -> str | None:
+    active = context.get("activeFinancialReport")
+    if not isinstance(active, dict):
+        return None
+    period = active.get("period")
+    return period if isinstance(period, str) and period else None
+
+
+def _provider_status(provider: OfficialDataProvider, expected_period: str | None) -> dict:
+    return provider.status(refresh=False, expected_period=expected_period)
+
+
+def _mock_financial_freshness(context: dict[str, Any]) -> dict[str, Any]:
+    expected_period = _expected_financial_period(context)
+    return {
+        "status": "mock",
+        "isFresh": False,
+        "blocksDeployment": False,
+        "coverageStatus": "not_applicable",
+        "expectedFinancialPeriod": expected_period,
+        "latestCachedFinancialPeriod": None,
+        "expectedPeriodCoverage": 0,
+        "periodCoverage": {},
+        "historyRows": None,
+        "historyCompanies": None,
+        "historyUpdatedAt": None,
+        "expectedMonthlyRevenuePeriod": context.get("monthlyRevenuePeriod"),
+        "message": "目前使用示範資料，財報新鮮度保證僅適用於官方資料模式。",
+    }
+
+
 def _public_status(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
@@ -70,10 +102,12 @@ def scan_market_payload(
     engine: RuleEngine,
 ) -> dict:
     context = filing_context()
+    expected_period = _expected_financial_period(context)
     entry = []
     watch = []
     excluded = []
-    for snapshot in provider.list_snapshots(settings):
+    snapshots = provider.list_snapshots(settings)
+    for snapshot in snapshots:
         result = engine.evaluate_entry(snapshot, settings)
         if result.status == "ENTRY":
             entry.append(result)
@@ -82,12 +116,20 @@ def scan_market_payload(
         else:
             watch.append(result)
 
+    financial_freshness = _mock_financial_freshness(context)
+    if not settings.use_mock_data:
+        provider_status = _provider_status(provider, expected_period)
+        source_status = provider_status.get("sourceStatus", {}) if isinstance(provider_status, dict) else {}
+        history_status = source_status.get("officialFundamentalsHistory", {}) if isinstance(source_status, dict) else {}
+        financial_freshness = build_financial_freshness_status(context, history_status)
+
     data_source = "mock" if settings.use_mock_data else "official_twse_tpex_monthly_revenue"
     note = _MOCK_NOTE if settings.use_mock_data else _OFFICIAL_NOTE
     return {
         "generatedAt": datetime.now(UTC).isoformat(),
         "dataSource": data_source,
         "filingContext": context,
+        "financialFreshness": financial_freshness,
         "universeSize": len(entry) + len(watch) + len(excluded),
         "note": note,
         "entry": entry,
@@ -102,11 +144,18 @@ def data_sources_status_payload(
     mock_universe_size: int = 0,
     scan_cache_status: dict | None = None,
 ) -> dict:
-    official_status = official_provider.status(refresh=False) if not settings.use_mock_data else None
+    context = filing_context()
+    expected_period = _expected_financial_period(context)
+    official_status = _provider_status(official_provider, expected_period) if not settings.use_mock_data else None
     src = official_status.get("sourceStatus", {}) if official_status else {}
     public_src = _public_status(src)
     fundamentals_import = public_src.get("fundamentalsImport", {}) if isinstance(public_src, dict) else {}
     official_history = public_src.get("officialFundamentalsHistory", {}) if isinstance(public_src, dict) else {}
+    financial_freshness = (
+        build_financial_freshness_status(context, official_history)
+        if not settings.use_mock_data
+        else _mock_financial_freshness(context)
+    )
     return {
         "activeProvider": "MockDataProvider" if settings.use_mock_data else "OfficialDataProvider",
         "activeProviderIsRealtime": False,
@@ -122,6 +171,7 @@ def data_sources_status_payload(
         "fundamentalsImportPath": fundamentals_import.get("path"),
         "officialHistoryRows": official_history.get("rows"),
         "officialHistoryPath": official_history.get("path"),
+        "financialFreshness": financial_freshness,
         "officialHistoricalFundamentals": {
             "status": "official_cache_enabled",
             "cache": official_history,

@@ -282,6 +282,25 @@ def test_worker_manifest_quality_flags_undersized_seed(monkeypatch):
     assert good["ok"] is True
 
 
+def test_worker_manifest_quality_flags_blocking_financial_freshness(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    quality = worker.manifest_quality(
+        {
+            "counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000},
+            "financialFreshness": {
+                "status": "stale",
+                "blocksDeployment": True,
+                "expectedFinancialPeriod": "2026Q1",
+                "latestCachedFinancialPeriod": "2025Q4",
+            },
+        }
+    )
+
+    assert quality["ok"] is False
+    assert any("financial freshness" in problem for problem in quality["problems"])
+
+
 def test_worker_settings_payload_validation(monkeypatch):
     worker = load_worker_module(monkeypatch)
 

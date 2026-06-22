@@ -247,11 +247,20 @@ class OfficialFundamentalsHistoryStore:
         annualized_factor = 4 / current.quarter if current.quarter else 1
         return (current.costOfRevenue * annualized_factor) / current.inventory
 
-    def status(self) -> dict[str, Any]:
+    def status(self, expected_period: str | None = None) -> dict[str, Any]:
         payload = self.load()
         quarters = payload.get("quarters", {})
         if not isinstance(quarters, dict):  # pragma: no cover - load() already normalizes quarters to a dict
             quarters = {}
+        period_coverage: dict[str, int] = {}
+        for records in quarters.values():
+            if not isinstance(records, dict):
+                continue
+            for period, record in records.items():
+                if not isinstance(period, str) or _period_key(period) == (0, 0) or not isinstance(record, dict):
+                    continue
+                period_coverage[period] = period_coverage.get(period, 0) + 1
+        latest_period = max(period_coverage, key=_period_key) if period_coverage else None
         return {
             "enabled": True,
             "path": str(self.path),
@@ -259,6 +268,9 @@ class OfficialFundamentalsHistoryStore:
             "rows": sum(len(records) for records in quarters.values() if isinstance(records, dict)),
             "updatedAt": payload.get("updatedAt"),
             "maxYears": self.max_years,
+            "latestFinancialPeriod": latest_period,
+            "periodCoverage": dict(sorted(period_coverage.items(), key=lambda item: _period_key(item[0]))),
+            "expectedPeriodCoverage": period_coverage.get(expected_period or "", 0),
         }
 
     def _save(self, payload: dict[str, Any]) -> None:
