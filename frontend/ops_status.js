@@ -49,13 +49,30 @@
       };
     }
 
-    function formatFilingState(marketScan) {
+    function financialFreshnessFrom(state, marketScan) {
+      return marketScan?.financialFreshness || state.dataSourceStatus?.financialFreshness || null;
+    }
+
+    function formatFilingState(state, marketScan) {
+      const freshness = financialFreshnessFrom(state, marketScan);
+      if (freshness?.status === "stale") {
+        return {
+          label: "財報快取落後",
+          note: freshness.message || "財報快取尚未覆蓋當期應有期別",
+        };
+      }
+      if (freshness?.status === "warning") {
+        return {
+          label: "財報覆蓋不足",
+          note: freshness.message || "財報期別已更新，但當期覆蓋數偏低",
+        };
+      }
       const filing = marketScan?.filingContext?.activeFinancialReport;
       if (filing) {
         const deadlines = [filing.generalDeadline, filing.financialDeadline].filter(Boolean).join(" / ");
         return {
           label: filing.label || "申報脈絡",
-          note: deadlines ? `申報期限 ${deadlines}` : "申報期限待確認",
+          note: freshness?.message || (deadlines ? `申報期限 ${deadlines}` : "申報期限待確認"),
         };
       }
       const monthlyRevenuePeriod = marketScan?.filingContext?.monthlyRevenuePeriod;
@@ -123,7 +140,7 @@
       const holdingsCount = Array.isArray(state.holdings) ? state.holdings.length : 0;
       const provider = formatProviderState(state, marketScan);
       const cache = formatCacheState(marketScan);
-      const filing = formatFilingState(marketScan);
+      const filing = formatFilingState(state, marketScan);
       const risk = formatRiskState(alerts, holdingsCount);
 
       setText("#overview-source-state", provider.label);

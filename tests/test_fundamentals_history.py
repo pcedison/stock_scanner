@@ -161,3 +161,21 @@ def test_prune_drops_bad_companies_and_aged_out_periods(tmp_path):
     status = store.merge_rows([], [])  # triggers _prune over the seeded quarters
     assert status["companies"] == 1  # AAAA (non-dict) and BBBB (empty) dropped
     assert status["rows"] == 1  # CCCC's 1990Q4 aged out, only 2025Q4 remains
+
+
+def test_status_reports_latest_period_and_expected_period_coverage(tmp_path):
+    path = tmp_path / "history.json"
+    _write(
+        path,
+        {
+            "2330": {"2025Q4": {"fiscalYear": 2025, "quarter": 4}, "2026Q1": {"fiscalYear": 2026, "quarter": 1}},
+            "2317": {"2026Q1": {"fiscalYear": 2026, "quarter": 1}},
+            "1101": {"2025Q4": {"fiscalYear": 2025, "quarter": 4}},
+        },
+    )
+
+    status = OfficialFundamentalsHistoryStore(path).status(expected_period="2026Q1")
+
+    assert status["latestFinancialPeriod"] == "2026Q1"
+    assert status["periodCoverage"] == {"2025Q4": 2, "2026Q1": 2}
+    assert status["expectedPeriodCoverage"] == 2

@@ -1106,6 +1106,9 @@ function renderMarketResults() {
           : ""
       }）判斷當期已公告。`
     : `目前非季報/年報申報窗口，主要依 ${state.marketScan.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
+  const freshnessSummary = state.marketScan.financialFreshness?.message
+    ? `財報快取：${state.marketScan.financialFreshness.message}`
+    : "";
   setSafeHtml(target, `
     <div class="data-source-note">
       <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
@@ -1124,7 +1127,7 @@ function renderMarketResults() {
     </div>
     <div class="data-source-note disclosure-note">
       <strong>${escapeHtml(activeMeta.title)}</strong>
-      <span>${escapeHtml(filingSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span>
+      <span>${escapeHtml(filingSummary)} ${escapeHtml(freshnessSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span>
     </div>
     <div class="result-columns single-result-column">
       ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}

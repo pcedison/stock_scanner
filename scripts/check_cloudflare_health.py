@@ -96,6 +96,14 @@ def validate_health_payload(
         if build_mode == "offline":
             problems.append("deployed cache was rebuilt from the offline seed zip")
 
+    financial_freshness = cache.get("financialFreshness") if isinstance(cache, dict) else None
+    if isinstance(financial_freshness, dict) and financial_freshness.get("blocksDeployment") is True:
+        problems.append(
+            "financial freshness is blocking deployment: "
+            f"expected {financial_freshness.get('expectedFinancialPeriod')}, "
+            f"latest cached {financial_freshness.get('latestCachedFinancialPeriod')}"
+        )
+
     cache_age_hours = None
     checked_at = None
     if max_cache_age_hours is not None:
@@ -125,6 +133,7 @@ def validate_health_payload(
         "cacheQuality": cache_quality,
         "sourceLastCheckedAt": cache.get("sourceLastCheckedAt") or cache.get("generatedAt"),
         "cacheAgeHours": cache_age_hours,
+        "financialFreshness": financial_freshness,
     }
 
 

@@ -56,6 +56,26 @@ def test_validate_health_payload_rejects_stale_offline_seed():
         )
 
 
+def test_validate_health_payload_rejects_blocking_financial_freshness():
+    payload = {
+        "status": "ok",
+        "runtime": "cloudflare-python-worker",
+        "cache": {
+            "counts": {"companies": 1000, "analysis": 1000},
+            "financialFreshness": {
+                "status": "stale",
+                "blocksDeployment": True,
+                "expectedFinancialPeriod": "2026Q1",
+                "latestCachedFinancialPeriod": "2025Q4",
+            },
+        },
+        "cacheQuality": {"ok": True},
+    }
+
+    with pytest.raises(RuntimeError, match="financial freshness"):
+        validate_health_payload(payload)
+
+
 def test_validate_health_payload_accepts_fresh_online_seed():
     payload = {
         "status": "ok",
