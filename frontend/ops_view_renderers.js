@@ -27,6 +27,40 @@
       return value ? "已設定" : "未設定";
     }
 
+    function freshnessLabel(status) {
+      const labels = {
+        ok: "最新",
+        warning: "覆蓋不足",
+        stale: "落後",
+        mock: "示範資料",
+        pending: "待確認",
+      };
+      return labels[status] || "待確認";
+    }
+
+    function freshnessTone(status) {
+      if (status === "ok") return "status-entry";
+      if (status === "stale") return "status-exit";
+      if (status === "warning") return "status-watch";
+      return "neutral";
+    }
+
+    function renderFinancialFreshnessCard(status = {}) {
+      const freshness = status.financialFreshness || {};
+      return `
+        <article class="card ops-console-card">
+          <div class="ops-card-head"><h3>財報新鮮度</h3><span class="status-pill ${freshnessTone(freshness.status)}">${escapeHtml(freshnessLabel(freshness.status))}</span></div>
+          <dl class="ops-kv">
+            <div><dt>應覆蓋期別</dt><dd>${escapeHtml(freshness.expectedFinancialPeriod ?? "--")}</dd></div>
+            <div><dt>快取最新期別</dt><dd>${escapeHtml(freshness.latestCachedFinancialPeriod ?? "--")}</dd></div>
+            <div><dt>當期覆蓋數</dt><dd>${escapeHtml(freshness.expectedPeriodCoverage ?? 0)}</dd></div>
+            <div><dt>阻擋部署</dt><dd>${escapeHtml(boolLabel(Boolean(freshness.blocksDeployment)))}</dd></div>
+          </dl>
+          <p class="muted">${escapeHtml(freshness.message || "等待財報快取新鮮度檢查。")}</p>
+        </article>
+      `;
+    }
+
     function renderHoldingCard({ holding, isEditing, analysis, missing }) {
       const name = safeCompanyName(holding);
       const stockCode = holding.stockCode || "未知代碼";
@@ -117,6 +151,7 @@
           </dl>
           <p class="muted">${escapeHtml(status.officialHistoricalFundamentals?.note || "官方基本面資料會整理 EPS、月營收與 PER/PBR 匯入結果。")}</p>
         </article>
+        ${renderFinancialFreshnessCard(status)}
         <article class="card ops-console-card">
           <div class="ops-card-head"><h3>整合與通知</h3><span class="muted">提醒</span></div>
           <dl class="ops-kv">

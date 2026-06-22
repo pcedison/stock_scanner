@@ -151,7 +151,7 @@ class FakeFundamentalsAdapterWithInventory(FakeFundamentalsAdapter):
         bundle = super().fetch_bundle()
         bundle.balances["9999"] = OfficialBalanceSheetRow(
             stockCode="9999",
-            companyName="皜祈岫蝘?",
+            companyName="測試科技",
             market="TWSE",
             fiscalYear=2026,
             quarter=1,

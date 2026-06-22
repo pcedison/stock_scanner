@@ -358,6 +358,7 @@ def seed_diagnostics(scan_payload: dict, companies: list, analysis_by_code: dict
         "watch": len(scan_payload.get("watch", [])),
         "excluded": len(scan_payload.get("excluded", [])),
         "fallbackSource": fallback_source,
+        "financialFreshness": scan_payload.get("financialFreshness"),
         "providerStatus": official_provider.status(refresh=False),
     }
 
@@ -377,6 +378,12 @@ def assert_seed_quality(scan_payload: dict, companies: list, analysis_by_code: d
     if diagnostics["analysis"] < MIN_SEED_ANALYSIS_SIZE:
         raise RuntimeError(
             "Refusing to publish an undersized analysis seed: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        )
+    freshness = diagnostics.get("financialFreshness")
+    if isinstance(freshness, dict) and freshness.get("blocksDeployment") is True:
+        raise RuntimeError(
+            "Refusing to publish a stale financial freshness seed: "
             + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
         )
 
@@ -535,6 +542,7 @@ def main() -> None:
         "nextRefreshAfter": next_refresh.isoformat(),
         "latestRevenuePeriod": scan_payload.get("filingContext", {}).get("monthlyRevenuePeriod"),
         "latestFinancialPeriod": scan_payload.get("filingContext", {}).get("activeFinancialReport", {}).get("period"),
+        "financialFreshness": scan_payload.get("financialFreshness"),
         "cachePolicy": policy,
         "files": [
             "market_scan_latest.json",

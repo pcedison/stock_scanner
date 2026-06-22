@@ -5,6 +5,16 @@ import pytest
 from scripts.check_cloudflare_health import CHECK_USER_AGENT, validate_health_payload, validate_health_url
 
 
+def _fresh_financial_freshness() -> dict:
+    return {
+        "status": "ok",
+        "blocksDeployment": False,
+        "expectedFinancialPeriod": "2026Q1",
+        "latestCachedFinancialPeriod": "2026Q1",
+        "expectedPeriodCoverage": 1969,
+    }
+
+
 def test_health_check_uses_browser_like_user_agent():
     assert CHECK_USER_AGENT.startswith("Mozilla/5.0 ")
 
@@ -13,7 +23,10 @@ def test_validate_health_payload_accepts_matching_manifest_counts():
     payload = {
         "status": "ok",
         "runtime": "cloudflare-python-worker",
-        "cache": {"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}},
+        "cache": {
+            "counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000},
+            "financialFreshness": _fresh_financial_freshness(),
+        },
         "cacheQuality": {"ok": True},
     }
     manifest = {"counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000}}
@@ -56,6 +69,38 @@ def test_validate_health_payload_rejects_stale_offline_seed():
         )
 
 
+def test_validate_health_payload_rejects_blocking_financial_freshness():
+    payload = {
+        "status": "ok",
+        "runtime": "cloudflare-python-worker",
+        "cache": {
+            "counts": {"companies": 1000, "analysis": 1000},
+            "financialFreshness": {
+                "status": "stale",
+                "blocksDeployment": True,
+                "expectedFinancialPeriod": "2026Q1",
+                "latestCachedFinancialPeriod": "2025Q4",
+            },
+        },
+        "cacheQuality": {"ok": True},
+    }
+
+    with pytest.raises(RuntimeError, match="financial freshness"):
+        validate_health_payload(payload)
+
+
+def test_validate_health_payload_rejects_missing_financial_freshness():
+    payload = {
+        "status": "ok",
+        "runtime": "cloudflare-python-worker",
+        "cache": {"counts": {"companies": 1000, "analysis": 1000}},
+        "cacheQuality": {"ok": True},
+    }
+
+    with pytest.raises(RuntimeError, match="financial freshness"):
+        validate_health_payload(payload)
+
+
 def test_validate_health_payload_accepts_fresh_online_seed():
     payload = {
         "status": "ok",
@@ -64,6 +109,7 @@ def test_validate_health_payload_accepts_fresh_online_seed():
             "sourceLastCheckedAt": "2026-05-20T04:30:00Z",
             "counts": {"companies": 1000, "analysis": 1000},
             "qualityGates": {},
+            "financialFreshness": _fresh_financial_freshness(),
         },
         "cacheQuality": {"ok": True},
     }

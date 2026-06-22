@@ -313,3 +313,26 @@ def test_assert_seed_quality_rejects_small_universe_and_analysis(monkeypatch):
             {"only": {}},
             fallback_source=None,
         )
+
+
+def test_assert_seed_quality_rejects_stale_financial_freshness(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+
+    with pytest.raises(RuntimeError, match="financial freshness"):
+        seed_build.assert_seed_quality(
+            {
+                "universeSize": 1000,
+                "entry": [],
+                "watch": [{} for _ in range(1000)],
+                "excluded": [],
+                "financialFreshness": {
+                    "status": "stale",
+                    "blocksDeployment": True,
+                    "expectedFinancialPeriod": "2026Q1",
+                    "latestCachedFinancialPeriod": "2025Q4",
+                },
+            },
+            [None] * 1000,
+            {str(index): {} for index in range(1000)},
+            fallback_source=None,
+        )
