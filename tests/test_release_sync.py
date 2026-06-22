@@ -255,6 +255,22 @@ def test_tool_error_returns_exit_code_2(monkeypatch, capsys):
     assert output["errorType"] == "tool_or_config"
 
 
+def test_release_sync_reconfigures_stdout_to_utf8_when_available(monkeypatch):
+    calls = []
+
+    class FakeStdout:
+        encoding = "cp950"
+
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(check_release_sync.sys, "stdout", FakeStdout())
+
+    check_release_sync.configure_stdout_encoding()
+
+    assert calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+
 def test_production_checks_use_strict_seed_gates_by_default(monkeypatch, capsys):
     validate = _workflow_run(10, ORIGIN_SHA)
     deploy = _workflow_run(20, ORIGIN_SHA)
