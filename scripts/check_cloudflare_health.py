@@ -97,7 +97,9 @@ def validate_health_payload(
             problems.append("deployed cache was rebuilt from the offline seed zip")
 
     financial_freshness = cache.get("financialFreshness") if isinstance(cache, dict) else None
-    if isinstance(financial_freshness, dict) and financial_freshness.get("blocksDeployment") is True:
+    if not isinstance(financial_freshness, dict):
+        problems.append("financial freshness is missing from deployed cache manifest")
+    elif financial_freshness.get("blocksDeployment") is True:
         problems.append(
             "financial freshness is blocking deployment: "
             f"expected {financial_freshness.get('expectedFinancialPeriod')}, "
