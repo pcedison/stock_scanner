@@ -116,6 +116,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     index_html = (ROOT_DIR / "frontend" / "index.html").read_text(encoding="utf-8")
     styles_css = (ROOT_DIR / "frontend" / "styles.css").read_text(encoding="utf-8")
 
+    assert '<meta name="stock-scanner-api-mode" content="direct" />' in index_html
     assert f'href="/styles.css?v={STYLE_VERSION}" as="style"' in index_html
     assert f'href="/styles.css?v={STYLE_VERSION}"' in index_html
     assert f'href="/ops_dashboard.css?v={OPS_DASHBOARD_VERSION}" as="style"' in index_html

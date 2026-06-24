@@ -50,14 +50,14 @@ function configuredApiMode(explicitMode) {
   const normalized = String(explicitMode || "").trim().toLowerCase();
   if (["direct", "fallback", "same-origin"].includes(normalized)) return normalized;
 
+  const runtimeMode = String(globalThis.StockScannerConfig?.apiMode || "").trim().toLowerCase();
+  if (["direct", "fallback", "same-origin"].includes(runtimeMode)) return runtimeMode;
+
   if (typeof document !== "undefined") {
     const meta = document.querySelector('meta[name="stock-scanner-api-mode"]');
     const metaMode = String(meta?.getAttribute("content") || "").trim().toLowerCase();
     if (["direct", "fallback", "same-origin"].includes(metaMode)) return metaMode;
   }
-
-  const runtimeMode = String(globalThis.StockScannerConfig?.apiMode || "").trim().toLowerCase();
-  if (["direct", "fallback", "same-origin"].includes(runtimeMode)) return runtimeMode;
 
   if (typeof location !== "undefined" && String(location.hostname || "").endsWith(".pages.dev")) {
     return "same-origin";

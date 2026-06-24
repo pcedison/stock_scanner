@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const config = globalThis.StockScannerConfig || {};
+    globalThis.StockScannerConfig = { ...config, apiMode: "fallback" };
+  });
+});
+
 async function closeBlockingModals(page) {
   await page.locator("#auth-modal:not(.hidden)").waitFor({ state: "attached", timeout: 3000 }).catch(() => {});
   const authCloseButton = page.locator("#close-auth-modal-btn");
