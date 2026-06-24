@@ -56,7 +56,7 @@ auth_db_path = os.getenv("AUTH_DB_PATH")
 auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()
 SESSION_COOKIE_NAME = "stock_scanner_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
-MARKET_SCAN_RULESET_VERSION = "20260612-entry-x-rules-v1"
+MARKET_SCAN_RULESET_VERSION = "20260624-entry-x-rules-v2"
 
 
 def _file_cache_signature(path: Path) -> dict:

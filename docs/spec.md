@@ -157,7 +157,7 @@
 | E1 | 近 5 年沒有虧損 | 最近 5 個年度淨利皆 >= 0 |
 | E2 | 近 3 年淨利正成長 | 最近 3 年年度淨利逐年成長 |
 | E3 | 今年已公告營收年增率達 50% 以上 | 今年累計營收 YoY >= 50% |
-| E4 | 本益比小於 20 | PER < 20 |
+| E4 | 本益比小於 21.5 | PER < 21.5 |
 | E5 | 存貨週轉率大於 2.5 | Inventory Turnover > 2.5 |
 | E6 | 排除金融業 | 金融業預設不納入主策略 |
 
@@ -215,7 +215,7 @@
 | A2 | 今年累計營收年增率仍 >= 50% |
 | A3 | 最新季 EPS 年增率 > 0 |
 | A4 | 最新季淨利年增率 > 0 |
-| A5 | PER 仍 < 20 |
+| A5 | PER 仍 < 21.5 |
 | A6 | 存貨週轉率未惡化，且仍 > 2.5 |
 | A7 | 未觸發任何出場條件 |
 
@@ -230,7 +230,7 @@
 | 編號 | 條件 | 預設判斷 |
 |---|---|---|
 | X1 | 當年度的累計營收年增率需達最新當月份營收年增率的 50% | cumulative_revenue_yoy >= monthly_revenue_yoy * 0.5 |
-| X2 | 月營收年增率較上月突然少超過 20 個百分點 | previous_month_revenue_yoy - current_month_revenue_yoy > 20 |
+| X2 | 月營收年增率較上月突然少超過 20 個百分點，且本月年增率未高於 200% | previous_month_revenue_yoy - current_month_revenue_yoy > 20 and current_month_revenue_yoy <= 200 |
 | X3 | 每股獲利 EPS 衰退 | latest_quarter_eps_yoy < 0 |
 | X4 | 季度 EPS 減少超過 10% | latest_quarter_eps_yoy <= -10% |
 | X5 | 淨利衰退 | latest_quarter_net_income_yoy < 0 或 annual_net_income_yoy < 0 |
