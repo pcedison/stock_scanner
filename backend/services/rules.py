@@ -8,7 +8,8 @@ from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.calendar import load_market_calendar
 
-ENTRY_PER_THRESHOLD = 20
+ENTRY_PER_THRESHOLD = 21.5
+X2_HIGH_MONTHLY_GROWTH_EXEMPTION = 200
 
 _E3_TITLE: dict[str, str] = {
     "monthly": "本月月營收年增率 >= 50%",
@@ -335,7 +336,8 @@ def _exit_rules(
     if x1_threshold is not None and monthly.cumulativeRevenueYoY is not None:
         x1_passed = monthly.cumulativeRevenueYoY >= x1_threshold
         x1_triggered = not x1_passed
-    x2_triggered = yoy_drop is not None and yoy_drop > 20
+    x2_high_growth_exempted = monthly.monthlyRevenueYoY is not None and monthly.monthlyRevenueYoY > X2_HIGH_MONTHLY_GROWTH_EXEMPTION
+    x2_triggered = yoy_drop is not None and yoy_drop > 20 and not x2_high_growth_exempted
     x1_message = (
         (
             f"單月營收年增率為 {monthly.monthlyRevenueYoY:.1f}%，"
@@ -345,11 +347,15 @@ def _exit_rules(
         if x1_threshold is not None and monthly.cumulativeRevenueYoY is not None
         else "缺少單月或累計營收年增率資料。"
     )
-    x2_message = (
-        f"本月較上月年增率降溫 {yoy_drop:.1f} 個百分點。"
-        if yoy_drop is not None
-        else "缺少上月年增率，未觸發突然降溫規則。"
-    )
+    if yoy_drop is None:
+        x2_message = "缺少上月年增率，未觸發突然降溫規則。"
+    elif x2_high_growth_exempted and yoy_drop > 20:
+        x2_message = (
+            f"本月較上月年增率降溫 {yoy_drop:.1f} 個百分點，"
+            f"但本月年增率仍高於 {X2_HIGH_MONTHLY_GROWTH_EXEMPTION}%，不觸發 X2。"
+        )
+    else:
+        x2_message = f"本月較上月年增率降溫 {yoy_drop:.1f} 個百分點。"
     if spring_guard and x1_triggered:
         x1_message += " 目前為春節保護月份，需搭配 1+2 月或近 3 個月平均判斷。"
     if spring_guard and x2_triggered:

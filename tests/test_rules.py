@@ -36,12 +36,12 @@ def test_2357_passes_entry_rules_with_reasons():
     assert e1.evidence[0]["metric"] == "annual_net_income"
 
 
-def test_e4_per_threshold_is_twenty_not_fifteen():
+def test_e4_per_threshold_is_twenty_one_point_five():
     provider = MockDataProvider()
     base_snapshot = provider.get_snapshot("2357")
     snapshot = base_snapshot.model_copy(
         update={
-            "valuation": base_snapshot.valuation.model_copy(update={"per": 18.5}),
+            "valuation": base_snapshot.valuation.model_copy(update={"per": 21.4}),
         }
     )
 
@@ -50,15 +50,15 @@ def test_e4_per_threshold_is_twenty_not_fifteen():
 
     assert result.status == "ENTRY"
     assert e4.passed is True
-    assert e4.title == "本益比小於 20"
+    assert e4.title == "本益比小於 21.5"
 
 
-def test_e4_per_threshold_excludes_twenty_and_above():
+def test_e4_per_threshold_excludes_twenty_one_point_five_and_above():
     provider = MockDataProvider()
     base_snapshot = provider.get_snapshot("2357")
     snapshot = base_snapshot.model_copy(
         update={
-            "valuation": base_snapshot.valuation.model_copy(update={"per": 20.0}),
+            "valuation": base_snapshot.valuation.model_copy(update={"per": 21.5}),
         }
     )
 
@@ -120,6 +120,32 @@ def test_entry_recommendation_blocks_latest_month_revenue_cooldown_x2():
     assert x1.passed is True
     assert x2.passed is False
     assert x2.severity == "WARNING"
+
+
+def test_entry_recommendation_allows_x2_cooldown_when_latest_month_growth_exceeds_two_hundred():
+    provider = MockDataProvider()
+    base_snapshot = provider.get_snapshot("2357")
+    snapshot = base_snapshot.model_copy(
+        update={
+            **_healthy_exit_overrides(base_snapshot),
+            "monthlyRevenue": base_snapshot.monthlyRevenue.model_copy(
+                update={
+                    "monthlyRevenueYoY": 234.4,
+                    "previousMonthRevenueYoY": 607.8,
+                    "cumulativeRevenueYoY": 283.2,
+                }
+            ),
+        }
+    )
+
+    result = RuleEngine().evaluate_entry(snapshot, ScannerSettings())
+    x1 = next(reason for reason in result.reasons if reason.code == "X1")
+    x2 = next(reason for reason in result.reasons if reason.code == "X2")
+
+    assert result.status == "ENTRY"
+    assert x1.passed is True
+    assert x2.passed is True
+    assert x2.severity == "INFO"
 
 
 def test_entry_exit_warning_is_not_hidden_by_missing_entry_field():
