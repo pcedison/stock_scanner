@@ -93,22 +93,53 @@ def active_financial_report_event(today: date) -> FinancialReportEvent | None:
     return most_recently_closed
 
 
+def _financial_report_payload(event: FinancialReportEvent) -> dict[str, Any]:
+    return {
+        "kind": event.kind,
+        "fiscalYear": event.fiscal_year,
+        "quarter": event.quarter,
+        "period": event.period,
+        "label": event.label,
+        "generalDeadline": event.general_deadline.isoformat(),
+        "financialDeadline": event.financial_deadline.isoformat() if event.financial_deadline else None,
+    }
+
+
+def freshness_financial_report_event(today: date) -> FinancialReportEvent | None:
+    """Return the latest report period whose filing deadline has fully passed."""
+
+    latest_due: FinancialReportEvent | None = None
+    latest_deadline: date | None = None
+    for year in (today.year - 1, today.year):
+        deadline_dates = (
+            date(year, 3, 31),
+            date(year, 5, 30),
+            date(year, 8, 31),
+            date(year, 11, 14),
+        )
+        for deadline_date in deadline_dates:
+            event = active_financial_report_event(deadline_date)
+            if not event:
+                continue
+            deadline = event.financial_deadline or event.general_deadline
+            if deadline < today and (latest_deadline is None or latest_deadline < deadline):
+                latest_due = event
+                latest_deadline = deadline
+    return latest_due
+
+
 def filing_context(today: date | None = None) -> dict:
     target_date = today or today_taipei()
     event = active_financial_report_event(target_date)
+    freshness_event = freshness_financial_report_event(target_date)
     context: dict[str, Any] = {
         "asOfDate": target_date.isoformat(),
         "monthlyRevenuePeriod": latest_monthly_revenue_period(target_date),
         "activeFinancialReport": None,
+        "freshnessFinancialReport": None,
     }
     if event:
-        context["activeFinancialReport"] = {
-            "kind": event.kind,
-            "fiscalYear": event.fiscal_year,
-            "quarter": event.quarter,
-            "period": event.period,
-            "label": event.label,
-            "generalDeadline": event.general_deadline.isoformat(),
-            "financialDeadline": event.financial_deadline.isoformat() if event.financial_deadline else None,
-        }
+        context["activeFinancialReport"] = _financial_report_payload(event)
+    if freshness_event:
+        context["freshnessFinancialReport"] = _financial_report_payload(freshness_event)
     return context

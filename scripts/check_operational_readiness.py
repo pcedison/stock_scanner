@@ -46,7 +46,9 @@ def _workflow_concurrency_group(text: str) -> str | None:
 def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
     problems: list[str] = []
     deploy_text = (root / DEPLOY_WORKFLOW.relative_to(ROOT_DIR)).read_text(encoding="utf-8")
-    health_exists = (root / HEALTH_WORKFLOW.relative_to(ROOT_DIR)).exists()
+    health_path = root / HEALTH_WORKFLOW.relative_to(ROOT_DIR)
+    health_exists = health_path.exists()
+    health_text = health_path.read_text(encoding="utf-8") if health_exists else ""
     seed_exists = (root / SEED_WORKFLOW.relative_to(ROOT_DIR)).exists()
     r2_seed_refresh_path = root / R2_SEED_REFRESH_WORKFLOW.relative_to(ROOT_DIR)
     r2_seed_refresh_exists = r2_seed_refresh_path.exists()
@@ -68,6 +70,17 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
         problems.append(f"deploy workflow concurrency group must be shared production group {PRODUCTION_CONCURRENCY_GROUP}")
     if not health_exists:
         problems.append("scheduled health monitor workflow is missing")
+    else:
+        pipefail_count = len(re.findall(r"set -o pipefail", health_text))
+        if pipefail_count < 2:
+            problems.append("health monitor must set pipefail for both piped health and smoke checks")
+        health_required_patterns = {
+            "deployed health check": r"scripts/check_cloudflare_health\.py[\s\S]*?\|\s*tee",
+            "remote smoke": r"scripts/run_remote_smoke\.py[\s\S]*?\|\s*tee",
+        }
+        for label, pattern in health_required_patterns.items():
+            if not re.search(pattern, health_text):
+                problems.append(f"health monitor workflow missing {label}")
     if not seed_exists:
         problems.append("scheduled seed refresh workflow is missing")
     if not r2_seed_refresh_exists:

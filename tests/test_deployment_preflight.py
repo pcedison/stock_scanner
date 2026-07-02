@@ -152,3 +152,11 @@ def test_seed_refresh_workflow_surfaces_manual_pr_when_actions_cannot_create_one
     assert "manual_pr_url=" in text
     assert "GitHub Actions is not permitted to create the PR automatically" in text
     assert "Seed rebuild and validation completed before PR creation" in text
+
+
+def test_nightly_date_sweep_covers_q2_freshness_boundaries():
+    text = Path(".github/workflows/nightly-date-sweep.yml").read_text(encoding="utf-8")
+
+    assert "2026-07-01" in text
+    assert "2026-08-31" in text
+    assert "2026-09-01" in text

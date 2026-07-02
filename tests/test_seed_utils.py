@@ -53,3 +53,10 @@ def test_gitignore_requires_intentional_seed_artifact_updates():
     assert "data/official_cache_seed_*.sha256" in text
     assert "!data/official_cache_seed_2026-05-14.zip" in text
     assert "!data/official_cache_seed_2026-05-14.sha256" in text
+
+
+def test_gitattributes_keeps_existing_bootstrap_seed_out_of_lfs_filter():
+    text = Path(".gitattributes").read_text(encoding="utf-8")
+
+    assert "data/official_cache_seed_*.zip filter=lfs diff=lfs merge=lfs -text" in text
+    assert "data/official_cache_seed_2026-05-14.zip -filter -diff -merge -text" in text

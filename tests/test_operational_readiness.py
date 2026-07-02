@@ -13,6 +13,7 @@ def _write_readiness_fixture(
     deploy_group: str = "cloudflare-production",
     r2_group: str = "cloudflare-production",
     deploy_doc: str | None = None,
+    health_text: str | None = None,
 ) -> None:
     workflow_dir = root / ".github" / "workflows"
     workflow_dir.mkdir(parents=True)
@@ -38,7 +39,23 @@ jobs:
 """.strip(),
         encoding="utf-8",
     )
-    (workflow_dir / "cloudflare-health-monitor.yml").write_text("name: Health\n", encoding="utf-8")
+    (workflow_dir / "cloudflare-health-monitor.yml").write_text(
+        health_text
+        or """
+name: Health
+
+jobs:
+  health:
+    steps:
+      - run: |
+          set -o pipefail
+          python scripts/check_cloudflare_health.py | tee .tmp-health.json
+      - run: |
+          set -o pipefail
+          python scripts/run_remote_smoke.py | tee .tmp-smoke.json
+""".strip(),
+        encoding="utf-8",
+    )
     (workflow_dir / "refresh-cloudflare-seed.yml").write_text("name: Seed\n", encoding="utf-8")
     (workflow_dir / "cloudflare-r2-seed-refresh.yml").write_text(
         f"""
@@ -104,6 +121,25 @@ Team-owned repositories use production environment reviewers.
     problems = validate_local_readiness(tmp_path)
 
     assert any("solo branch-protection" in problem for problem in problems)
+
+
+def test_local_operational_readiness_requires_health_monitor_pipefail(tmp_path):
+    _write_readiness_fixture(
+        tmp_path,
+        health_text="""
+name: Health
+
+jobs:
+  health:
+    steps:
+      - run: python scripts/check_cloudflare_health.py | tee .tmp-health.json
+      - run: python scripts/run_remote_smoke.py | tee .tmp-smoke.json
+""".strip(),
+    )
+
+    problems = validate_local_readiness(tmp_path)
+
+    assert any("health monitor" in problem and "pipefail" in problem for problem in problems)
 
 
 def test_cloudflare_deployment_doc_uses_latest_seed_artifact_pattern():

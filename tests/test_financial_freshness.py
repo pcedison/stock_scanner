@@ -42,6 +42,32 @@ def test_financial_freshness_marks_ok_when_cache_reaches_expected_period():
     assert status["blocksDeployment"] is False
 
 
+def test_financial_freshness_does_not_block_before_active_period_deadline():
+    status = build_financial_freshness_status(
+        filing_context(date(2026, 7, 1)),
+        _history_status("2026Q1", expected_count=5),
+    )
+
+    assert status["status"] == "ok"
+    assert status["isFresh"] is True
+    assert status["expectedFinancialPeriod"] == "2026Q1"
+    assert status["latestCachedFinancialPeriod"] == "2026Q1"
+    assert status["blocksDeployment"] is False
+
+
+def test_financial_freshness_blocks_after_active_period_deadline():
+    status = build_financial_freshness_status(
+        filing_context(date(2026, 9, 1)),
+        _history_status("2026Q1", expected_count=5),
+    )
+
+    assert status["status"] == "stale"
+    assert status["isFresh"] is False
+    assert status["expectedFinancialPeriod"] == "2026Q2"
+    assert status["latestCachedFinancialPeriod"] == "2026Q1"
+    assert status["blocksDeployment"] is True
+
+
 def test_financial_freshness_warns_when_period_is_fresh_but_coverage_is_low():
     status = build_financial_freshness_status(
         filing_context(date(2026, 6, 22)),
