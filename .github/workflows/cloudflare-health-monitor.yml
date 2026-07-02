@@ -29,6 +29,7 @@ jobs:
 
       - name: Check deployed Worker health
         run: |
+          set -o pipefail
           if [ -z "$CF_WORKER_HEALTH_URL" ]; then
             echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
             exit 1
@@ -48,6 +49,7 @@ jobs:
 
       - name: Check market scan smoke
         run: |
+          set -o pipefail
           python scripts/run_remote_smoke.py \
             --health-url "$CF_WORKER_HEALTH_URL" \
             --timeout 30 \

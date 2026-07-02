@@ -49,11 +49,14 @@ _PUBLIC_STATUS_ERROR_KEYS = frozenset({"error", "exception", "traceback", "lastE
 
 
 def _expected_financial_period(context: dict[str, Any]) -> str | None:
-    active = context.get("activeFinancialReport")
-    if not isinstance(active, dict):
-        return None
-    period = active.get("period")
-    return period if isinstance(period, str) and period else None
+    for field in ("freshnessFinancialReport", "activeFinancialReport"):
+        active = context.get(field)
+        if not isinstance(active, dict):
+            continue
+        period = active.get("period")
+        if isinstance(period, str) and period:
+            return period
+    return None
 
 
 def _provider_status(provider: OfficialDataProvider, expected_period: str | None) -> dict:

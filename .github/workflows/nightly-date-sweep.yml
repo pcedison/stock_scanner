@@ -36,6 +36,8 @@ jobs:
           - "now"
           - "2026-03-31" # annual report deadline (inclusive)
           - "2026-05-31" # Q1 deadline + 1 → gap (the original regression date)
+          - "2026-07-01" # Q2 window start; freshness should still accept Q1
+          - "2026-08-31" # Q2 deadline (inclusive)
           - "2026-09-01" # Q2 → gap
           - "2026-11-15" # Q3 → gap
           - "2026-12-31" # year-end gap

@@ -53,6 +53,22 @@ def test_filing_context_identifies_annual_window():
     assert event.period == "2025Q4"
 
 
+def test_filing_context_keeps_q2_active_but_freshness_targets_q1_before_deadline():
+    context = filing_context(date(2026, 7, 1))
+
+    assert context["activeFinancialReport"]["period"] == "2026Q2"
+    assert context.get("freshnessFinancialReport") is not None
+    assert context["freshnessFinancialReport"]["period"] == "2026Q1"
+
+
+def test_filing_context_advances_freshness_after_q2_deadline():
+    context = filing_context(date(2026, 9, 1))
+
+    assert context["activeFinancialReport"]["period"] == "2026Q2"
+    assert context.get("freshnessFinancialReport") is not None
+    assert context["freshnessFinancialReport"]["period"] == "2026Q2"
+
+
 @pytest.mark.parametrize(("today", "expected_period", "is_gap"), CALENDAR_SWEEP_2026)
 def test_active_financial_report_event_across_calendar(today, expected_period, is_gap):
     event = active_financial_report_event(today)

@@ -1,3 +1,4 @@
 # Cloudflare seed cache zips are large binaries; track new ones with Git LFS.
 # Going-forward only: pre-existing committed seeds remain regular blobs in history.
 data/official_cache_seed_*.zip filter=lfs diff=lfs merge=lfs -text
+data/official_cache_seed_2026-05-14.zip -filter -diff -merge -text

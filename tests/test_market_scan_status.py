@@ -131,3 +131,18 @@ def test_scan_market_payload_checks_financial_freshness_after_provider_refresh(m
     assert payload["financialFreshness"]["status"] == "ok"
     assert payload["financialFreshness"]["expectedFinancialPeriod"] == "2026Q3"
     assert payload["financialFreshness"]["latestCachedFinancialPeriod"] == "2026Q3"
+
+
+def test_scan_market_payload_uses_due_freshness_period_before_active_deadline(monkeypatch):
+    _patch_filing_context(monkeypatch, date(2026, 7, 1))
+
+    payload = scan_market_payload(
+        ScannerSettings(use_mock_data=False),
+        FakeRefreshingStatusProvider(),
+        engine=object(),
+    )
+
+    assert payload["filingContext"]["activeFinancialReport"]["period"] == "2026Q2"
+    assert payload["financialFreshness"]["status"] == "ok"
+    assert payload["financialFreshness"]["expectedFinancialPeriod"] == "2026Q1"
+    assert payload["financialFreshness"]["latestCachedFinancialPeriod"] == "2026Q1"
