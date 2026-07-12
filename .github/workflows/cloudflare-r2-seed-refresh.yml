@@ -2,7 +2,7 @@ name: Refresh Cloudflare R2 Seed
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -28,7 +28,6 @@ jobs:
       FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
       CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
-      # D1 database_id from cloudflare/wrangler.toml (not secret, it's committed)
       CF_D1_DATABASE_ID: c29c7b4a-4a2d-4711-badd-1aaad43ce3b6
       CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
 
@@ -37,28 +36,32 @@ jobs:
         uses: actions/checkout@v7
         with:
           lfs: true
-
-      # Lightweight pre-check: query D1 via REST API and check health URL.
-      # This runs before npm/pip so empty runs still skip the heavy setup.
       - name: Early exit - check pending jobs without heavy dependencies
         id: early-check
         run: |
           mkdir -p .tmp
           force_args=()
           api_args=()
+          job_check_args=()
           health_args=()
           if [ "$FORCE_REFRESH" = "true" ]; then
             force_args=(--force)
           else
-            if api_result=$(curl -sf --max-time 10 -X POST \
+            set +e
+            curl -sf --max-time 10 -X POST \
               "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${CF_D1_DATABASE_ID}/query" \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' 2>/dev/null); then
-              printf '%s' "$api_result" > .tmp/early-d1.json
+              --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' \
+              --output .tmp/early-d1.json 2>/dev/null
+            api_status=$?
+            set -e
+            if [ "$api_status" -eq 0 ]; then
               api_args=(--cloudflare-api-json-file .tmp/early-d1.json)
+            else
+              job_check_error="D1 pending-job query unavailable"
+              job_check_args=(--job-check-error "$job_check_error")
             fi
-
             if [ -n "$CF_WORKER_HEALTH_URL" ]; then
               if health=$(curl -sf --max-time 15 "$CF_WORKER_HEALTH_URL" 2>/dev/null); then
                 printf '%s' "$health" > .tmp/early-health.json
@@ -72,8 +75,10 @@ jobs:
           python scripts/r2_refresh_decision.py early-check \
             "${force_args[@]}" \
             "${api_args[@]}" \
+            "${job_check_args[@]}" \
             "${health_args[@]}" \
             --max-cache-age-hours 36 \
+            --refresh-ahead-minutes 60 \
             --github-output "$GITHUB_OUTPUT" \
             --github-step-summary "$GITHUB_STEP_SUMMARY"
 
@@ -125,7 +130,7 @@ jobs:
 
           pending_count="$(python scripts/r2_refresh_decision.py pending-count --json-file .tmp/refresh-job-count.json --fields pending_count)"
 
-          stale_refresh=false
+          stale_refresh="${{ steps.early-check.outputs.stale_refresh }}"
           if [ -n "$CF_WORKER_HEALTH_URL" ]; then
             if python scripts/check_cloudflare_health.py \
               --url "$CF_WORKER_HEALTH_URL" \
@@ -194,8 +199,6 @@ jobs:
             --data-dir data \
             --output-json .tmp/r2-upload-plan.json \
             --output-tsv .tmp/r2-upload-plan.tsv
-          # 單一物件遇到 Cloudflare API 暫時性錯誤（如 502 Bad Gateway）時，
-          # 以指數退避重試，避免一次抖動就讓整批 seed 上傳失敗。
           put_with_retry() {
             object_key="$1"
             file_path="$2"

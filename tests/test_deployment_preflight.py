@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts import check_deployment_preflight as deployment_preflight
 from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
@@ -75,6 +76,21 @@ def test_worker_observability_rejects_non_table_sections(tmp_path, config_text, 
     problems = deployment_preflight.validate_worker_observability(wrangler)
 
     assert expected_problem in problems
+
+
+def _workflow_schedule_crons(path: Path) -> list[str]:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    triggers = workflow.get("on", workflow.get(True))
+    return [item["cron"] for item in triggers["schedule"]]
+
+
+def _workflow_step_script(path: Path, step_id: str) -> str:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("id") == step_id:
+                return step["run"]
+    raise AssertionError(f"workflow step {step_id!r} was not found")
 
 
 def test_validate_deploy_workflow_accepts_current_guardrails():
@@ -168,6 +184,35 @@ def test_r2_refresh_workflow_can_self_heal_stale_production_seed():
     assert "--reject-offline-seed" in text
     assert "stale_refresh=true" in text
     assert "Production seed freshness check failed; R2 seed rebuild will run." in text
+
+
+def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
+    r2_path = Path(".github/workflows/cloudflare-r2-seed-refresh.yml")
+    health_path = Path(".github/workflows/cloudflare-health-monitor.yml")
+    r2_workflow = r2_path.read_text(encoding="utf-8")
+    health_workflow = health_path.read_text(encoding="utf-8")
+
+    assert _workflow_schedule_crons(r2_path) == ["7,22,37,52 * * * *"]
+    assert _workflow_schedule_crons(health_path) == ["11,41 * * * *"]
+    assert "--refresh-ahead-minutes 60" in r2_workflow
+    assert "--job-check-error" in r2_workflow
+    assert "--max-refresh-delay-minutes 15" in health_workflow
+    assert "steps.early-check.outputs.stale_refresh" in r2_workflow
+
+
+def test_lightweight_d1_request_fails_open_with_only_a_fixed_error_marker():
+    script = _workflow_step_script(
+        Path(".github/workflows/cloudflare-r2-seed-refresh.yml"),
+        "early-check",
+    )
+
+    assert "--output .tmp/early-d1.json" in script
+    assert "api_status=$?" in script
+    assert 'if [ "$api_status" -eq 0 ]; then' in script
+    assert 'job_check_error="D1 pending-job query unavailable"' in script
+    assert 'job_check_args=(--job-check-error "$job_check_error")' in script
+    assert '"${job_check_args[@]}"' in script
+    assert "cat .tmp/early-d1.json" not in script
 
 
 def test_r2_refresh_job_completion_is_scoped_to_claiming_run():

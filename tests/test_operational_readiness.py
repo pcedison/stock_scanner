@@ -2,6 +2,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.check_operational_readiness import (
     valid_health_url,
@@ -52,6 +53,15 @@ def _assert_health_command_options(command: list[str]) -> None:
         assert len(option_indexes) == 1
         option_index = option_indexes[0]
         assert command[option_index + 1 : option_index + 2] == [value]
+
+
+def _workflow_step_script(path: Path, step_id: str) -> str:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("id") == step_id:
+                return step["run"]
+    raise AssertionError(f"workflow step {step_id!r} was not found")
 
 
 def _write_readiness_fixture(
@@ -152,6 +162,24 @@ def test_health_workflows_configure_refresh_grace_and_cache_age_ceiling():
         assert len(commands) == expected_count
         for command in commands:
             _assert_health_command_options(command)
+
+
+def test_authoritative_refresh_check_carries_early_stale_evidence_into_final_or():
+    script = _workflow_step_script(
+        Path(".github/workflows/cloudflare-r2-seed-refresh.yml"),
+        "refresh-check",
+    )
+    initial = 'stale_refresh="${{ steps.early-check.outputs.stale_refresh }}"'
+    health_failure = "stale_refresh=true"
+    stale_output = 'echo "stale_refresh=$stale_refresh" >> "$GITHUB_OUTPUT"'
+    final_or = 'if [ "$pending_count" -gt 0 ] || [ "$stale_refresh" = "true" ]; then'
+
+    initial_index = script.index(initial)
+    health_failure_index = script.index(health_failure, initial_index)
+    stale_output_index = script.index(stale_output, health_failure_index)
+    final_or_index = script.index(final_or, stale_output_index)
+
+    assert initial_index < health_failure_index < stale_output_index < final_or_index
 
 
 def test_workflow_command_options_reject_inline_shell_comments():

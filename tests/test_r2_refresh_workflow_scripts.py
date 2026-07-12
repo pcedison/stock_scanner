@@ -8,6 +8,38 @@ import pytest
 import scripts.r2_refresh_decision as r2
 from scripts.cloudflare_seed_upload_plan import build_upload_plan
 
+JOB_CHECK_ERROR = "D1 pending-job query unavailable"
+SECRET_SENTINEL = "secret-D1-response-must-not-leak"
+
+
+def _health_payload(
+    *,
+    next_refresh_after: str,
+    checked_at: str = "2026-07-12T00:00:00+00:00",
+    status: str = "ok",
+    is_stale: bool = False,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "cache": {"sourceLastCheckedAt": checked_at},
+        "cacheStatus": {
+            "isStale": is_stale,
+            "nextRefreshAfter": next_refresh_after,
+        },
+    }
+
+
+def _cloudflare_pending_payload(count: object) -> dict[str, object]:
+    return {
+        "success": True,
+        "result": [
+            {
+                "success": True,
+                "results": [{"cnt": count}],
+            }
+        ],
+    }
+
 
 def test_r2_refresh_decision_reads_cloudflare_and_wrangler_count_shapes():
     cloudflare_payload = {"result": [{"results": [{"cnt": 3}]}]}
@@ -209,3 +241,382 @@ def test_write_github_outputs_tolerates_missing_paths():
         None,
         None,
     )
+
+
+def test_refresh_due_at_prefers_top_level_policy_and_falls_back_to_cache():
+    top_level = r2.refresh_due_at(
+        {
+            "cacheStatus": {"nextRefreshAfter": "2026-07-12T02:00:00+00:00"},
+            "cache": {"nextRefreshAfter": "2026-07-12T03:00:00+00:00"},
+        }
+    )
+    fallback = r2.refresh_due_at(
+        {
+            "cacheStatus": {"nextRefreshAfter": "invalid"},
+            "cache": {"nextRefreshAfter": "2026-07-12T03:00:00+00:00"},
+        }
+    )
+
+    assert top_level == datetime(2026, 7, 12, 2, 0, tzinfo=UTC)
+    assert fallback == datetime(2026, 7, 12, 3, 0, tzinfo=UTC)
+    assert r2.refresh_due_at({}) is None
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        (datetime(2026, 7, 12, 0, 59, 59, tzinfo=UTC), False),
+        (datetime(2026, 7, 12, 1, 0, 0, tzinfo=UTC), True),
+        (datetime(2026, 7, 12, 1, 0, 1, tzinfo=UTC), True),
+    ],
+    ids=("one-second-before", "exact-boundary", "one-second-after"),
+)
+def test_early_refresh_decision_uses_proactive_refresh_boundary(now, expected):
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload=_health_payload(next_refresh_after="2026-07-12T02:00:00+00:00"),
+        health_error="",
+        job_check_error="",
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        refresh_ahead_minutes=60,
+        now=now,
+    )
+
+    assert decision["runRefresh"] is expected
+    assert decision["staleRefresh"] is expected
+
+
+def test_early_refresh_decision_function_default_refreshes_55_minutes_ahead():
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload=_health_payload(next_refresh_after="2026-07-12T02:00:00+00:00"),
+        health_error="",
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        now=datetime(2026, 7, 12, 1, 5, tzinfo=UTC),
+    )
+
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is True
+
+
+def test_early_refresh_decision_cli_default_refreshes_55_minutes_ahead(tmp_path, capsys):
+    current = datetime.now(UTC)
+    health = tmp_path / "health.json"
+    health.write_text(
+        json.dumps(
+            _health_payload(
+                next_refresh_after=(current + timedelta(minutes=55)).isoformat(),
+                checked_at=current.isoformat(),
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "output.txt"
+
+    rc = r2.main(
+        [
+            "early-check",
+            "--health-json-file",
+            str(health),
+            "--health-url-configured",
+            "--github-output",
+            str(output),
+        ]
+    )
+
+    assert rc == 0
+    decision = json.loads(capsys.readouterr().out)
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is True
+    assert "run_refresh=true" in output.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("payload", "now"),
+    [
+        (
+            _health_payload(
+                next_refresh_after="2026-07-12T12:00:00+00:00",
+                is_stale=True,
+            ),
+            datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+        ),
+        (
+            _health_payload(
+                next_refresh_after="2026-07-12T12:00:00+00:00",
+                status="degraded",
+            ),
+            datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+        ),
+        (
+            _health_payload(
+                next_refresh_after="2026-07-13T12:00:00+00:00",
+                checked_at="2026-07-10T12:00:00+00:00",
+            ),
+            datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+        ),
+    ],
+    ids=("reported-stale", "non-ok-health", "37-hour-safety-ceiling"),
+)
+def test_early_refresh_decision_health_signals_override_future_boundary(payload, now):
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload=payload,
+        health_error="",
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        now=now,
+    )
+
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is True
+
+
+def test_early_refresh_decision_healthy_future_policy_does_not_refresh():
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload=_health_payload(next_refresh_after="2026-07-12T12:00:00+00:00"),
+        health_error="",
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+    )
+
+    assert decision["runRefresh"] is False
+    assert decision["staleRefresh"] is False
+
+
+def test_early_refresh_decision_job_check_error_exact_payload_is_not_stale():
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload={"cacheStatus": {"nextRefreshAfter": "2026-07-12T12:00:00+00:00"}},
+        health_error="",
+        job_check_error=JOB_CHECK_ERROR,
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+    )
+
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is False
+    assert any("pending-job" in message for message in decision["messages"])
+
+
+def test_early_refresh_decision_job_check_error_with_healthy_age_is_not_stale():
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload=_health_payload(next_refresh_after="2026-07-12T12:00:00+00:00"),
+        health_error="",
+        job_check_error=JOB_CHECK_ERROR,
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+    )
+
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is False
+
+
+def test_early_refresh_decision_cli_job_error_is_safe_and_not_stale(tmp_path, capsys):
+    output = tmp_path / "output.txt"
+    summary = tmp_path / "summary.md"
+
+    rc = r2.main(
+        [
+            "early-check",
+            "--job-check-error",
+            SECRET_SENTINEL,
+            "--github-output",
+            str(output),
+            "--github-step-summary",
+            str(summary),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    decision = json.loads(captured.out)
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is False
+    assert "run_refresh=true" in output.read_text(encoding="utf-8")
+    assert "stale_refresh=false" in output.read_text(encoding="utf-8")
+    exposed = "\n".join(
+        (
+            captured.out,
+            captured.err,
+            output.read_text(encoding="utf-8"),
+            summary.read_text(encoding="utf-8"),
+        )
+    )
+    assert SECRET_SENTINEL not in exposed
+    assert JOB_CHECK_ERROR in exposed
+
+
+def test_cloudflare_pending_count_accepts_exact_success_shape_with_zero():
+    assert r2.cloudflare_pending_count(_cloudflare_pending_payload(0)) == 0
+    assert r2.cloudflare_pending_count(_cloudflare_pending_payload(3)) == 3
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {"success": False, "errors": [{"message": SECRET_SENTINEL}]},
+        {"success": 1, "errors": [{"message": SECRET_SENTINEL}]},
+        {"success": "true", "errors": [{"message": SECRET_SENTINEL}]},
+        {"success": True, "errors": [{"message": SECRET_SENTINEL}]},
+        {"success": True, "result": [], "errors": [{"message": SECRET_SENTINEL}]},
+        {
+            "success": True,
+            "result": [{"success": False, "errors": [{"message": SECRET_SENTINEL}]}],
+        },
+        {
+            "success": True,
+            "result": [{"success": "true", "results": [{"cnt": 0}]}],
+            "errors": [{"message": SECRET_SENTINEL}],
+        },
+        {
+            "success": True,
+            "result": [{"success": True}],
+            "errors": [{"message": SECRET_SENTINEL}],
+        },
+        {
+            "success": True,
+            "result": [{"success": True, "results": []}],
+            "errors": [{"message": SECRET_SENTINEL}],
+        },
+        {
+            "success": True,
+            "result": [{"success": True, "results": [{}]}],
+            "errors": [{"message": SECRET_SENTINEL}],
+        },
+        {
+            "success": True,
+            "result": [{"success": True, "results": [{"cnt": "0"}]}],
+            "errors": [{"message": SECRET_SENTINEL}],
+        },
+        {
+            "success": True,
+            "result": [{"success": True, "results": [{"cnt": False}]}],
+            "errors": [{"message": SECRET_SENTINEL}],
+        },
+    ],
+    ids=(
+        "non-object-null",
+        "non-object-list",
+        "outer-explicit-failure",
+        "outer-non-boolean-success",
+        "outer-string-success",
+        "missing-result",
+        "missing-query-result",
+        "query-explicit-failure",
+        "query-non-boolean-success",
+        "missing-results",
+        "missing-row",
+        "missing-count",
+        "string-count",
+        "boolean-count",
+    ),
+)
+def test_invalid_cloudflare_response_fails_open_without_exposing_body(payload, tmp_path, capsys):
+    api_file = tmp_path / "api.json"
+    api_file.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "output.txt"
+    summary = tmp_path / "summary.md"
+
+    rc = r2.main(
+        [
+            "early-check",
+            "--cloudflare-api-json-file",
+            str(api_file),
+            "--github-output",
+            str(output),
+            "--github-step-summary",
+            str(summary),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    decision = json.loads(captured.out)
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is False
+    assert decision["pendingCount"] == 0
+    exposed = "\n".join(
+        (
+            json.dumps(decision),
+            captured.out,
+            captured.err,
+            output.read_text(encoding="utf-8"),
+            summary.read_text(encoding="utf-8"),
+        )
+    )
+    assert SECRET_SENTINEL not in exposed
+    assert JOB_CHECK_ERROR in exposed
+
+
+def test_malformed_cloudflare_response_fails_open_without_exposing_body(tmp_path, capsys):
+    api_file = tmp_path / "api.json"
+    api_file.write_text('{"secret": "' + SECRET_SENTINEL, encoding="utf-8")
+    output = tmp_path / "output.txt"
+    summary = tmp_path / "summary.md"
+
+    rc = r2.main(
+        [
+            "early-check",
+            "--cloudflare-api-json-file",
+            str(api_file),
+            "--github-output",
+            str(output),
+            "--github-step-summary",
+            str(summary),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    decision = json.loads(captured.out)
+    assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is False
+    exposed = "\n".join(
+        (
+            captured.out,
+            captured.err,
+            output.read_text(encoding="utf-8"),
+            summary.read_text(encoding="utf-8"),
+        )
+    )
+    assert SECRET_SENTINEL not in exposed
+    assert JOB_CHECK_ERROR in exposed
+
+
+def test_exact_cloudflare_zero_pending_response_remains_a_successful_skip(tmp_path, capsys):
+    api_file = tmp_path / "api.json"
+    api_file.write_text(json.dumps(_cloudflare_pending_payload(0)), encoding="utf-8")
+    output = tmp_path / "output.txt"
+
+    rc = r2.main(
+        [
+            "early-check",
+            "--cloudflare-api-json-file",
+            str(api_file),
+            "--github-output",
+            str(output),
+        ]
+    )
+
+    assert rc == 0
+    decision = json.loads(capsys.readouterr().out)
+    assert decision["pendingCount"] == 0
+    assert decision["runRefresh"] is False
+    assert decision["staleRefresh"] is False
+    assert "run_refresh=false" in output.read_text(encoding="utf-8")
