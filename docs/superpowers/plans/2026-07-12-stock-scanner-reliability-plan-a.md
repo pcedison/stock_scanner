@@ -546,6 +546,21 @@ def test_validate_health_payload_accepts_exact_grace_boundary():
     assert summary["refreshDelayMinutes"] == pytest.approx(15)
 
 
+def test_validate_health_payload_new_worker_default_is_strict():
+    payload = _healthy_health_payload()
+    payload["status"] = "degraded"
+    payload["cacheStatus"] = {
+        "isStale": True,
+        "nextRefreshAfter": "2026-07-12T00:52:48+00:00",
+    }
+    with pytest.raises(RuntimeError, match="refresh policy"):
+        validate_health_payload(
+            payload,
+            max_cache_age_hours=36,
+            now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+        )
+
+
 def test_validate_health_payload_old_worker_uses_age_fallback():
     payload = _healthy_health_payload()
     payload.pop("cacheStatus", None)
@@ -563,7 +578,7 @@ The test helper must include non-blocking financial freshness and cache quality.
 - [ ] **Step 3: Run RED**
 
 ```powershell
-..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task3-red tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py
+..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task3-red tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py tests\test_remote_smoke.py
 ```
 
 Expected: missing `cacheStatus`, missing parameter, and current unconditional degraded rejection cause failures.
@@ -669,10 +684,11 @@ def test_early_refresh_decision_job_check_error_fails_open():
         now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
     )
     assert decision["runRefresh"] is True
+    assert decision["staleRefresh"] is False
     assert any("pending-job" in message for message in decision["messages"])
 ```
 
-Add before/exact/after proactive-boundary tests (one second before the 60-minute window does not refresh; exactly entering it does). Add cases for `cacheStatus.isStale=true` with a future timestamp, `status="degraded"` with a future timestamp, age 37 hours with a future timestamp, and healthy/future/no-other-trigger not refreshing. Add a CLI test passing `--job-check-error` and `--refresh-ahead-minutes 60` and asserting `run_refresh=true` in the GitHub output file.
+Add before/exact/after proactive-boundary tests (one second before the 60-minute window does not refresh; exactly entering it does). Add cases for `cacheStatus.isStale=true` with a future timestamp, `status="degraded"` with a future timestamp, age 37 hours with a future timestamp, and healthy/future/no-other-trigger not refreshing. Add one function test and one CLI test that omit `refresh_ahead_minutes`/`--refresh-ahead-minutes` at 55 minutes before the boundary and prove the real default is 60. Add a CLI test passing `--job-check-error` and asserting `run_refresh=true` but `stale_refresh=false` in the GitHub output file.
 
 - [ ] **Step 2: Add workflow static RED tests**
 
@@ -684,6 +700,7 @@ assert health_schedules == ["11,41 * * * *"]
 assert "--refresh-ahead-minutes 60" in r2_workflow
 assert "--job-check-error" in r2_workflow
 assert "--max-refresh-delay-minutes 15" in health_workflow
+assert "steps.early-check.outputs.stale_refresh" in r2_workflow
 ```
 
 Also assert the lightweight Cloudflare API request records a fixed non-secret error marker for any of: curl nonzero, malformed/non-object JSON, outer `success` other than exact `true`, query-level failure, missing/non-integer count, or explicit `success:false`. Valid `cnt=0` remains a successful zero-pending result. Use a secret sentinel in the rejected body/error and assert it is absent from decision JSON, stdout, stderr, GitHub output, and summary.
@@ -712,7 +729,7 @@ Treat the proactive boundary as due when:
 current >= next_refresh_after - timedelta(minutes=refresh_ahead_minutes)
 ```
 
-If `job_check_error` is non-empty, enter heavy setup even if health looks fresh. The cache-age ceiling is unconditional even when a valid but incorrect future next-refresh timestamp exists; cache age is merely the sole normal-policy fallback when there is no valid next-refresh timestamp.
+If `job_check_error` is non-empty, set `runRefresh=True` but keep `staleRefresh=False`: this enters heavy setup so the authoritative D1 query can run, without claiming that the seed itself is stale. The cache-age ceiling is unconditional even when a valid but incorrect future next-refresh timestamp exists; cache age is merely the sole normal-policy fallback when there is no valid next-refresh timestamp.
 
 Add CLI options:
 
@@ -721,7 +738,7 @@ early.add_argument("--job-check-error", default="")
 early.add_argument("--refresh-ahead-minutes", type=float, default=60)
 ```
 
-In the workflow, capture curl exit status and validate the response shape without printing the payload. Pass only the fixed marker `D1 pending-job query unavailable` for every invalid/error shape listed above. Change R2 cron to `7,22,37,52 * * * *` and health cron to `11,41 * * * *`.
+In the workflow, capture curl exit status and validate the response shape without printing the payload. Pass only the fixed marker `D1 pending-job query unavailable` for every invalid/error shape listed above. Initialize the authoritative `refresh-check` step's `stale_refresh` from `steps.early-check.outputs.stale_refresh`, then OR in its own health-check failure before computing `run_refresh`. This carries proactive/non-OK/`isStale`/36-hour evidence through to the actual rebuild. A job-check error alone keeps early `stale_refresh=false`, so the second D1 query still decides whether to rebuild. Add a workflow regression that validates this data flow and final OR, not merely the presence of the string. Change R2 cron to `7,22,37,52 * * * *` and health cron to `11,41 * * * *`.
 
 This fail-open guarantee is deliberately scoped to the lightweight early decision: the workflow must not incorrectly skip a needed rebuild because the pending-job check failed. Later migrations/full D1 operations retain their existing failure semantics; a sustained D1 outage is not claimed to permit a complete R2 rebuild in Task 4.
 
