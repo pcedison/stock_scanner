@@ -130,6 +130,7 @@ jobs:
             if python scripts/check_cloudflare_health.py \
               --url "$CF_WORKER_HEALTH_URL" \
               --max-cache-age-hours 36 \
+              --max-refresh-delay-minutes 15 \
               --reject-offline-seed \
               > .tmp/production-health.json 2> .tmp/production-health.err; then
               echo "Production seed freshness is healthy." >> "$GITHUB_STEP_SUMMARY"
@@ -230,11 +231,13 @@ jobs:
             --url "$CF_WORKER_HEALTH_URL" \
             --manifest cloudflare/seed/manifest.json \
             --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 15 \
             --reject-offline-seed
           python scripts/run_remote_smoke.py \
             --health-url "$CF_WORKER_HEALTH_URL" \
             --manifest cloudflare/seed/manifest.json \
             --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 15 \
             --reject-offline-seed
 
       - name: Mark refresh jobs as completed

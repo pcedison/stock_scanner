@@ -94,6 +94,16 @@ def test_local_operational_readiness_accepts_current_guardrails():
     assert validate_local_readiness() == []
 
 
+def test_health_workflows_configure_refresh_grace_and_cache_age_ceiling():
+    health_workflow = Path(".github/workflows/cloudflare-health-monitor.yml").read_text(encoding="utf-8")
+    r2_workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+
+    assert health_workflow.count("--max-refresh-delay-minutes 15") == 2
+    assert health_workflow.count("--max-cache-age-hours 36") == 2
+    assert r2_workflow.count("--max-refresh-delay-minutes 15") == 3
+    assert r2_workflow.count("--max-cache-age-hours 36") == 4
+
+
 def test_local_operational_readiness_rejects_mismatched_production_concurrency(tmp_path):
     _write_readiness_fixture(
         tmp_path,

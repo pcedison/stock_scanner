@@ -120,6 +120,7 @@ def run_public_smoke(
     propagation_timeout: int = 90,
     max_cache_age_hours: float | None = None,
     reject_offline_seed: bool = False,
+    max_refresh_delay_minutes: float | None = None,
 ) -> dict[str, Any]:
     base_url = base_url_from_health_url(health_url)
     client = RemoteClient(base_url, timeout)
@@ -134,6 +135,7 @@ def run_public_smoke(
                 health,
                 expected_manifest,
                 max_cache_age_hours=max_cache_age_hours,
+                max_refresh_delay_minutes=max_refresh_delay_minutes,
                 reject_offline_seed=reject_offline_seed,
             )
             payloads = {
@@ -184,6 +186,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail when cache.sourceLastCheckedAt or generatedAt is older than this many hours",
     )
     parser.add_argument(
+        "--max-refresh-delay-minutes",
+        type=float,
+        help="Allow this many minutes after cacheStatus.nextRefreshAfter before failing",
+    )
+    parser.add_argument(
         "--reject-offline-seed",
         action="store_true",
         help="Fail when the deployed manifest reports qualityGates.buildMode=offline",
@@ -197,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             args.timeout,
             args.propagation_timeout,
             max_cache_age_hours=args.max_cache_age_hours,
+            max_refresh_delay_minutes=args.max_refresh_delay_minutes,
             reject_offline_seed=args.reject_offline_seed,
         )
     except RuntimeError as exc:

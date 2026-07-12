@@ -17,9 +17,11 @@ except ModuleNotFoundError:
     from cloudflare.worker_support import *  # noqa: F403
 
 try:
+    import worker_health
     import worker_market_resilience as market_resilience
     import worker_observability as observability
 except ModuleNotFoundError:
+    from cloudflare import worker_health
     from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
 
@@ -157,14 +159,10 @@ class Api:
 
         if path == "/api/health" and method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
-            quality = manifest_quality(manifest)
-            return json_response({
-                "status": "ok" if quality["ok"] else "degraded",
-                "runtime": "cloudflare-python-worker",
-                "time": utc_now(),
-                "cache": manifest,
-                "cacheQuality": quality,
-            }, public_cache_seconds=60)
+            payload = worker_health.health_payload(
+                manifest, manifest_quality, self.cache_status_from_manifest, self.cache_policy, utc_now
+            )
+            return json_response(payload, public_cache_seconds=60)
 
         if path == "/api/app-status" and method == "GET":
             data_source, settings = await asyncio.gather(

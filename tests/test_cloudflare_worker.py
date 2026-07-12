@@ -4,7 +4,7 @@ import json
 import re
 import sys
 import types
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -385,6 +385,21 @@ def test_worker_manifest_quality_flags_missing_financial_freshness(monkeypatch):
     assert any("financial freshness" in problem for problem in quality["problems"])
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-07-12T00:52:48", datetime(2026, 7, 12, 0, 52, 48, tzinfo=UTC)),
+        ("2026-07-12T00:52:48Z", datetime(2026, 7, 12, 0, 52, 48, tzinfo=UTC)),
+        ("2026-07-12T08:52:48+08:00", datetime(2026, 7, 12, 0, 52, 48, tzinfo=UTC)),
+        ("not-a-timestamp", None),
+    ],
+)
+def test_worker_parse_time_normalizes_iso_timestamps_to_utc(monkeypatch, raw, expected):
+    worker = load_worker_module(monkeypatch)
+
+    assert worker.parse_time(raw) == expected
+
+
 def test_worker_settings_payload_validation(monkeypatch):
     worker = load_worker_module(monkeypatch)
 
@@ -459,6 +474,63 @@ def test_worker_health_reports_degraded_cache_quality(monkeypatch):
 
     assert payload["status"] == "degraded"
     assert payload["cacheQuality"]["ok"] is False
+
+
+def _healthy_worker_manifest(generated_at="2026-07-11T21:52:48+00:00"):
+    return {
+        "generatedAt": generated_at,
+        "sourceLastCheckedAt": generated_at,
+        "counts": {"companies": 1000, "analysis": 1000, "entry": 10, "watch": 980, "excluded": 10},
+        "financialFreshness": {
+            "status": "ok",
+            "blocksDeployment": False,
+            "expectedFinancialPeriod": "2026Q1",
+            "latestCachedFinancialPeriod": "2026Q1",
+        },
+    }
+
+
+def test_worker_health_is_fresh_before_dynamic_cache_boundary(monkeypatch):
+    manifest = _healthy_worker_manifest()
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:47+00:00")
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["status"] == "ok"
+    assert payload["cacheStatus"]["isStale"] is False
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-12T00:52:48")
+    assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
+
+
+def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
+    manifest = _healthy_worker_manifest()
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:48+00:00")
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["status"] == "degraded"
+    assert payload["cacheStatus"]["isStale"] is True
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-12T00:52:48")
+    assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
+
+
+def test_worker_health_degrades_after_dynamic_cache_boundary(monkeypatch):
+    manifest = _healthy_worker_manifest()
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:49+00:00")
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["status"] == "degraded"
+    assert payload["cacheStatus"]["isStale"] is True
 
 
 def test_worker_scheduler_auto_scan_reads_d1_settings(monkeypatch):
@@ -1119,6 +1191,7 @@ def test_worker_on_fetch_entrypoint_serves_health(monkeypatch):
             r2_seed(
                 {
                     "public/manifest.json": {
+                        "generatedAt": "2026-02-19T23:00:00+00:00",
                         "counts": {"companies": 1000, "entry": 10, "watch": 980, "excluded": 10, "analysis": 1000},
                         "financialFreshness": {"status": "ok", "blocksDeployment": False},
                     }
