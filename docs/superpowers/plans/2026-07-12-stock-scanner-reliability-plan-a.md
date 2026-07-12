@@ -752,6 +752,8 @@ early.add_argument("--refresh-ahead-minutes", type=float, default=60)
 
 In the workflow, capture curl exit status and validate the response shape without printing the payload. Pass only the fixed marker `D1 pending-job query unavailable` for every invalid/error shape listed above. Initialize the authoritative `refresh-check` step's `stale_refresh` from `steps.early-check.outputs.stale_refresh`, then OR in its own health-check failure before computing `run_refresh`. This carries proactive/non-OK/`isStale`/36-hour evidence through to the actual rebuild. A job-check error alone keeps early `stale_refresh=false`, so the second D1 query still decides whether to rebuild. Add a workflow regression that validates this data flow and final OR, not merely the presence of the string. Change R2 cron to `7,22,37,52 * * * *` and health cron to `11,41 * * * *`.
 
+The R2 workflow is already near its fixed 260-line budget. Keep it within that existing limit by moving response validation/decision logic into `r2_refresh_decision.py` and simplifying shell/comments; do not raise the workflow budget or compress shell into opaque one-liners.
+
 This fail-open guarantee is deliberately scoped to the lightweight early decision: the workflow must not incorrectly skip a needed rebuild because the pending-job check failed. Later migrations/full D1 operations retain their existing failure semantics; a sustained D1 outage is not claimed to permit a complete R2 rebuild in Task 4.
 
 - [ ] **Step 5: Run GREEN and workflow gates**
@@ -760,6 +762,7 @@ This fail-open guarantee is deliberately scoped to the lightweight early decisio
 ..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task4-green tests\test_r2_refresh_workflow_scripts.py tests\test_deployment_preflight.py tests\test_operational_readiness.py
 ..\..\.venv\Scripts\python.exe scripts\check_deployment_preflight.py
 ..\..\.venv\Scripts\python.exe scripts\check_operational_readiness.py
+..\..\.venv\Scripts\python.exe scripts\check_code_size_budgets.py
 ```
 
 Expected: all selected tests and both static gates pass.
