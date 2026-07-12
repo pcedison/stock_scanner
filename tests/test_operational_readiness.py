@@ -6,6 +6,33 @@ from scripts.check_operational_readiness import (
     validate_local_readiness,
 )
 
+HEALTH_CHECK_COMMANDS = (
+    "python scripts/check_cloudflare_health.py",
+    "python scripts/run_remote_smoke.py",
+)
+
+
+def _workflow_python_commands(workflow_text: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    commands = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        command_start = stripped.removeprefix("if ")
+        is_command = not stripped.startswith("#") and any(
+            command_start.startswith(command) for command in HEALTH_CHECK_COMMANDS
+        )
+        if not is_command or not stripped.endswith("\\"):
+            index += 1
+            continue
+        parts = [stripped]
+        while parts[-1].endswith("\\") and index + 1 < len(lines):
+            index += 1
+            parts.append(lines[index].strip())
+        commands.append("\n".join(parts))
+        index += 1
+    return commands
+
 
 def _write_readiness_fixture(
     root: Path,
@@ -95,13 +122,40 @@ def test_local_operational_readiness_accepts_current_guardrails():
 
 
 def test_health_workflows_configure_refresh_grace_and_cache_age_ceiling():
-    health_workflow = Path(".github/workflows/cloudflare-health-monitor.yml").read_text(encoding="utf-8")
-    r2_workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    workflows = (
+        (Path(".github/workflows/cloudflare-health-monitor.yml"), 2),
+        (Path(".github/workflows/cloudflare-r2-seed-refresh.yml"), 3),
+    )
 
-    assert health_workflow.count("--max-refresh-delay-minutes 15") == 2
-    assert health_workflow.count("--max-cache-age-hours 36") == 2
-    assert r2_workflow.count("--max-refresh-delay-minutes 15") == 3
-    assert r2_workflow.count("--max-cache-age-hours 36") == 4
+    for path, expected_count in workflows:
+        commands = _workflow_python_commands(path.read_text(encoding="utf-8"))
+        assert len(commands) == expected_count
+        for command in commands:
+            assert "--max-refresh-delay-minutes 15" in command
+            assert "--max-cache-age-hours 36" in command
+
+
+def test_workflow_python_commands_ignore_comments_and_keep_command_limits_separate():
+    workflow_text = "\n".join(
+        (
+            "# python scripts/check_cloudflare_health.py \\",
+            "#   --max-refresh-delay-minutes 15 \\",
+            "#   --max-cache-age-hours 36",
+            "python scripts/check_cloudflare_health.py \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-cache-age-hours 36",
+            "python scripts/run_remote_smoke.py \\",
+            "  --max-cache-age-hours 36",
+        )
+    )
+
+    commands = _workflow_python_commands(workflow_text)
+
+    assert len(commands) == 2
+    assert commands[0].count("--max-refresh-delay-minutes 15") == 2
+    assert "--max-cache-age-hours 36" in commands[0]
+    assert "--max-refresh-delay-minutes 15" not in commands[1]
 
 
 def test_local_operational_readiness_rejects_mismatched_production_concurrency(tmp_path):

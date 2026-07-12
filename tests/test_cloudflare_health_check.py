@@ -195,15 +195,39 @@ def test_validate_health_payload_prefers_top_level_cache_status_refresh_boundary
         )
 
 
-def test_validate_health_payload_rejects_degraded_or_mismatched_counts():
+def test_validate_health_payload_ignores_overdue_raw_manifest_boundary_when_top_level_policy_is_fresh():
+    payload = _healthy_health_payload()
+    payload["cache"]["nextRefreshAfter"] = "2026-07-12T00:30:00+00:00"
+    payload["cacheStatus"] = {
+        "isStale": False,
+        "nextRefreshAfter": "2026-07-12T02:00:00+00:00",
+    }
+
+    summary = validate_health_payload(
+        payload,
+        max_cache_age_hours=36,
+        max_refresh_delay_minutes=15,
+        now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["refreshDelayMinutes"] is None
+
+
+def test_validate_health_payload_reports_quality_and_count_problems_without_misleading_status():
     payload = {
         "status": "degraded",
         "cache": {"counts": {"companies": 1, "analysis": 1}},
         "cacheQuality": {"ok": False},
     }
 
-    with pytest.raises(RuntimeError, match="health status"):
+    with pytest.raises(RuntimeError) as exc_info:
         validate_health_payload(payload, {"counts": {"companies": 1000, "analysis": 1000}})
+
+    message = str(exc_info.value)
+    assert "cacheQuality.ok is not true" in message
+    assert "deployed manifest counts" in message
+    assert "expected 'ok'" not in message
 
 
 def test_validate_health_payload_rejects_stale_offline_seed():

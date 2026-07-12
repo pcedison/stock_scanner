@@ -144,11 +144,9 @@ def validate_health_payload(
                     )
 
     status = payload.get("status")
-    if policy_stale:
-        if status != "degraded":
-            problems.append(f"health status is {status!r}, expected 'degraded' for stale cache refresh policy")
-    elif status != "ok":
-        problems.append(f"health status is {status!r}, expected 'ok'")
+    expected_status = "degraded" if policy_stale or not cache_quality_ok else "ok"
+    if status != expected_status:
+        problems.append(f"health status is {status!r}, expected {expected_status!r}")
 
     cache_age_hours = None
     checked_at = None
