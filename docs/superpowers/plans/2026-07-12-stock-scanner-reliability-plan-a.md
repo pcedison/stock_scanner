@@ -307,12 +307,16 @@ Do not begin Task 2 until an independent reviewer reports no Critical or Importa
 
 **Files:**
 - Modify: `tests/test_cloudflare_worker.py:1255-1267`
+- Modify: `tests/test_code_size_budgets.py`
 - Modify: `cloudflare/worker.py:249-259`
 - Modify: `cloudflare/worker_observability.py`
+- Create: `cloudflare/worker_market_resilience.py` (maximum 160 lines; no Worker/JS globals)
+- Modify: `scripts/check_code_size_budgets.py`
 
 **Interfaces:**
 - Consumes: Task 1 request ID and structured failure logger.
 - Produces: legacy market POST success with `cacheStatus.refreshStatus="unavailable"` only when a verified last-good R2 scan was already loaded and `ensure_refresh_job` reports a D1 dependency failure.
+- Produces: a focused market-resilience helper that owns only scan verification, refresh enqueue degradation, safe logging, and unavailable cache-status metadata.
 - Preserves: the same compacted arrays as the successful GET, the dependency's original retryability, and no fail-open behavior for malformed/missing R2 scans, non-D1 failures, unexpected exceptions, or any other route.
 
 - [ ] **Step 1: Write the failing degradation test**
@@ -402,12 +406,16 @@ except DependencyFailure as exc:
     }
 ```
 
-After `cache_status_from_manifest` returns, add `retryable` and `requestId` to that route-local cache-status dict only when refresh status is unavailable; do not expect `cache_status_from_manifest` to preserve arbitrary keys. Keep dependency classification (`errorCode`) distinct from the business degradation event. Do not apply this catch to `/api/cache/refresh`, settings, authentication, holdings, reports, or admin routes. Do not raise any size budget; use the remaining focused observability-module budget or a readability-preserving extraction if needed.
+Implement the catch in `worker_market_resilience.py` and call it narrowly from the legacy market POST route. After `cache_status_from_manifest` returns, use the helper to add `retryable` and `requestId` to that route-local cache-status dict only when refresh status is unavailable; do not expect `cache_status_from_manifest` to preserve arbitrary keys. Keep dependency classification (`errorCode`) distinct from the business degradation event. Do not apply this catch to `/api/cache/refresh`, settings, authentication, holdings, reports, or admin routes.
+
+Add `cloudflare/worker_market_resilience.py: 160` to the normal size-budget map/test. Do not raise any existing budget, and keep both the Worker and new module readable rather than compressing long statements.
 
 - [ ] **Step 4: Run GREEN and the full Worker tests**
 
 ```powershell
-..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task2-green tests\test_cloudflare_worker.py tests\test_api_worker_contracts.py
+..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task2-green tests\test_cloudflare_worker.py tests\test_api_worker_contracts.py tests\test_code_size_budgets.py
+..\..\.venv\Scripts\python.exe scripts\check_code_size_budgets.py
+npx.cmd wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir C:\tmp\stock-worker-task2-dry-run
 ```
 
 Expected: all selected tests pass.
@@ -415,7 +423,7 @@ Expected: all selected tests pass.
 - [ ] **Step 5: Commit Task 2**
 
 ```powershell
-git add cloudflare\worker.py cloudflare\worker_observability.py tests\test_cloudflare_worker.py
+git add cloudflare\worker.py cloudflare\worker_observability.py cloudflare\worker_market_resilience.py scripts\check_code_size_budgets.py tests\test_cloudflare_worker.py tests\test_code_size_budgets.py
 git commit -m "fix: serve cached scan when refresh queue fails"
 ```
 
