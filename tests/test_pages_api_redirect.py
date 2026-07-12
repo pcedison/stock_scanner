@@ -1,4 +1,5 @@
 from urllib.error import HTTPError
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,8 @@ from scripts.check_pages_api_redirect import (
     check_pages_api_redirect,
     validate_pages_api_url,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeResponse:
@@ -88,3 +91,20 @@ def test_check_pages_api_proxy_rejects_redirect_or_wrong_runtime():
             "https://stock-scanner-beta.pages.dev/api/health",
             opener=FakeProxyOpener(FakeResponse(body='{"status":"ok","runtime":"other"}')),
         )
+
+
+def test_cloudflare_docs_describe_status_preserving_pages_proxy_and_valid_gate():
+    deployment = (ROOT / "docs" / "cloudflare_deployment.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs" / "current_architecture.md").read_text(encoding="utf-8")
+    combined = f"{deployment}\n{architecture}"
+
+    assert "status-preserving proxy" in deployment
+    assert "healthy `/api/health` returns HTTP 200" in deployment
+    assert "other `/api/*` responses preserve the upstream Worker status" in deployment
+    assert "Production browser mode normally calls the Worker directly" in architecture
+    assert (
+        "python scripts\\check_pages_api_redirect.py --url "
+        "https://stock-scanner-beta.pages.dev/api/health"
+    ) in deployment
+    assert "--expected-origin" not in combined
+    assert "HTTP 307" not in combined

@@ -11,7 +11,7 @@ Current target: Cloudflare Pages + Python Worker + D1 + R2.
 - D1 database: `stock-scanner-beta-db`
 - R2 bucket: `stock-scanner-beta-cache`
 
-Pages serves the frontend, while production browser API calls go directly to the Worker origin declared by `stock-scanner-api-origin`. The older same-origin `/api/*` Pages Function no longer performs Worker-to-Worker proxy fetches because Cloudflare Python Workers can throw `NoGilError` on `cf-worker` subrequests. It now returns a `307` redirect to the Worker API origin for stale clients or manual `/api/*` visits.
+Pages serves the frontend, while production browser API calls normally go directly to the Worker origin declared by `stock-scanner-api-origin`. The same-origin Pages `/api/*` Function remains a status-preserving proxy for stale clients and manual API visits: a healthy `/api/health` returns HTTP 200 with the Worker JSON body, and other `/api/*` responses preserve the upstream Worker status.
 
 ## Required Settings
 
@@ -53,7 +53,7 @@ Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production
 10. Verify deployed `/api/health` freshness.
 11. Verify Worker CORS for `https://stock-scanner-beta.pages.dev`, including the POST preflight used by the browser fallback.
 12. Run deployed public smoke against the Worker `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
-13. Verify `https://stock-scanner-beta.pages.dev/api/health` returns a 307 redirect to the Worker API origin instead of performing a Worker-to-Worker proxy fetch.
+13. Verify `https://stock-scanner-beta.pages.dev/api/health` returns the healthy Worker JSON through the status-preserving Pages proxy.
 14. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
 
 D1 restore remains an operator-reviewed recovery action. Generate a non-destructive plan with:
@@ -117,5 +117,5 @@ Remote production smoke:
 ```powershell
 $env:CF_WORKER_HEALTH_URL='https://stock-scanner-beta-api.<account>.workers.dev/api/health'
 python scripts\run_remote_smoke.py --health-url $env:CF_WORKER_HEALTH_URL --manifest cloudflare\seed\manifest.json
-python scripts\check_pages_api_redirect.py --url 'https://stock-scanner-beta.pages.dev/api/health' --expected-origin 'https://stock-scanner-beta-api.pcedison.workers.dev'
+python scripts\check_pages_api_redirect.py --url https://stock-scanner-beta.pages.dev/api/health
 ```

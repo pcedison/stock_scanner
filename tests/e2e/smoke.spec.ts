@@ -8,10 +8,16 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function closeBlockingModals(page) {
-  await page.locator("#auth-modal:not(.hidden)").waitFor({ state: "attached", timeout: 3000 }).catch(() => {});
+  await page
+    .locator("#auth-modal:not(.hidden)")
+    .waitFor({ state: "attached", timeout: 3000 })
+    .catch(() => {});
   const authCloseButton = page.locator("#close-auth-modal-btn");
   if (await authCloseButton.isVisible()) await authCloseButton.click();
-  await page.locator("#onboarding-modal:not(.hidden)").waitFor({ state: "attached", timeout: 500 }).catch(() => {});
+  await page
+    .locator("#onboarding-modal:not(.hidden)")
+    .waitFor({ state: "attached", timeout: 500 })
+    .catch(() => {});
   const onboardingDeferButton = page.locator("#defer-onboarding-btn");
   if (await onboardingDeferButton.isVisible()) await onboardingDeferButton.click();
 }
@@ -37,26 +43,40 @@ async function showMarketColumn(page, isMobile: boolean, column: string) {
 }
 
 async function registerViaApi(page, username: string, password = "test-password-123") {
-  await page.evaluate(async ({ username, password }) => {
-    const response = await fetch("/api/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ username, password }),
-    });
-    if (response.ok) return;
-    if (response.status === 400) {
-      const login = await fetch("/api/auth/login", {
+  await page.evaluate(
+    async ({ username, password }) => {
+      const response = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify({ username, password }),
       });
-      if (login.ok) return;
-      throw new Error(`login fallback failed: ${login.status}`);
-    }
-    throw new Error(`register failed: ${response.status}`);
-  }, { username, password });
+      if (response.ok) return;
+      if (response.status === 400) {
+        const login = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ username, password }),
+        });
+        if (login.ok) return;
+        throw new Error(`login fallback failed: ${login.status}`);
+      }
+      throw new Error(`register failed: ${response.status}`);
+    },
+    { username, password },
+  );
+}
+
+function withActiveOfficialQuarter(item: any, activePeriod: string, overrides: Record<string, unknown> = {}) {
+  const reasons = (item.reasons || []).filter((reason: any) => reason?.code !== "OFFICIAL_Q");
+  reasons.push({
+    code: "OFFICIAL_Q",
+    passed: true,
+    severity: "INFO",
+    message: `${activePeriod} 官方財報已公告`,
+  });
+  return { ...item, ...overrides, reasons };
 }
 
 test("overview auto-refreshes market counts on load and after login", async ({ page }) => {
@@ -88,9 +108,9 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   const overviewCounts = await page
     .locator("#overview-entry-count, #overview-watch-count, #overview-excluded-count")
     .allTextContents();
-  const navCounts = await page.locator("[data-market-column-nav]").evaluateAll((buttons) =>
-    buttons.map((button) => (button.textContent || "").match(/\((\d+)\)/)?.[1] || ""),
-  );
+  const navCounts = await page
+    .locator("[data-market-column-nav]")
+    .evaluateAll((buttons) => buttons.map((button) => (button.textContent || "").match(/\((\d+)\)/)?.[1] || ""));
   expect(overviewCounts).toEqual(navCounts);
 
   await page.locator("#open-onboarding-btn").click();
@@ -126,6 +146,150 @@ test("manual refresh button forces a POST scan", async ({ page, isMobile }) => {
   await expect
     .poll(() => scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force"))
     .toBeTruthy();
+});
+
+test("manual refresh failure preserves last successful market scan", async ({ page, isMobile }) => {
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+
+  const successfulScan = await page.evaluate(async () => (await fetch("/api/scan/market")).json());
+  const activePeriod = successfulScan.filingContext?.activeFinancialReport?.period;
+  expect(activePeriod).toBeTruthy();
+  expect(successfulScan.entry?.length).toBeGreaterThan(0);
+  const template = successfulScan.entry[0];
+  const lastGoodScan = {
+    ...successfulScan,
+    generatedAt: "2026-07-12T01:00:00+00:00",
+    entry: Array.from({ length: 7 }, (_, index) =>
+      withActiveOfficialQuarter(template, activePeriod, {
+        stockCode: String(9100 + index),
+        companyName: `保留測試公司 ${index + 1}`,
+        detailsAvailable: false,
+        hasFullDetails: true,
+      }),
+    ),
+  };
+
+  let fail = false;
+  await page.route("**/api/scan/market", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    if (fail) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          detail: "不應顯示的上游機密錯誤",
+          code: "DEPENDENCY_UNAVAILABLE",
+          requestId: "test-request-id",
+          retryable: true,
+          stage: "r2_read",
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(lastGoodScan),
+    });
+  });
+
+  await page.locator("#refresh-market-scan-btn").click();
+  await expect(page.locator(".market-result-code strong").filter({ hasText: "9100" })).toHaveCount(1);
+  await page
+    .locator('[data-market-page-tab="announced"][data-market-page-column="entry"][data-market-page-dir="1"]')
+    .click();
+  await expect(page.locator(".market-pagination")).toContainText("第 2 / 2 頁");
+  const toggle = page.locator("[data-market-result-toggle]").first();
+  await toggle.click();
+  await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".market-result-details").first()).toBeVisible();
+
+  const oldTime = await page.locator("#scan-time").textContent();
+  const oldFirstRow = await page.locator("#market-results .market-result-item").first().textContent();
+  const oldPage = await page.locator(".market-pagination").textContent();
+  const oldExpandedId = await page
+    .locator("[data-market-result-toggle]")
+    .first()
+    .getAttribute("data-market-result-toggle");
+  const oldExpandedContent = await page.locator(".market-result-details").first().textContent();
+
+  fail = true;
+  await page.locator("#refresh-market-scan-btn").click();
+  const warning = page.locator(".market-scan-warning");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveAttribute("role", "status");
+  await expect(warning).toContainText("伺服器暫時無法處理請求");
+  await expect(warning).toContainText("test-request-id");
+  await expect(warning).not.toContainText("上游機密錯誤");
+  await expect(page.locator("#scan-time")).toHaveText(oldTime || "");
+  await expect(page.locator("#market-results .market-result-item").first()).toContainText(oldFirstRow || "");
+  await expect(page.locator(".market-pagination")).toHaveText(oldPage || "");
+  await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute(
+    "data-market-result-toggle",
+    oldExpandedId || "",
+  );
+  await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".market-result-details").first()).toContainText(oldExpandedContent || "");
+  await expect(page.locator("#market-results > .form-error")).toHaveCount(0);
+
+  await showMarketColumn(page, isMobile, "watch");
+  await showMarketColumn(page, isMobile, "entry");
+  await expect(page.locator(".market-pagination")).toContainText("第 2 / 2 頁");
+  await expect(warning).toBeVisible();
+  expect(await warning.evaluate((element) => element.parentElement?.firstElementChild === element)).toBe(true);
+  if (isMobile) {
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
+    ).toBe(true);
+    await expect(warning).toBeInViewport();
+  }
+});
+
+test("successful market refresh clears last-good warning", async ({ page, isMobile }) => {
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  const successfulScan = await page.evaluate(async () => (await fetch("/api/scan/market")).json());
+  const activePeriod = successfulScan.filingContext?.activeFinancialReport?.period;
+  expect(activePeriod).toBeTruthy();
+  expect(successfulScan.entry?.length).toBeGreaterThan(0);
+  successfulScan.entry = successfulScan.entry.map((item: any, index: number) =>
+    index === 0 ? withActiveOfficialQuarter(item, activePeriod, { stockCode: "2454", companyName: "聯發科" }) : item,
+  );
+  successfulScan.generatedAt = "2026-07-12T02:00:00+00:00";
+
+  let fail = false;
+  await page.route("**/api/scan/market", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    if (fail) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "不應顯示的上游錯誤", requestId: "retry-id" }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(successfulScan) });
+  });
+
+  await page.locator("#refresh-market-scan-btn").click();
+  await expect(page.locator(".market-result-code strong").filter({ hasText: "2454" })).toHaveCount(1);
+  fail = true;
+  await page.locator("#refresh-market-scan-btn").click();
+  await expect(page.locator(".market-scan-warning")).toHaveCount(1);
+  await expect(page.locator(".market-scan-warning")).toContainText("retry-id");
+  fail = false;
+  await page.locator("#refresh-market-scan-btn").click();
+  await expect(page.locator(".market-scan-warning")).toHaveCount(0);
+  await expect(page.locator(".market-result-code strong").filter({ hasText: "2454" })).toHaveCount(1);
 });
 
 test("settings stay read-only for non-admin users and CSP is strict", async ({ page, isMobile }) => {

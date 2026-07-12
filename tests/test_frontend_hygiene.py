@@ -9,8 +9,9 @@ from scripts.check_frontend_hygiene import (
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
 OPS_DASHBOARD_VERSION = "20260622-ops-dashboard"
-APP_VERSION = OPS_DASHBOARD_VERSION
-MARKET_RENDER_VERSION = OPS_DASHBOARD_VERSION
+API_CLIENT_VERSION = "20260712-resilient-api"
+APP_VERSION = "20260712-last-good-scan"
+MARKET_RENDER_VERSION = "20260712-last-good-scan"
 STRATEGY_CONTENT_VERSION = "20260612-x1-exit-rule"
 DOM_VERSION = "20260525-dom-hardening"
 
@@ -127,7 +128,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert f'src="/strategy_content.js?v={STRATEGY_CONTENT_VERSION}"' in index_html
     assert 'src="/storage.js?v=20260522-frontend-split"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
-    assert 'src="/api_client.js?v=20260530-cacheable-scan-get"' in index_html
+    assert f'src="/api_client.js?v={API_CLIENT_VERSION}"' in index_html
     assert f'src="/market_render.js?v={MARKET_RENDER_VERSION}"' in index_html
     assert f'src="/ops_status.js?v={OPS_DASHBOARD_VERSION}"' in index_html
     assert f'src="/ops_view_renderers.js?v={OPS_DASHBOARD_VERSION}"' in index_html

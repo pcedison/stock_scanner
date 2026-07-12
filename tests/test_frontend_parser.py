@@ -180,7 +180,7 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
     assert payload["fallback"] == "announced"
 
 
-def test_api_client_falls_back_to_worker_after_pages_proxy_5xx():
+def test_api_client_replays_only_safe_reads_after_pages_proxy_5xx():
     script = r"""
 const { createApiClient } = require("./frontend/api_client.js");
 const calls = [];
@@ -212,16 +212,521 @@ const client = createApiClient({
     )
     payload = json.loads(completed.stdout)
 
-    assert payload["firstStatus"] == 200
+    assert payload["firstStatus"] == 503
     assert payload["secondStatus"] == 200
     assert [item["url"] for item in payload["calls"]] == [
         "/api/scan/market",
-        "https://worker.example/api/scan/market",
+        "/api/settings",
         "https://worker.example/api/settings",
     ]
-    assert payload["calls"][1]["credentials"] == "include"
-    assert payload["calls"][1]["csrf"] == "1"
+    assert payload["calls"][2]["credentials"] == "include"
+    assert payload["calls"][2]["csrf"] == "1"
     assert payload["activeOrigin"] == "https://worker.example"
+
+
+def test_api_client_safe_reads_use_rounds_and_bounded_status_retries():
+    payload = _run_node_json(
+        r"""
+const { createApiClient } = require("./frontend/api_client.js");
+
+function response(status) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => "",
+    headers: { get: () => "application/json" },
+  };
+}
+
+async function run({ apiMode, outcomes, method, includeMethod = true, retryCount }) {
+  const calls = [];
+  let attempt = 0;
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), method: options.method || "GET" });
+    const outcome = outcomes[Math.min(attempt, outcomes.length - 1)];
+    attempt += 1;
+    if (outcome === "network") throw new TypeError("transport unavailable");
+    return response(outcome);
+  };
+  const options = {
+    apiMode,
+    fallbackOrigin: "https://worker.example",
+    retryDelaysMs: [0, 0],
+  };
+  if (retryCount !== undefined) options.getRetryCount = retryCount;
+  const client = createApiClient(options);
+  const requestOptions = includeMethod ? { method } : {};
+  try {
+    const finalResponse = await client.request("/api/scan/market", requestOptions);
+    return { status: finalResponse.status, calls };
+  } catch (error) {
+    return { error: error.name, calls };
+  }
+}
+
+(async () => {
+  const results = {
+    direct: await run({ apiMode: "direct", outcomes: [503, 502, 200], method: "GET", retryCount: 2 }),
+    sameDefault: await run({ apiMode: "same-origin", outcomes: [503, 502, 200], includeMethod: false }),
+    fallbackRounds: await run({ apiMode: "fallback", outcomes: [503, 503, 200], method: "GET" }),
+    fallback500ThenOk: await run({ apiMode: "fallback", outcomes: [500, 200], method: "GET" }),
+    fallback503Then500: await run({ apiMode: "fallback", outcomes: [503, 500], method: "GET" }),
+    directExhausted: await run({ apiMode: "direct", outcomes: [504], method: "GET" }),
+    fallbackExhausted: await run({ apiMode: "fallback", outcomes: [502], method: "GET" }),
+    client400: await run({ apiMode: "fallback", outcomes: [400, 200], method: "GET" }),
+    client429: await run({ apiMode: "fallback", outcomes: [429, 200], method: "GET" }),
+    direct500: await run({ apiMode: "direct", outcomes: [500, 200], method: "GET" }),
+    head: await run({ apiMode: "direct", outcomes: [504, 200], method: "HEAD" }),
+    explicitGet: await run({ apiMode: "same-origin", outcomes: [503, 200], method: "GET" }),
+  };
+  console.log(JSON.stringify(results));
+})();
+"""
+    )
+
+    worker_url = "https://worker.example/api/scan/market"
+    assert payload["direct"] == {
+        "status": 200,
+        "calls": [{"url": worker_url, "method": "GET"}] * 3,
+    }
+    assert payload["sameDefault"] == {
+        "status": 200,
+        "calls": [{"url": "/api/scan/market", "method": "GET"}] * 3,
+    }
+    assert payload["fallbackRounds"] == {
+        "status": 200,
+        "calls": [
+            {"url": "/api/scan/market", "method": "GET"},
+            {"url": worker_url, "method": "GET"},
+            {"url": "/api/scan/market", "method": "GET"},
+        ],
+    }
+    assert payload["fallback500ThenOk"]["status"] == 200
+    assert [call["url"] for call in payload["fallback500ThenOk"]["calls"]] == [
+        "/api/scan/market",
+        worker_url,
+    ]
+    assert payload["fallback503Then500"]["status"] == 500
+    assert [call["url"] for call in payload["fallback503Then500"]["calls"]] == [
+        "/api/scan/market",
+        worker_url,
+    ]
+    assert payload["directExhausted"]["status"] == 504
+    assert len(payload["directExhausted"]["calls"]) == 3
+    assert payload["fallbackExhausted"]["status"] == 502
+    assert len(payload["fallbackExhausted"]["calls"]) == 6
+    assert len(payload["client400"]["calls"]) == 1
+    assert len(payload["client429"]["calls"]) == 1
+    assert len(payload["direct500"]["calls"]) == 1
+    assert payload["head"] == {
+        "status": 200,
+        "calls": [{"url": worker_url, "method": "HEAD"}] * 2,
+    }
+    assert payload["explicitGet"]["status"] == 200
+    assert len(payload["explicitGet"]["calls"]) == 2
+
+
+def test_api_client_clears_worker_preference_after_http_exhaustion_but_throws_network_errors():
+    payload = _run_node_json(
+        r"""
+const { createApiClient } = require("./frontend/api_client.js");
+const response = (status) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  text: async () => "",
+  headers: { get: () => "application/json" },
+});
+
+(async () => {
+  const calls = [];
+  const statuses = [503, 200, 503, 503, 503, 503, 503, 503, 200];
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), method: options.method });
+    return response(statuses.shift());
+  };
+  const client = createApiClient({
+    apiMode: "fallback",
+    fallbackOrigin: "https://worker.example",
+    retryDelaysMs: [0, 0],
+  });
+  await client.request("/api/scan/market");
+  const primedOrigin = client.activeOrigin();
+  const exhausted = await client.request("/api/scan/market");
+  const originAfterExhaustion = client.activeOrigin();
+  const recoveryStart = calls.length;
+  await client.request("/api/scan/market");
+
+  let networkCalls = 0;
+  global.fetch = async () => {
+    networkCalls += 1;
+    throw new TypeError("network unavailable");
+  };
+  const networkClient = createApiClient({
+    apiMode: "fallback",
+    fallbackOrigin: "https://worker.example",
+    retryDelaysMs: [0, 0],
+  });
+  let networkError = "";
+  try {
+    await networkClient.request("/api/scan/market");
+  } catch (error) {
+    networkError = error.name;
+  }
+
+  console.log(JSON.stringify({
+    calls,
+    primedOrigin,
+    exhaustedStatus: exhausted.status,
+    originAfterExhaustion,
+    recoveryCalls: calls.slice(recoveryStart),
+    networkCalls,
+    networkError,
+  }));
+})();
+"""
+    )
+
+    assert payload["primedOrigin"] == "https://worker.example"
+    assert payload["exhaustedStatus"] == 503
+    assert payload["originAfterExhaustion"] == ""
+    assert payload["recoveryCalls"] == [{"url": "/api/scan/market", "method": "GET"}]
+    assert payload["networkCalls"] == 6
+    assert payload["networkError"] == "TypeError"
+
+
+def test_api_client_mutations_fetch_one_primary_candidate_and_consume_bodies_once():
+    payload = _run_node_json(
+        r"""
+const { createApiClient } = require("./frontend/api_client.js");
+
+function response(status = 503) {
+  return { ok: false, status, text: async () => "", headers: { get: () => "application/json" } };
+}
+
+async function runMutation(method, apiMode = "fallback", body = `${method}-body`, throwNetwork = false) {
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), method: options.method, body: options.body });
+    if (throwNetwork) throw new TypeError("unknown commit outcome");
+    return response();
+  };
+  const client = createApiClient({
+    apiMode,
+    fallbackOrigin: "https://worker.example",
+    getRetryCount: 2,
+    retryDelaysMs: [0, 0],
+  });
+  try {
+    const result = await client.request("/api/scan/market", { method, body });
+    return { status: result.status, calls };
+  } catch (error) {
+    return { error: error.name, calls };
+  }
+}
+
+(async () => {
+  const methods = {};
+  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+    methods[method] = await runMutation(method);
+  }
+  const direct = await runMutation("POST", "direct", '{"refreshMode":"force"}');
+  const network = await runMutation("POST", "fallback", "payload", true);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("one-shot"));
+      controller.close();
+    },
+  });
+  let streamReads = 0;
+  const streamCalls = [];
+  global.fetch = async (url, options) => {
+    streamCalls.push({ url: String(url), method: options.method, sameBody: options.body === stream });
+    const reader = options.body.getReader();
+    await reader.read();
+    streamReads += 1;
+    return response();
+  };
+  const streamClient = createApiClient({ apiMode: "fallback", fallbackOrigin: "https://worker.example" });
+  let streamResponse = null;
+  let streamError = "";
+  try {
+    streamResponse = await streamClient.request("/api/scan/market", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    });
+  } catch (error) {
+    streamError = error.name;
+  }
+
+  console.log(JSON.stringify({ methods, direct, network, streamStatus: streamResponse?.status || null, streamError, streamCalls, streamReads }));
+})();
+"""
+    )
+
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        result = payload["methods"][method]
+        assert result["status"] == 503
+        assert result["calls"] == [
+            {"url": "/api/scan/market", "method": method, "body": f"{method}-body"}
+        ]
+    assert payload["direct"]["calls"] == [
+        {
+            "url": "https://worker.example/api/scan/market",
+            "method": "POST",
+            "body": '{"refreshMode":"force"}',
+        }
+    ]
+    assert payload["network"]["error"] == "TypeError"
+    assert len(payload["network"]["calls"]) == 1
+    assert payload["streamStatus"] == 503
+    assert payload["streamError"] == ""
+    assert payload["streamCalls"] == [
+        {"url": "/api/scan/market", "method": "POST", "sameBody": True}
+    ]
+    assert payload["streamReads"] == 1
+
+
+def test_api_client_transport_retry_and_abort_are_terminal_and_abortable():
+    payload = _run_node_json(
+        r"""
+const { createApiClient } = require("./frontend/api_client.js");
+const ok = { ok: true, status: 200, text: async () => "", headers: { get: () => "application/json" } };
+const unavailable = { ok: false, status: 503, text: async () => "", headers: { get: () => "application/json" } };
+
+(async () => {
+  let transportCalls = 0;
+  global.fetch = async () => {
+    transportCalls += 1;
+    if (transportCalls === 1) throw new TypeError("temporary network failure");
+    return ok;
+  };
+  const transportClient = createApiClient({
+    apiMode: "direct",
+    fallbackOrigin: "https://worker.example",
+    retryDelaysMs: [0, 0],
+  });
+  let transportResponse = null;
+  let transportError = "";
+  try {
+    transportResponse = await transportClient.request("/api/scan/market");
+  } catch (error) {
+    transportError = error.name;
+  }
+
+  let abortCalls = 0;
+  global.fetch = async () => {
+    abortCalls += 1;
+    throw new DOMException("caller cancelled", "AbortError");
+  };
+  const abortClient = createApiClient({
+    apiMode: "direct",
+    fallbackOrigin: "https://worker.example",
+    retryDelaysMs: [0, 0],
+  });
+  let abortName = "";
+  try {
+    await abortClient.request("/api/scan/market");
+  } catch (error) {
+    abortName = error.name;
+  }
+
+  let backoffCalls = 0;
+  const controller = new AbortController();
+  global.fetch = async () => {
+    backoffCalls += 1;
+    return unavailable;
+  };
+  const backoffClient = createApiClient({
+    apiMode: "direct",
+    fallbackOrigin: "https://worker.example",
+    retryDelaysMs: [100, 0],
+  });
+  const pending = backoffClient.request("/api/scan/market", { signal: controller.signal });
+  setTimeout(() => controller.abort(), 5);
+  let backoffAbortName = "";
+  try {
+    await pending;
+  } catch (error) {
+    backoffAbortName = error.name;
+  }
+
+  console.log(JSON.stringify({
+    transportStatus: transportResponse?.status || null,
+    transportError,
+    transportCalls,
+    abortName,
+    abortCalls,
+    backoffAbortName,
+    backoffCalls,
+  }));
+})();
+"""
+    )
+
+    assert payload == {
+        "transportStatus": 200,
+        "transportError": "",
+        "transportCalls": 2,
+        "abortName": "AbortError",
+        "abortCalls": 1,
+        "backoffAbortName": "AbortError",
+        "backoffCalls": 1,
+    }
+
+
+def test_api_error_message_exposes_only_strict_request_ids_for_server_errors():
+    payload = _run_node_json(
+        r"""
+const { apiErrorMessage } = require("./frontend/app.js");
+
+function message(body, contentType = "application/json") {
+  return apiErrorMessage(
+    { status: 503, headers: { get: () => contentType } },
+    typeof body === "string" ? body : JSON.stringify(body),
+  );
+}
+
+const validIds = ["a", "request-123._:ok", "x".repeat(80)];
+const invalidIds = [
+  "",
+  " ",
+  "x".repeat(81),
+  "line\nbreak",
+  "line\rbreak",
+  "<b>html</b>",
+  "追蹤編號",
+  123,
+  { nested: true },
+];
+const valid = validIds.map((requestId) => ({ requestId, text: message({ detail: "secret detail", requestId }) }));
+const invalid = invalidIds.map((requestId) => message({ detail: "secret detail", requestId }));
+console.log(JSON.stringify({
+  valid,
+  invalid,
+  malformed: message('{"detail":', "application/json"),
+  nonJson: message("secret upstream body request-123", "text/plain"),
+}));
+"""
+    )
+
+    generic = "伺服器暫時無法處理請求，請稍後再試。"
+    for item in payload["valid"]:
+        assert item["text"].startswith(generic)
+        assert f"追蹤編號：{item['requestId']}" in item["text"]
+        assert "secret detail" not in item["text"]
+    assert payload["invalid"] == [generic] * 9
+    assert payload["malformed"] == generic
+    assert payload["nonJson"] == generic
+
+
+def test_market_scan_acceptance_and_failure_helpers_own_warning_lifecycle():
+    source = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    market_render_source = (ROOT / "frontend" / "market_render.js").read_text(encoding="utf-8")
+    assert "acceptMarketScan(state.schedulerAutoScan.scan" in source
+    assert source.count("return handleMarketScanFailure(error, { revealResults, target })") == 2
+    assert "state.marketScan = scan" not in source
+    assert market_render_source.count("state.marketScan = scan") == 1
+
+    payload = _run_node_json(
+        r"""
+const app = require("./frontend/app.js");
+const available =
+  typeof app.acceptMarketScan === "function" &&
+  typeof app.handleMarketScanFailure === "function";
+if (!available) {
+  console.log(JSON.stringify({ available }));
+} else {
+  const base = {
+    generatedAt: "2026-07-12T00:00:00Z",
+    entry: [],
+    watch: [],
+    excluded: [],
+  };
+  app.state.marketScan = base;
+  app.state.marketScanWarning = null;
+  const returned = app.handleMarketScanFailure(new Error("伺服器暫時無法處理請求，請稍後再試。（追蹤編號：failure-id）"), {
+    revealResults: false,
+    target: null,
+  });
+  const failureWarning = app.state.marketScanWarning;
+  app.acceptMarketScan({
+    ...base,
+    cacheStatus: { refreshStatus: "unavailable", requestId: "task2-id" },
+  }, { resetUi: false });
+  const unavailableWarning = app.state.marketScanWarning;
+  app.acceptMarketScan({ ...base, cacheStatus: { refreshStatus: "fresh" } }, { resetUi: false });
+  console.log(JSON.stringify({
+    available,
+    preserved: returned === base && app.state.marketScan.generatedAt === base.generatedAt,
+    failureWarning,
+    unavailableWarning,
+    cleared: app.state.marketScanWarning === null,
+  }));
+}
+"""
+    )
+
+    assert payload["available"] is True
+    assert payload["preserved"] is True
+    assert "failure-id" in payload["failureWarning"]
+    assert "暫時" in payload["unavailableWarning"]
+    assert "task2-id" in payload["unavailableWarning"]
+    assert payload["cleared"] is True
+
+
+def test_background_get_and_shared_waiter_preserve_the_same_last_good_scan():
+    payload = _run_node_json(
+        r"""
+global.StockScannerConfig = { apiMode: "same-origin" };
+const app = require("./frontend/app.js");
+const available = typeof app.refreshMarketScan === "function";
+if (!available) {
+  console.log(JSON.stringify({ available }));
+} else {
+  (async () => {
+    const base = {
+      generatedAt: "2026-07-12T00:00:00Z",
+      entry: [],
+      watch: [],
+      excluded: [],
+    };
+    app.state.marketScan = base;
+    app.state.marketScanWarning = null;
+    const target = {};
+    global.document = { querySelector: (selector) => selector === "#market-results" ? target : null };
+    let fetchCalls = 0;
+    let rejectFetch = null;
+    global.fetch = async () => {
+      fetchCalls += 1;
+      return new Promise((resolve, reject) => {
+        rejectFetch = reject;
+      });
+    };
+
+    const background = app.refreshMarketScan({ refreshMode: "auto" });
+    const sharedWaiter = app.refreshMarketScan({ refreshMode: "auto" });
+    await Promise.resolve();
+    delete global.document;
+    rejectFetch(new DOMException("caller aborted", "AbortError"));
+    const results = await Promise.all([background, sharedWaiter]);
+
+    console.log(JSON.stringify({
+      available,
+      fetchCalls,
+      sameLastGood: results[0] === base && results[1] === base && app.state.marketScan === base,
+      warning: app.state.marketScanWarning,
+    }));
+  })();
+}
+"""
+    )
+
+    assert payload["available"] is True
+    assert payload["fetchCalls"] == 1
+    assert payload["sameLastGood"] is True
+    assert "伺服器暫時無法處理請求" in payload["warning"]
 
 
 def test_api_client_does_not_direct_fallback_for_account_mutations():

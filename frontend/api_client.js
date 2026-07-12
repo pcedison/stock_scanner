@@ -1,5 +1,8 @@
 const DEFAULT_WORKER_API_ORIGIN = "https://stock-scanner-beta-api.pcedison.workers.dev";
 const RETRYABLE_API_STATUSES = new Set([500, 502, 503, 504]);
+const SAME_ENDPOINT_RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const IDEMPOTENT_API_METHODS = new Set(["GET", "HEAD"]);
+const DEFAULT_GET_RETRY_DELAYS_MS = [150, 450];
 const PUBLIC_DIRECT_FALLBACK_ROUTES = [
   /^GET \/api\/health$/,
   /^GET \/api\/app-status$/,
@@ -12,11 +15,6 @@ const PUBLIC_DIRECT_FALLBACK_ROUTES = [
   /^GET \/api\/calendar\//,
   /^GET \/api\/companies(?:$|[/?])/,
   /^GET \/api\/scan\/market$/,
-  /^POST \/api\/scan\/market$/,
-  /^POST \/api\/scan\/holdings$/,
-  /^POST \/api\/analyze\//,
-  /^POST \/api\/reports\/market$/,
-  /^POST \/api\/reports\/holdings$/,
 ];
 
 function normalizeApiOrigin(value) {
@@ -47,15 +45,21 @@ function configuredApiOrigin(explicitOrigin) {
 }
 
 function configuredApiMode(explicitMode) {
-  const normalized = String(explicitMode || "").trim().toLowerCase();
+  const normalized = String(explicitMode || "")
+    .trim()
+    .toLowerCase();
   if (["direct", "fallback", "same-origin"].includes(normalized)) return normalized;
 
-  const runtimeMode = String(globalThis.StockScannerConfig?.apiMode || "").trim().toLowerCase();
+  const runtimeMode = String(globalThis.StockScannerConfig?.apiMode || "")
+    .trim()
+    .toLowerCase();
   if (["direct", "fallback", "same-origin"].includes(runtimeMode)) return runtimeMode;
 
   if (typeof document !== "undefined") {
     const meta = document.querySelector('meta[name="stock-scanner-api-mode"]');
-    const metaMode = String(meta?.getAttribute("content") || "").trim().toLowerCase();
+    const metaMode = String(meta?.getAttribute("content") || "")
+      .trim()
+      .toLowerCase();
     if (["direct", "fallback", "same-origin"].includes(metaMode)) return metaMode;
   }
 
@@ -84,7 +88,9 @@ function normalizedApiPath(url) {
 }
 
 function allowsDirectFallback(url, method = "GET") {
-  const route = `${String(method || "GET").toUpperCase()} ${normalizedApiPath(url)}`;
+  const normalizedMethod = String(method || "GET").toUpperCase();
+  const routeMethod = normalizedMethod === "HEAD" ? "GET" : normalizedMethod;
+  const route = `${routeMethod} ${normalizedApiPath(url)}`;
   return PUBLIC_DIRECT_FALLBACK_ROUTES.some((pattern) => pattern.test(route));
 }
 
@@ -97,9 +103,40 @@ function cloneHeaders(headers = {}, csrfHeaderName, csrfHeaderValue) {
   return cloned;
 }
 
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (typeof DOMException === "function") return new DOMException("The operation was aborted", "AbortError");
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error, signal) {
+  return Boolean(signal?.aborted || error?.name === "AbortError");
+}
+
+function abortableDelay(delayMs, signal) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  const milliseconds = Math.max(0, Number(delayMs) || 0);
+  if (!milliseconds) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function createApiClient(options = {}) {
   const fallbackOrigin = configuredApiOrigin(options.fallbackOrigin);
   const apiMode = configuredApiMode(options.apiMode);
+  const getRetryCount = Number.isInteger(options.getRetryCount) ? Math.max(0, options.getRetryCount) : 2;
+  const retryDelaysMs = Array.isArray(options.retryDelaysMs) ? options.retryDelaysMs : DEFAULT_GET_RETRY_DELAYS_MS;
   let activeOrigin = "";
 
   function candidates(url, method) {
@@ -117,36 +154,73 @@ function createApiClient(options = {}) {
     return activeOrigin === fallbackOrigin ? [directWorker, sameOrigin] : [sameOrigin, directWorker];
   }
 
-  function shouldRetry(response, index, list) {
-    return index < list.length - 1 && RETRYABLE_API_STATUSES.has(Number(response?.status) || 0);
+  function rememberResponseOrigin(response, candidate) {
+    activeOrigin = response.ok && candidate.origin ? candidate.origin : "";
+    return response;
   }
 
   async function request(url, requestOptions = {}) {
     const { headers = {}, ...rest } = requestOptions;
-    const list = candidates(url, rest.method || "GET");
-    let lastError = null;
+    const method = String(rest.method || "GET").toUpperCase();
+    const safeMethod = IDEMPOTENT_API_METHODS.has(method);
+    const list = candidates(url, method);
+    const fetchCandidate = async (candidate) => {
+      if (rest.signal?.aborted) throw abortError(rest.signal);
+      return fetch(candidate.url, {
+        ...rest,
+        method,
+        headers: cloneHeaders(headers, options.csrfHeaderName, options.csrfHeaderValue),
+        credentials: candidate.origin ? "include" : rest.credentials || "same-origin",
+      });
+    };
 
-    for (let index = 0; index < list.length; index += 1) {
-      const candidate = list[index];
-      try {
-        const response = await fetch(candidate.url, {
-          ...rest,
-          headers: cloneHeaders(headers, options.csrfHeaderName, options.csrfHeaderValue),
-          credentials: candidate.origin ? "include" : rest.credentials || "same-origin",
-        });
-        if (shouldRetry(response, index, list)) {
-          lastError = response;
-          continue;
+    if (!safeMethod) {
+      const primary = list[0];
+      return rememberResponseOrigin(await fetchCandidate(primary), primary);
+    }
+
+    let lastResult = null;
+    for (let round = 0; round <= getRetryCount; round += 1) {
+      let roundCanRetry = true;
+      for (let index = 0; index < list.length; index += 1) {
+        const candidate = list[index];
+        const hasNextCandidate = index < list.length - 1;
+        try {
+          const response = await fetchCandidate(candidate);
+          const status = Number(response?.status) || 0;
+          lastResult = response;
+          if (RETRYABLE_API_STATUSES.has(status) && hasNextCandidate) {
+            if (status === 500) roundCanRetry = false;
+            continue;
+          }
+          if (SAME_ENDPOINT_RETRYABLE_STATUSES.has(status)) {
+            if (hasNextCandidate) continue;
+            break;
+          }
+          return rememberResponseOrigin(response, candidate);
+        } catch (error) {
+          if (isAbortError(error, rest.signal)) throw abortError(rest.signal);
+          lastResult = error;
+          if (hasNextCandidate) continue;
+          break;
         }
-        activeOrigin = response.ok && candidate.origin ? candidate.origin : "";
-        return response;
+      }
+
+      if (!roundCanRetry || round >= getRetryCount) {
+        if (lastResult instanceof Error) throw lastResult;
+        activeOrigin = "";
+        return lastResult;
+      }
+      const delayMs = retryDelaysMs[round] ?? retryDelaysMs.at(-1) ?? 0;
+      try {
+        await abortableDelay(delayMs, rest.signal);
       } catch (error) {
-        lastError = error;
-        if (index >= list.length - 1) throw error;
+        if (isAbortError(error, rest.signal)) throw abortError(rest.signal);
+        throw error;
       }
     }
 
-    return lastError;
+    return lastResult;
   }
 
   return {

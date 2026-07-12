@@ -1,10 +1,8 @@
 const COMPANIES_PAGE_LIMIT = 500;
 const MAX_COMPANY_PAGES = 10;
 
-const _isCjs =
-  typeof require === "function" && typeof module !== "undefined" && module.exports;
-const _mod = (globalKey, requirePath) =>
-  _isCjs ? require(requirePath) : globalThis[globalKey];
+const _isCjs = typeof require === "function" && typeof module !== "undefined" && module.exports;
+const _mod = (globalKey, requirePath) => (_isCjs ? require(requirePath) : globalThis[globalKey]);
 
 const REFERENCE_DATA = _mod("StockScannerReferenceData", "./reference_data.js");
 const STRATEGY_CONTENT = _mod("StockScannerStrategyContent", "./strategy_content.js");
@@ -18,6 +16,8 @@ const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
 const API_CLIENT_HELPERS = _mod("StockScannerApiClient", "./api_client.js");
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
+const safeRequestId = (value) => (typeof value === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(value) ? value : "");
+const appendRequestId = (message, requestId) => (requestId ? `${message}（追蹤編號：${requestId}）` : message);
 const { authValidationMessage, isSuperUserIdentity, normalizeAuthUser, normalizeAuthUsername } = AUTH_HELPERS;
 const { DEFAULT_COMPANIES } = REFERENCE_DATA;
 const { STRATEGY_STATUS_DETAILS, STRATEGY_RULE_THRESHOLDS } = STRATEGY_CONTENT;
@@ -43,6 +43,7 @@ const state = {
   settings: { ...DEFAULT_SETTINGS },
   selectedCompany: null,
   marketScan: null,
+  marketScanWarning: null,
   holdingsScan: null,
   onboardingDraft: [],
   editingHoldingCode: null,
@@ -75,7 +76,6 @@ const state = {
   isSyncingHoldings: false,
   pendingHoldingsSync: false,
 };
-
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const MOBILE_NAV_BREAKPOINT = 680;
@@ -248,26 +248,30 @@ const {
   strategyStatusDetails: STRATEGY_STATUS_DETAILS,
   strategyRuleThresholds: STRATEGY_RULE_THRESHOLDS,
 });
-const { renderDataConsole, renderHoldingCard, renderSchedulerStatus } = OPS_VIEW_RENDERER_HELPERS.createOpsViewRenderers({
-  escapeHtml,
-  safeCompanyName,
-  renderHoldingSignal,
-  displayResultStatus,
-});
+const { renderDataConsole, renderHoldingCard, renderSchedulerStatus } =
+  OPS_VIEW_RENDERER_HELPERS.createOpsViewRenderers({
+    escapeHtml,
+    safeCompanyName,
+    renderHoldingSignal,
+    displayResultStatus,
+  });
 
 const MARKET_RENDER_HELPERS = _mod("StockScannerMarketRender", "./market_render.js");
 const {
   getMarketPage,
-  resetMarketListUi,
   clampMarketListPages,
   renderMarketPagination,
   renderMarketResultRow,
   renderMarketColumn,
   renderScanCacheStatus,
+  acceptMarketScan,
+  renderMarketScanWarning,
 } = MARKET_RENDER_HELPERS.createMarketRender({
   getState: () => state,
   escapeHtml,
   safeText,
+  safeRequestId,
+  appendRequestId,
   safeCompanyName,
   displayResultStatus,
   statusClass,
@@ -301,21 +305,31 @@ function holdingExitCodes(result = {}) {
 
 function holdingSignal(result = null, missing = null) {
   const display = result ? displayResultStatus(result, "holding") : null;
-  return HOLDING_SIGNAL_HELPERS.holdingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
-    isScanning: state.isScanningHoldings,
-  });
+  return HOLDING_SIGNAL_HELPERS.holdingSignal(
+    display ? { ...result, status: display.status, summary: display.summary } : result,
+    missing,
+    {
+      isScanning: state.isScanningHoldings,
+    },
+  );
 }
 
 function renderHoldingSignal(result = null, missing = null) {
   const display = result ? displayResultStatus(result, "holding") : null;
-  return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
-    isScanning: state.isScanningHoldings,
-  });
+  return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(
+    display ? { ...result, status: display.status, summary: display.summary } : result,
+    missing,
+    {
+      isScanning: state.isScanningHoldings,
+    },
+  );
 }
 
 function holdingExitAlerts(scan = state.holdingsScan) {
   const results = Array.isArray(scan?.results) ? scan.results : [];
-  const savedHoldingCodes = new Set(state.holdings.map((holding) => String(holding.stockCode || "").trim()).filter(Boolean));
+  const savedHoldingCodes = new Set(
+    state.holdings.map((holding) => String(holding.stockCode || "").trim()).filter(Boolean),
+  );
   return results
     .map((result) => {
       const signal = holdingSignal(result);
@@ -338,7 +352,11 @@ function holdingExitAlerts(scan = state.holdingsScan) {
     });
 }
 
-const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({ query: $, getState: () => state, holdingExitAlerts });
+const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({
+  query: $,
+  getState: () => state,
+  holdingExitAlerts,
+});
 function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
   if (!alerts.length) return "";
   const exitCount = alerts.filter((item) => item.status === "EXIT").length;
@@ -526,7 +544,9 @@ async function apiFetch(url, options = {}) {
 
 function apiErrorMessage(response, text = "") {
   const status = Number(response?.status) || 0;
-  const contentType = String(response?.headers?.get?.("content-type") || response?.headers?.get?.("Content-Type") || "").toLowerCase();
+  const contentType = String(
+    response?.headers?.get?.("content-type") || response?.headers?.get?.("Content-Type") || "",
+  ).toLowerCase();
   const fallback =
     status >= 500
       ? "伺服器暫時無法處理請求，請稍後再試。"
@@ -541,12 +561,17 @@ function apiErrorMessage(response, text = "") {
     try {
       const payload = JSON.parse(text);
       const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
-      return status >= 500 || detail.startsWith("Cloudflare Worker API error:") ? fallback : detail || fallback;
+      const requestId = safeRequestId(payload.requestId);
+      if (status >= 500 || detail.startsWith("Cloudflare Worker API error:")) {
+        return appendRequestId(fallback, requestId);
+      }
+      return detail || fallback;
     } catch {
       return fallback;
     }
   }
 
+  if (status >= 500) return fallback;
   const normalized = text.trim();
   if (!normalized || /<(!doctype|html|head|body|script|style)\b/i.test(normalized)) return fallback;
   return normalized.length <= 240 ? normalized : fallback;
@@ -559,7 +584,6 @@ function hasCompletedOnboarding(storage = localStorage, user = state.auth?.user 
 function markOnboardingDone(storage = localStorage, user = state.auth?.user || null) {
   STORAGE_HELPERS.markOnboardingDone(storage, user);
 }
-
 
 function shouldPromptOnboarding() {
   return Boolean(state.auth?.authenticated && !hasCompletedOnboarding() && !state.holdings.length);
@@ -799,14 +823,18 @@ function renderAdminUsers() {
     setEmptyState(target, "目前沒有其他使用者");
     return;
   }
-  setSafeHtml(target, state.adminUsers
-    .map((user) => {
-      const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
-      const badge = user.isSuperUser ? `<span class="status-pill status-entry">super user</span>` : `<span class="status-pill neutral">一般使用者</span>`;
-      const deleteButton = user.canDelete
-        ? `<button class="small-danger-btn" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-username="${escapeHtml(user.username)}">刪除</button>`
-        : `<button class="ghost-btn" type="button" disabled>不可刪除</button>`;
-      return `
+  setSafeHtml(
+    target,
+    state.adminUsers
+      .map((user) => {
+        const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
+        const badge = user.isSuperUser
+          ? `<span class="status-pill status-entry">super user</span>`
+          : `<span class="status-pill neutral">一般使用者</span>`;
+        const deleteButton = user.canDelete
+          ? `<button class="small-danger-btn" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-username="${escapeHtml(user.username)}">刪除</button>`
+          : `<button class="ghost-btn" type="button" disabled>不可刪除</button>`;
+        return `
         <article class="admin-user-card">
           <div>
             <div class="admin-user-title">
@@ -823,8 +851,9 @@ function renderAdminUsers() {
           ${deleteButton}
         </article>
       `;
-    })
-    .join(""));
+      })
+      .join(""),
+  );
 }
 
 function adminUsersErrorMessage(message) {
@@ -885,7 +914,9 @@ function renderSelectedCompany() {
 
   state.selectedCompany = company;
   target.className = "selected-company card selected-company-card";
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="card-head">
       <div>
         <h3 class="stock-title">${escapeHtml(company.stockCode)} ${escapeHtml(company.name)}</h3>
@@ -897,7 +928,8 @@ function renderSelectedCompany() {
       <button class="secondary-btn" type="button" id="analyze-selected-btn">單檔分析</button>
       <button class="primary-btn" type="button" id="add-selected-btn">加入持股</button>
     </div>
-  `);
+  `,
+  );
 }
 
 function renderHoldings() {
@@ -909,17 +941,20 @@ function renderHoldings() {
     return;
   }
 
-  setSafeHtml(target, state.holdings
-    .map((holding) => {
-      const stockCode = safeText(holding.stockCode, "未知代碼");
-      return renderHoldingCard({
-        holding: { ...holding, stockCode },
-        isEditing: state.editingHoldingCode === stockCode,
-        analysis: holdingScanResultByCode(stockCode),
-        missing: holdingScanMissingByCode(stockCode),
-      });
-    })
-    .join(""));
+  setSafeHtml(
+    target,
+    state.holdings
+      .map((holding) => {
+        const stockCode = safeText(holding.stockCode, "未知代碼");
+        return renderHoldingCard({
+          holding: { ...holding, stockCode },
+          isEditing: state.editingHoldingCode === stockCode,
+          analysis: holdingScanResultByCode(stockCode),
+          missing: holdingScanMissingByCode(stockCode),
+        });
+      })
+      .join(""),
+  );
 }
 
 function renderOnboardingDraft() {
@@ -935,9 +970,10 @@ function renderOnboardingDraft() {
   }
 
   list.className = "draft-list";
-  setSafeHtml(list, state.onboardingDraft
-    .map(
-      (holding) => {
+  setSafeHtml(
+    list,
+    state.onboardingDraft
+      .map((holding) => {
         const stockCode = safeText(holding.stockCode, "未知代碼");
         const name = safeCompanyName(holding);
         const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
@@ -954,9 +990,9 @@ function renderOnboardingDraft() {
           <button class="small-danger-btn" type="button" data-remove-draft="${escapeHtml(stockCode)}">移除</button>
         </article>
       `;
-      },
-    )
-    .join(""));
+      })
+      .join(""),
+  );
 }
 
 function renderSettings() {
@@ -996,7 +1032,9 @@ function renderStrategyStatusDetail() {
     return;
   }
   target.classList.remove("hidden");
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="strategy-detail-head">
       <h3>${escapeHtml(detail.label)}</h3>
       <p>${escapeHtml(detail.summary)}</p>
@@ -1016,7 +1054,8 @@ function renderStrategyStatusDetail() {
         )
         .join("")}
     </div>
-  `);
+  `,
+  );
   applyEvidenceBarWidths(target);
 }
 
@@ -1052,7 +1091,7 @@ function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDis
   $$("[data-market-column-nav]").forEach((button) => {
     const columnKey = button.dataset.marketColumnNav;
     const label = MARKET_COLUMN_LABELS[columnKey] || columnKey;
-    const count = grouped ? grouped?.[tabKey]?.[columnKey]?.length ?? 0 : null;
+    const count = grouped ? (grouped?.[tabKey]?.[columnKey]?.length ?? 0) : null;
     button.classList.toggle("active", columnKey === activeMarketColumnKey());
     button.textContent = count === null ? label : `${label} (${count})`;
   });
@@ -1109,7 +1148,9 @@ function renderMarketResults() {
   const freshnessSummary = state.marketScan.financialFreshness?.message
     ? `財報快取：${state.marketScan.financialFreshness.message}`
     : "";
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="data-source-note">
       <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
       <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
@@ -1132,11 +1173,12 @@ function renderMarketResults() {
     <div class="result-columns single-result-column">
       ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
     </div>
-  `);
+  `,
+  );
+  renderMarketScanWarning(target);
   applyEvidenceBarWidths(target);
   renderOverviewStats(state.marketScan, activeTab);
 }
-
 function renderDataAndScheduler() {
   const dataTarget = $("#data-source-status");
   const schedulerTarget = $("#scheduler-status");
@@ -1145,11 +1187,14 @@ function renderDataAndScheduler() {
       setEmptyState(dataTarget, "資料來源狀態暫時無法讀取");
     } else {
       const status = state.dataSourceStatus;
-      setSafeHtml(dataTarget, renderDataConsole({
-        status,
-        integrationStatus: state.integrationStatus,
-        backtestStatus: state.backtestStatus,
-      }));
+      setSafeHtml(
+        dataTarget,
+        renderDataConsole({
+          status,
+          integrationStatus: state.integrationStatus,
+          backtestStatus: state.backtestStatus,
+        }),
+      );
     }
   }
 
@@ -1158,10 +1203,13 @@ function renderDataAndScheduler() {
       setSafeHtml(schedulerTarget, "<strong>排程狀態</strong><span>排程狀態暫時無法讀取</span>");
     } else {
       const autoAction = state.schedulerAutoScan?.action || "--";
-      setSafeHtml(schedulerTarget, renderSchedulerStatus({
-        schedulerStatus: state.schedulerStatus,
-        autoAction,
-      }));
+      setSafeHtml(
+        schedulerTarget,
+        renderSchedulerStatus({
+          schedulerStatus: state.schedulerStatus,
+          autoAction,
+        }),
+      );
     }
   }
 }
@@ -1174,26 +1222,27 @@ function renderHoldingResults() {
   }
   $("#scan-time").textContent = `更新 ${new Date(state.holdingsScan.generatedAt).toLocaleString()}`;
   const missing = state.holdingsScan.missing || [];
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="stack">
       ${(state.holdingsScan.results || []).map((result) => renderAnalysisCard(result, { allowExitAction: true, disclosureGroup: "holding" })).join("")}
       ${missing
-        .map(
-          (item) => {
-            const stockCode = safeText(item.stockCode, "未知代碼");
-            const name = safeText(item.name, "未知公司");
-            return `
+        .map((item) => {
+          const stockCode = safeText(item.stockCode, "未知代碼");
+          const name = safeText(item.name, "未知公司");
+          return `
           <article class="card">
             <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(name)}</h3>
             <p class="form-error">${escapeHtml(item.reason || "找不到財報示範資料")}</p>
           </article>
         `;
-          },
-        )
+        })
         .join("")}
       ${!(state.holdingsScan.results || []).length && !missing.length ? `<div class="empty-state">沒有可掃描持股</div>` : ""}
     </div>
-  `);
+  `,
+  );
   applyEvidenceBarWidths(target);
 }
 
@@ -1228,7 +1277,10 @@ function showView(view) {
   if (view === "admin" && isSuperUser() && !state.adminUsers.length && !state.adminIsLoading) loadAdminUsers();
   if (view === "admin") renderAdminUsers();
   if (view === "data") renderDataAndScheduler();
-  updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
+  updateMarketColumnNav(
+    state.marketScan ? groupMarketScanResults(state.marketScan) : null,
+    state.activeMarketDisclosureTab,
+  );
   renderOverviewStats(state.marketScan, state.activeMarketDisclosureTab);
 }
 
@@ -1272,8 +1324,7 @@ async function loadDataStatus() {
     state.integrationStatus = status.integrationStatus;
     state.backtestStatus = status.backtestStatus;
     if (state.schedulerAutoScan?.scan) {
-      state.marketScan = state.schedulerAutoScan.scan;
-      resetMarketListUi();
+      acceptMarketScan(state.schedulerAutoScan.scan, { resetUi: true });
       renderMarketResults();
     }
   } catch {
@@ -1314,7 +1365,9 @@ function localSearch(query) {
   const normalized = normalizeText(query).toLowerCase();
   if (!normalized) return [];
   return companySource(state.companies)
-    .filter((company) => `${company.stockCode} ${company.name} ${company.industryName}`.toLowerCase().includes(normalized))
+    .filter((company) =>
+      `${company.stockCode} ${company.name} ${company.industryName}`.toLowerCase().includes(normalized),
+    )
     .slice(0, 20);
 }
 
@@ -1338,16 +1391,19 @@ function renderSuggestions(items) {
     clearElement(box);
     return;
   }
-  setSafeHtml(box, companies
-    .map(
-      (company) => `
+  setSafeHtml(
+    box,
+    companies
+      .map(
+        (company) => `
       <button class="suggestion-item" type="button" data-select-code="${escapeHtml(company.stockCode)}">
         <span>${escapeHtml(company.stockCode)} ${escapeHtml(company.name)}</span>
         <span class="muted">${escapeHtml(company.market)}</span>
       </button>
     `,
-    )
-    .join(""));
+      )
+      .join(""),
+  );
   box.classList.add("open");
 }
 
@@ -1370,15 +1426,19 @@ async function analyzeSelectedCompany() {
 async function scanMarket() {
   return refreshMarketScan({ revealResults: true });
 }
-
-function renderMarketScanError(target, error) {
-  if (target) setFormError(target, error.message || "掃描失敗");
+function handleMarketScanFailure(error, { revealResults = false, target = null } = {}) {
+  if (state.marketScan) {
+    state.marketScanWarning = error?.message || "市場掃描暫時失敗，請稍後再試。";
+    if (typeof document !== "undefined") renderMarketResults();
+    return state.marketScan;
+  }
+  if (revealResults && target) setFormError(target, error.message || "掃描失敗");
+  return null;
 }
-
 async function refreshMarketScan({ revealResults = false, refreshMode = "auto" } = {}) {
   const target = $("#market-results");
   if (revealResults) {
-    setEmptyState(target, "掃描中");
+    if (!state.marketScan) setEmptyState(target, "掃描中");
     showView("scan");
     showTab("market");
   }
@@ -1396,8 +1456,7 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
       await marketScanRefreshPromise;
       renderMarketResults();
     } catch (error) {
-      if (revealResults) renderMarketScanError(target, error);
-      return null;
+      return handleMarketScanFailure(error, { revealResults, target });
     }
     return state.marketScan;
   }
@@ -1410,19 +1469,14 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
       ? { method: "POST", body: JSON.stringify({ settings: state.settings, refreshMode }) }
       : { method: "GET" },
   )
-    .then((scan) => {
-      state.marketScan = scan;
-      resetMarketListUi();
-      return scan;
-    })
+    .then((scan) => acceptMarketScan(scan, { resetUi: true }))
     .finally(() => {
       marketScanRefreshPromise = null;
     });
   try {
     await marketScanRefreshPromise;
   } catch (error) {
-    if (revealResults) renderMarketScanError(target, error);
-    return null;
+    return handleMarketScanFailure(error, { revealResults, target });
   }
   renderMarketResults();
   return state.marketScan;
@@ -1443,9 +1497,7 @@ async function scanHoldings() {
 async function exportReport(kind, reportFormat) {
   const endpoint = kind === "holdings" ? "/api/reports/holdings" : "/api/reports/market";
   const payload =
-    kind === "holdings"
-      ? { holdings: state.holdings, settings: state.settings }
-      : { settings: state.settings };
+    kind === "holdings" ? { holdings: state.holdings, settings: state.settings } : { settings: state.settings };
   const response = await apiFetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
     method: "POST",
     body: JSON.stringify(payload),
@@ -1483,9 +1535,12 @@ function closeOnboarding(markDone = true) {
 function addHoldingFromInput(rawInput, sharesInput, costInput) {
   const parsed = parseStockInput(rawInput, state.companies);
   if (!parsed.ok) return parsed;
-  const shares = sharesInput === "" || sharesInput === undefined ? parsed.shares : Math.max(0, Math.floor(Number(sharesInput)));
+  const shares =
+    sharesInput === "" || sharesInput === undefined ? parsed.shares : Math.max(0, Math.floor(Number(sharesInput)));
   const averageCost =
-    costInput === "" || costInput === undefined || costInput === null ? parsed.averageCost : Math.max(0, Number(costInput));
+    costInput === "" || costInput === undefined || costInput === null
+      ? parsed.averageCost
+      : Math.max(0, Number(costInput));
   upsertHolding({
     stockCode: parsed.stockCode,
     name: parsed.name,
@@ -1602,7 +1657,8 @@ function bindEvents() {
     });
   }
   const authModalLoginButton = $("#auth-modal-login-btn");
-  if (authModalLoginButton) authModalLoginButton.addEventListener("click", () => authenticateFromForm("login", "modal"));
+  if (authModalLoginButton)
+    authModalLoginButton.addEventListener("click", () => authenticateFromForm("login", "modal"));
   const closeAuthModalButton = $("#close-auth-modal-btn");
   if (closeAuthModalButton) closeAuthModalButton.addEventListener("click", () => closeAuthGate({ clearMessage: true }));
   const deferAuthModalButton = $("#defer-auth-modal-btn");
@@ -1660,7 +1716,11 @@ function bindEvents() {
 
   $("#manual-add-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    const result = addHoldingFromInput($("#manual-stock-input").value, $("#manual-shares-input").value, $("#manual-cost-input").value);
+    const result = addHoldingFromInput(
+      $("#manual-stock-input").value,
+      $("#manual-shares-input").value,
+      $("#manual-cost-input").value,
+    );
     $("#holding-error").textContent = result.ok ? "" : result.error;
     if (result.ok) event.target.reset();
   });
@@ -1861,7 +1921,6 @@ function bindEvents() {
     });
     showView("holdings");
   });
-
 }
 
 async function init() {
@@ -1944,5 +2003,8 @@ if (typeof module !== "undefined") {
     escapeHtml,
     emptyStateHtml,
     setEmptyState,
+    acceptMarketScan,
+    handleMarketScanFailure,
+    refreshMarketScan,
   };
 }
