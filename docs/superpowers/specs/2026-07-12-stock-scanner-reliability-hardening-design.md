@@ -50,9 +50,9 @@ The legacy market refresh POST has one deliberate degradation exception: after a
 
 ### A2. Idempotent browser retry and last-good rendering
 
-`frontend/api_client.js` retries the same direct origin only for GET/HEAD requests and only for network failures or 502/503/504 responses. It performs at most two retries with short bounded backoff. POST/PUT/PATCH/DELETE are never automatically retried in Plan A.
+`frontend/api_client.js` uses bounded retry rounds only for GET/HEAD requests and only for network failures or 502/503/504 responses. A round walks each safe candidate at most once; status 500 may fail over to the next candidate but never retries the same endpoint. It performs at most two further rounds with short abortable backoff. POST/PUT/PATCH/DELETE select one primary candidate and make exactly one fetch in Plan A, eliminating the existing ambiguous cross-candidate replay.
 
-The UI parses `requestId` from safe JSON errors and includes it in the user-facing support reference. When a market refresh fails and `state.marketScan` already exists, the existing results are rendered again and a non-blocking warning is appended. A failed refresh must not replace successful results with an error-only element.
+The UI parses a strictly validated `requestId` from safe JSON errors and includes it in the user-facing support reference. When a market refresh fails and `state.marketScan` already exists, the existing results are rendered again and a non-blocking status warning is prepended. The same warning path handles a successful HTTP 200 response whose refresh enqueue is unavailable. A failed refresh must not replace successful results or their page/expanded state with an error-only element.
 
 Plan A deliberately does not persist the 2.88 MB payload to localStorage because UTF-16 storage can exceed mobile quotas. Cross-reload persistence is implemented only after Plan B reduces the payload.
 

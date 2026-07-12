@@ -741,17 +741,21 @@ git commit -m "fix: refresh seed ahead of policy expiry"
 **Files:**
 - Modify: `tests/test_frontend_parser.py`
 - Modify: `tests/test_frontend_hygiene.py`
+- Modify: `tests/test_pages_api_redirect.py`
 - Modify: `tests/e2e/smoke.spec.ts`
 - Modify: `frontend/api_client.js:1-149`
 - Modify: `frontend/app.js:45,510-552,1374-1428`
+- Modify: `frontend/market_render.js:137-139`
 - Modify: `frontend/index.html:417-422`
 - Modify: `docs/cloudflare_deployment.md`
 - Modify: `docs/current_architecture.md`
 
 **Interfaces:**
-- Produces: same-origin/direct GET retry with default two retries for network failures and 502/503/504 only.
-- Produces: `state.marketScanWarning` and `.market-scan-warning` appended after last-good rendering.
-- Preserves: no retry for status 400/401/403/404/429/500, no retry for mutations, existing cross-candidate failover including status 500, force-refresh ordering, page/expanded UI state on failure, and safe generic 5xx text.
+- Produces: same-origin/direct GET/HEAD retry with default two retry rounds for network failures and 502/503/504 only.
+- Produces: round-based safe-method candidate ordering, `state.marketScanWarning`, and a visible `role="status"` `.market-scan-warning` prepended after last-good rendering.
+- Preserves: status 500 as cross-candidate failover only (never same-endpoint retry), no retry/failover for 400/401/403/404/429, force-refresh ordering, page/expanded UI state on failure, and safe generic 5xx text.
+- Changes intentionally: POST/PUT/PATCH/DELETE now use exactly one primary candidate and one fetch call. The legacy same-origin-to-Worker mutation replay is removed because an upstream timeout can leave commit outcome ambiguous.
+- Scope: Plan A bounds attempt count but does not add a new per-attempt wall-clock timeout. Caller `AbortError` is terminal and aborts any pending backoff.
 
 - [ ] **Step 1: Add API-client RED tests**
 
@@ -780,7 +784,18 @@ assert.deepEqual(calls.map((call) => call.url), [
 ]);
 ```
 
-Add separate cases for one transport exception then success, three 503 responses capped at three attempts, direct GET 500 called once, direct GET 400 called once, and direct POST 503 called once. Keep the existing fallback test and its same-origin → Worker ordering unchanged.
+Add the complete matrix below; assert exact URLs/methods and call counts:
+
+- direct and same-origin `503 → 502 → 200`: three calls to the same URL, including a case that uses the real default retry count rather than injecting it;
+- fallback `same 503 → worker 503 → same 200`: three calls in that exact order, proving rounds rather than per-candidate loops;
+- fallback `same 500 → worker 200`: two calls, while `same 503 → worker 500` returns that 500 after two calls and does not open another round;
+- direct/same-origin all-transient: at most three calls; fallback all-transient: at most six calls;
+- 400 and 429 return after one candidate/call; direct 500 returns after one call;
+- omitted method and explicit GET retry; HEAD retries safely; POST/PUT/PATCH/DELETE make exactly one fetch and never select the second fallback candidate;
+- a normal `TypeError` transport failure may retry, but a caller `AbortError` rejects after one call and aborting during backoff prevents the next call;
+- mutating JSON/string and one-shot `ReadableStream` bodies are each observed at most once.
+
+Update the legacy POST fallback tests to the new one-call safety contract. Use injected zero delays for deterministic tests; do not add a per-attempt timeout in Plan A.
 
 - [ ] **Step 2: Add last-good Playwright RED test**
 
@@ -802,7 +817,7 @@ test("manual refresh failure preserves last successful market scan", async ({ pa
           code: "DEPENDENCY_UNAVAILABLE",
           requestId: "test-request-id",
           retryable: true,
-          stage: "d1_write",
+          stage: "r2_read",
         }),
       });
       return;
@@ -818,6 +833,8 @@ test("manual refresh failure preserves last successful market scan", async ({ pa
   await expect(page.locator("#market-results > .form-error")).toHaveCount(0);
 });
 ```
+
+Use a fixture with at least seven results. Before the failed refresh, navigate the active column to page 2 and expand a row. After failure, assert the page indicator, expanded row/content, scan timestamp, and result data are unchanged; toggle tab/column to force a rerender and assert the warning remains the first visible child. On mobile, also assert `scrollWidth <= clientWidth` and that the warning is visible, not merely present in the DOM.
 
 Add this second test; reuse the existing valid market fixture returned by the E2E web server and replace only its first entry:
 
@@ -858,14 +875,16 @@ test("successful market refresh clears last-good warning", async ({ page, isMobi
 });
 ```
 
+Cover warning lifecycle outside the two E2E cases with focused tests/source harnesses: scheduler-provided scans clear/derive the warning through the same acceptance helper; background GET/shared-promise failures use the same failure helper; and a Task 2 HTTP 200 payload with `cacheStatus.refreshStatus="unavailable"` displays a Chinese non-blocking warning plus a valid request ID. A later normal success clears it.
+
 - [ ] **Step 3: Run RED**
 
 ```powershell
 ..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task5-red tests\test_frontend_parser.py tests\test_frontend_hygiene.py
-npm.cmd run test:e2e -- --grep "last successful market scan"
+npm.cmd run test:e2e -- --grep "market scan warning|last successful market scan|last-good warning"
 ```
 
-Expected: same-origin retry tests and last-good warning test fail.
+Expected: retry-round/mutation/abort tests and both last-good warning lifecycle cases fail.
 
 - [ ] **Step 4: Implement bounded read retry**
 
@@ -877,13 +896,17 @@ const IDEMPOTENT_API_METHODS = new Set(["GET", "HEAD"]);
 const DEFAULT_GET_RETRY_DELAYS_MS = [150, 450];
 ```
 
-Implement retry rounds, not per-candidate retry loops. Within each round, walk the existing candidate list once so fallback mode still moves immediately from same-origin to Worker. Start another round only after every candidate in that round ended in a network exception or 502/503/504 and the method is idempotent. Status 500 returns immediately in direct mode but still participates in the existing same-origin → Worker failover. Use injected `retryDelaysMs` for deterministic zero-delay tests and native `setTimeout` for production delay. Mutating methods always get the existing single round and are never retried.
+Implement retry rounds, not per-candidate retry loops. For GET/HEAD, walk the candidate list once per round so fallback mode moves immediately from same-origin to Worker. Start another round only after every candidate in that round ended in a non-abort network exception or 502/503/504. Status 500 returns immediately in direct/same-origin mode but may move once to the next candidate in the current fallback round; a terminal last-candidate 500 never opens another round. Status 429 and other listed client statuses never move candidates or retry.
+
+For POST/PUT/PATCH/DELETE, select only the primary mode candidate and call fetch once, including on network errors and 5xx responses. Remove mutation routes from direct-fallback eligibility or enforce the same rule centrally before candidate construction.
+
+Use injected `retryDelaysMs` for deterministic zero-delay tests. Production delay must be abortable with the caller's signal; an `AbortError` before fetch or during backoff is terminal. Ordinary transport `TypeError` remains retryable for safe methods. This task deliberately does not create an internal per-attempt timeout, so its guarantee is bounded calls, not bounded wall-clock duration.
 
 - [ ] **Step 5: Implement last-good warning rendering**
 
-Add `marketScanWarning: null` to state. On a reveal refresh, call `setEmptyState` only when `state.marketScan` is absent. On success, clear the warning before updating `state.marketScan`.
+Add `marketScanWarning: null` to state. On a reveal refresh, call `setEmptyState` only when `state.marketScan` is absent. Centralize every market-scan assignment in `acceptMarketScan(scan, { resetUi })`: update the scan, reset UI only for a genuine new success, and derive either a Task 2 unavailable warning or `null`. Use it in both `loadDataStatus()` and `refreshMarketScan()`.
 
-Add a `renderMarketScanWarning(target)` helper that appends the warning whenever `renderMarketResults()` renders while `state.marketScanWarning` is non-null. On failure with existing data:
+Centralize both refresh catch paths in `handleMarketScanFailure(error, { revealResults, target })`. Add `renderMarketScanWarning(target)` that prepends the warning after every `renderMarketResults()` render while `state.marketScanWarning` is non-null. On failure with existing data:
 
 ```javascript
 state.marketScanWarning = error.message || "更新失敗";
@@ -891,11 +914,15 @@ renderMarketResults();
 return state.marketScan;
 ```
 
-The helper creates a `p`, assigns `className = "data-source-note market-scan-warning"`, sets text with the unchanged `state.marketScan.generatedAt` time plus the safe error text, and prepends it to `#market-results`. This keeps the warning visible after paging or view re-render. When there is no last-good state, retain the current blocking `setFormError`. Do not call `resetMarketListUi()` on failure. Parse the safe JSON `requestId` in `apiErrorMessage` and append `（錯誤編號：<id>）` only when it matches `/^[A-Za-z0-9._:-]{1,80}$/`.
+The helper creates a `p`, assigns `className = "data-source-note market-scan-warning"` and `role="status"`, sets `textContent` with the unchanged `state.marketScan.generatedAt` time plus safe error text, and prepends it to `#market-results`. This keeps it visible after paging or view rerender. When there is no last-good state, retain the current blocking `setFormError`. Never call `resetMarketListUi()` on failure.
+
+Parse a safe JSON `requestId` in `apiErrorMessage` and append `（錯誤編號：<id>）` only when it is a string matching `/^[A-Za-z0-9._:-]{1,80}$/`. Add boundary/negative cases for 80 and 81 characters, empty/whitespace, CR/LF, HTML, Unicode, number/object, invalid JSON, and non-JSON content type. For all 5xx cases, retain the generic text, append only a valid ID, and never expose raw `detail`. Apply the same request-ID sanitizer to the HTTP 200 unavailable warning. Add `unavailable: "暫時無法更新"` to the cache-status label map.
 
 - [ ] **Step 6: Update cache busters and correct the proxy runbook**
 
-Set `api_client.js` to `v=20260712-resilient-api` and `app.js` to `v=20260712-last-good-scan` in `frontend/index.html`. Add `API_CLIENT_VERSION = "20260712-resilient-api"`, set `APP_VERSION = "20260712-last-good-scan"`, and update their assertions in `tests/test_frontend_hygiene.py`. Correct `docs/cloudflare_deployment.md` and `docs/current_architecture.md` to state that the live Pages Function proxies `/api/*` with 200 responses while the production browser normally uses direct Worker mode; remove the obsolete 307 verification step and command.
+Set `api_client.js` to `v=20260712-resilient-api` and both `market_render.js` and `app.js` to `v=20260712-last-good-scan` in `frontend/index.html`. Add `API_CLIENT_VERSION = "20260712-resilient-api"`, set `MARKET_RENDER_VERSION` and `APP_VERSION` to `"20260712-last-good-scan"`, and update their assertions in `tests/test_frontend_hygiene.py`.
+
+Correct `docs/cloudflare_deployment.md` and `docs/current_architecture.md` precisely: Pages `/api/*` is a status-preserving proxy rather than a 307 redirect; a healthy `/api/health` returns HTTP 200 Worker JSON, while other API paths preserve their upstream status. Production browser mode normally calls the Worker directly. Keep the proxy verification gate and document the valid command `python scripts\check_pages_api_redirect.py --url https://stock-scanner-beta.pages.dev/api/health`; remove only the unsupported `--expected-origin` argument and stale 307 wording.
 
 - [ ] **Step 7: Run GREEN frontend verification sequentially**
 
@@ -912,7 +939,7 @@ Expected: pytest passes, lint/format pass, Playwright reports 23 passed and 1 de
 - [ ] **Step 8: Commit Task 5**
 
 ```powershell
-git add frontend\api_client.js frontend\app.js frontend\index.html docs\cloudflare_deployment.md docs\current_architecture.md tests\test_frontend_parser.py tests\test_frontend_hygiene.py tests\test_pages_api_redirect.py tests\e2e\smoke.spec.ts
+git add frontend\api_client.js frontend\app.js frontend\market_render.js frontend\index.html docs\cloudflare_deployment.md docs\current_architecture.md tests\test_frontend_parser.py tests\test_frontend_hygiene.py tests\test_pages_api_redirect.py tests\e2e\smoke.spec.ts
 git commit -m "fix: preserve scans across transient read failures"
 ```
 
