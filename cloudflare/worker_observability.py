@@ -112,9 +112,11 @@ def add_response_headers(response, headers: dict[str, str], request_id: str) -> 
     set_response_header(response, "x-request-id", request_id)
 
 
-def log_worker_failure(*, request_id, request, path, stage, error_type, error_code, status, duration_ms):
+def log_worker_failure(
+    *, request_id, request, path, stage, error_type, error_code, status, duration_ms, event="worker_request_failed"
+):
     print(json.dumps({
-        "event": "worker_request_failed",
+        "event": str(event)[:80],
         "requestId": request_id,
         "method": str(getattr(request, "method", ""))[:12],
         "path": path[:160],

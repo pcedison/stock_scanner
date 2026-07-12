@@ -17,8 +17,10 @@ except ModuleNotFoundError:
     from cloudflare.worker_support import *  # noqa: F403
 
 try:
+    import worker_market_resilience as market_resilience
     import worker_observability as observability
 except ModuleNotFoundError:
+    from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
 
 CLIENT_ERROR_STATUS = {BadRequestError: 400, NotFoundError: 404, ValidationError: 422, PermissionError: 401, ForbiddenError: 403}
@@ -243,13 +245,8 @@ class Api:
 
     async def _route_scan(self, request, method: str, path: str):
         if path == "/api/scan/market" and method == "GET":
-            # Pure read: serve the global R2 seed scan with edge caching and no
-            # refresh side effect, so repeat page loads are served from cache
-            # (0 Worker/R2/D1). Refresh queuing stays on the POST path + cron.
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
-            if not isinstance(scan, dict):
-                scan = empty_market_scan()
             scan = compact_market_scan(scan)
             policy = self.cache_policy()
             scan["cacheStatus"] = self.cache_status_from_manifest(
@@ -261,11 +258,14 @@ class Api:
             refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
-            refresh_status = await self.ensure_refresh_job(manifest, force=refresh_mode == "force")
-            if not isinstance(scan, dict):
-                scan = empty_market_scan()
+            cache_status = await market_resilience.market_refresh_cache_status(
+                api=self, request=request,
+                manifest=manifest, scan=scan,
+                force=refresh_mode == "force",
+                dependency_failure_type=DependencyFailure,
+            )
             scan = compact_market_scan(scan)
-            scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
+            scan["cacheStatus"] = cache_status
             return json_response(scan)
         if path == "/api/scan/holdings" and method == "POST":
             return await self.scan_holdings(request)

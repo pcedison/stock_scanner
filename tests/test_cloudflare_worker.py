@@ -1390,6 +1390,217 @@ def test_worker_scan_market_get_and_post_queue_refresh(monkeypatch):
     assert len(db.refresh_jobs) == 1
 
 
+@pytest.mark.parametrize(
+    ("stage", "retryable"),
+    (("d1_read", True), ("d1_write", False)),
+)
+def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(
+    monkeypatch, capsys, stage, retryable
+):
+    manifest = {
+        "generatedAt": "2026-02-19T00:00:00+00:00",
+        "counts": {"companies": 1000, "analysis": 1000},
+    }
+    scan = {
+        "entry": [
+            {
+                "stockCode": "2330",
+                "status": "ENTRY",
+                "summary": "last good",
+                "internalOnly": "must be compacted",
+            }
+        ],
+        "watch": [{"stockCode": "2454", "status": "WATCH", "summary": "observe"}],
+        "excluded": [{"stockCode": "2603", "status": "EXCLUDED", "summary": "skip"}],
+    }
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
+    expected_get = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
+
+    async def fail_refresh(_manifest, force=False):
+        assert force is True
+        failure = worker.DependencyFailure(stage, retryable, RuntimeError("secret sentinel"))
+        failure.error_code = "NETWORK_LOST"
+        raise failure
+
+    api.ensure_refresh_job = fail_refresh
+    response = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market",
+                body='{"refreshMode":"force"}',
+            )
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    for category in ("entry", "watch", "excluded"):
+        assert payload[category] == expected_get[category]
+    assert "internalOnly" not in payload["entry"][0]
+    assert payload["cacheStatus"]["refreshStatus"] == "unavailable"
+    assert payload["cacheStatus"]["retryable"] is retryable
+    assert payload["cacheStatus"]["requestId"] == response.headers["x-request-id"]
+    assert re.fullmatch(r"[0-9a-f]{24}", response.headers["x-request-id"])
+
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_dependency_degraded"
+    assert record["method"] == "POST"
+    assert record["path"] == "/api/scan/market"
+    assert record["stage"] == "refresh_queue"
+    assert record["status"] == response.init["status"] == 200
+    assert record["errorType"] == "RuntimeError"
+    assert record["errorCode"] == "NETWORK_LOST"
+    assert record["requestId"] == response.headers["x-request-id"]
+    assert record["durationMs"] >= 0
+    assert "secret sentinel" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    "scan",
+    (
+        None,
+        {"entry": [], "watch": [], "excluded": "not-a-list"},
+    ),
+    ids=("missing", "malformed"),
+)
+def test_worker_scan_market_post_requires_verified_last_good_for_fail_open(monkeypatch, capsys, scan):
+    manifest = {
+        "generatedAt": "2026-02-19T00:00:00+00:00",
+        "counts": {"companies": 1000, "analysis": 1000},
+    }
+    r2 = {"public/manifest.json": manifest}
+    if scan is not None:
+        r2["public/market_scan_summary.json"] = scan
+    worker, api, _db = build_router_api(monkeypatch, r2=r2)
+
+    async def fail_refresh(_manifest, force=False):
+        failure = worker.DependencyFailure("d1_read", True, RuntimeError("missing scan sentinel"))
+        failure.error_code = "NETWORK_LOST"
+        raise failure
+
+    api.ensure_refresh_job = fail_refresh
+    response = asyncio.run(
+        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["stage"] == "d1_read"
+    assert "cacheStatus" not in payload
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_request_failed"
+    assert record["status"] == 503
+    assert "missing scan sentinel" not in json.dumps(record)
+
+
+def test_worker_scan_market_post_rejects_non_d1_refresh_failure(monkeypatch, capsys):
+    manifest = {
+        "generatedAt": "2026-02-19T00:00:00+00:00",
+        "counts": {"companies": 1000, "analysis": 1000},
+    }
+    scan = {"entry": [], "watch": [], "excluded": []}
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
+
+    async def fail_refresh(_manifest, force=False):
+        failure = worker.DependencyFailure("r2_read", True, RuntimeError("wrong boundary sentinel"))
+        failure.error_code = "RESET"
+        raise failure
+
+    api.ensure_refresh_job = fail_refresh
+    response = asyncio.run(
+        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["stage"] == "r2_read"
+    assert "cacheStatus" not in payload
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_request_failed"
+    assert record["stage"] == "r2_read"
+    assert "wrong boundary sentinel" not in json.dumps(record)
+
+
+def test_worker_scan_market_post_rejects_unexpected_refresh_failure(monkeypatch, capsys):
+    manifest = {
+        "generatedAt": "2026-02-19T00:00:00+00:00",
+        "counts": {"companies": 1000, "analysis": 1000},
+    }
+    scan = {"entry": [], "watch": [], "excluded": []}
+    _worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
+
+    async def fail_refresh(_manifest, force=False):
+        raise RuntimeError("unexpected refresh sentinel")
+
+    api.ensure_refresh_job = fail_refresh
+    response = asyncio.run(
+        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 500
+    assert payload["code"] == "INTERNAL_ERROR"
+    assert payload["stage"] == "route"
+    assert "cacheStatus" not in payload
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_request_failed"
+    assert record["status"] == 500
+    assert "unexpected refresh sentinel" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "failure_method", "stage", "retryable", "expected_status"),
+    (
+        ("POST", "/api/cache/refresh", "ensure_refresh_job", "d1_write", False, 500),
+        ("GET", "/api/auth/me", "current_user", "d1_read", True, 503),
+        ("GET", "/api/settings", "get_settings", "d1_read", True, 503),
+        ("GET", "/api/me/holdings", "require_user", "d1_read", True, 503),
+        ("POST", "/api/reports/market", "market_report", "d1_read", True, 503),
+        ("GET", "/api/admin/users", "require_super_user", "d1_read", True, 503),
+    ),
+)
+def test_worker_non_market_routes_do_not_fail_open_for_dependency_failure(
+    monkeypatch,
+    capsys,
+    method,
+    path,
+    failure_method,
+    stage,
+    retryable,
+    expected_status,
+):
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {}})
+
+    async def fail(*_args, **_kwargs):
+        failure = worker.DependencyFailure(stage, retryable, RuntimeError("sibling route sentinel"))
+        failure.error_code = "NETWORK_LOST"
+        raise failure
+
+    setattr(api, failure_method, fail)
+    response = asyncio.run(api.fetch(RouteRequest(method=method, path=path, body="")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == expected_status
+    assert payload["stage"] == stage
+    assert "cacheStatus" not in payload
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_request_failed"
+    assert record["stage"] == stage
+    assert record["status"] == expected_status
+    assert "sibling route sentinel" not in json.dumps(record)
+
+
 def test_worker_scan_market_get_serves_empty_when_seed_missing(monkeypatch):
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {}})
     pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
