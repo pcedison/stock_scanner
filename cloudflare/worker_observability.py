@@ -6,7 +6,7 @@ import time
 
 SAFE_ERROR_DETAIL = "伺服器暫時無法處理請求，請稍後再試。"
 RETRYABLE_D1_READ_CODES = frozenset(
-    {"NETWORK_LOST", "RESET", "TRANSIENT_REMOTE_NODE", "OVERLOADED", "TIMEOUT"}
+    {"NETWORK_LOST", "RESET", "TRANSIENT_REMOTE_NODE"}
 )
 _DEPENDENCY_ERROR_PATTERNS = (
     ("network connection lost", "NETWORK_LOST"),
@@ -51,6 +51,51 @@ def wrap_dependency_failure(exception_type, stage: str, retryable: bool, cause: 
     failure = exception_type(stage, retryable, cause)
     failure.error_code = dependency_error_code(cause)
     return failure
+
+
+async def dependency_call(operation, exception_type, stage: str, retryable):
+    failure = None
+    try:
+        return await operation()
+    except exception_type:
+        raise
+    except Exception as cause:
+        can_retry = retryable(cause) if callable(retryable) else retryable
+        failure = wrap_dependency_failure(exception_type, stage, bool(can_retry), cause)
+    raise failure
+
+
+def cors_allowed_origins(
+    configured,
+    development_origins,
+    *,
+    production,
+    allow_local,
+    allow_insecure,
+    is_local_origin,
+    is_https_origin,
+):
+    allowed = list(dict.fromkeys(configured))
+    if not production:
+        allowed.extend(origin for origin in development_origins if origin not in allowed)
+    if production and not allow_local:
+        allowed = [origin for origin in allowed if not is_local_origin(origin)]
+    if production and not allow_insecure:
+        allowed = [origin for origin in allowed if is_https_origin(origin)]
+    return tuple(allowed)
+
+
+def cors_headers(allowed_origins, request_origin, *, production, local_request_origin, csrf_header_name):
+    origin = allowed_origins[0] if allowed_origins else "null"
+    if request_origin in allowed_origins or (not production and local_request_origin):
+        origin = request_origin
+    return {
+        "access-control-allow-origin": origin,
+        "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+        "access-control-allow-headers": f"content-type,{csrf_header_name}",
+        "access-control-allow-credentials": "true",
+        "vary": "Origin",
+    }
 
 
 def set_response_header(response, key: str, value: str) -> None:
@@ -115,7 +160,10 @@ def failure_response(response_factory, request_id, request, path, failure, start
 
 __all__ = (
     "add_response_headers",
+    "cors_allowed_origins",
+    "cors_headers",
     "d1_read_retryable",
+    "dependency_call",
     "dependency_error_code",
     "duration_ms",
     "failure_response",

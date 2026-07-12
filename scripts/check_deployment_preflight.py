@@ -47,10 +47,24 @@ def validate_worker_cors(wrangler_path: Path = DEFAULT_WRANGLER) -> list[str]:
 
 def validate_worker_observability(wrangler_path: Path = DEFAULT_WRANGLER) -> list[str]:
     config = tomllib.loads(wrangler_path.read_text(encoding="utf-8"))
-    observability = config.get("observability") or {}
-    logs = observability.get("logs") or {}
-    traces = observability.get("traces") or {}
     problems: list[str] = []
+    observability = config.get("observability")
+    if observability is None:
+        observability = {}
+    elif not isinstance(observability, dict):
+        return ["observability must be a table"]
+    logs = observability.get("logs")
+    if logs is None:
+        logs = {}
+    elif not isinstance(logs, dict):
+        problems.append("observability.logs must be a table")
+        logs = {}
+    traces = observability.get("traces")
+    if traces is None:
+        traces = {}
+    elif not isinstance(traces, dict):
+        problems.append("observability.traces must be a table")
+        traces = {}
 
     def has_rate(value, expected: float) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value == expected

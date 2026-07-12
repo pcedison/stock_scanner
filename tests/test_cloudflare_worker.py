@@ -242,7 +242,13 @@ def test_worker_on_fetch_maps_runtime_security_initialization_failure(monkeypatc
 
     response = asyncio.run(
         worker.on_fetch(
-            RouteRequest(path="/api/health", headers={"authorization": "Bearer hidden"}),
+            RouteRequest(
+                path="/api/health",
+                headers={
+                    "authorization": "Bearer hidden",
+                    "origin": "https://stock-scanner-beta.pages.dev",
+                },
+            ),
             env,
         )
     )
@@ -259,6 +265,8 @@ def test_worker_on_fetch_maps_runtime_security_initialization_failure(monkeypatc
     record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert record["requestId"] == payload["requestId"]
     assert record["stage"] == "worker"
+    assert response.headers["access-control-allow-origin"] == "https://stock-scanner-beta.pages.dev"
+    assert response.headers["strict-transport-security"].startswith("max-age=31536000")
     serialized = json.dumps({"payload": payload, "record": record})
     assert "SUPER_USER_USERNAME" not in serialized
     assert "Bearer hidden" not in serialized
@@ -1508,6 +1516,48 @@ def test_worker_r2_json_falls_back_on_invalid_json(monkeypatch):
     assert result == {"fallback": True}
 
 
+def test_worker_r2_body_io_failure_returns_retryable_503(monkeypatch, capsys):
+    _worker, api, _db = build_router_api(monkeypatch)
+
+    class FailingR2Body:
+        async def text(self):
+            raise RuntimeError("raw-r2-body-sentinel")
+
+    api.env.CACHE.objects["public/manifest.json"] = FailingR2Body()
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["retryable"] is True
+    assert payload["stage"] == "r2_read"
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert "raw-r2-body-sentinel" not in json.dumps({"payload": payload, "record": record})
+
+
+def test_worker_r2_object_conversion_failure_returns_retryable_503(monkeypatch, capsys):
+    worker, api, _db = build_router_api(monkeypatch)
+    raw_object = object()
+    api.env.CACHE.objects["public/manifest.json"] = raw_object
+    original_js_to_py = worker.js_to_py
+
+    def fail_conversion(value):
+        if value is raw_object:
+            raise RuntimeError("raw-r2-conversion-sentinel")
+        return original_js_to_py(value)
+
+    monkeypatch.setattr(worker, "js_to_py", fail_conversion)
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["retryable"] is True
+    assert payload["stage"] == "r2_read"
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert "raw-r2-conversion-sentinel" not in json.dumps({"payload": payload, "record": record})
+
+
 def test_worker_fetch_maps_unexpected_error_to_500(monkeypatch, capsys):
     worker, api, _db = build_router_api(monkeypatch)
 
@@ -1565,11 +1615,9 @@ def test_worker_r2_read_failure_returns_retryable_503(monkeypatch, capsys):
         ("Network connection lost.", "NETWORK_LOST"),
         ("D1 DB reset because its code was updated.", "RESET"),
         ("Cannot resolve D1 DB due to transient issue on remote node.", "TRANSIENT_REMOTE_NODE"),
-        ("D1 DB is overloaded. Too many requests queued.", "OVERLOADED"),
-        ("D1 DB storage operation exceeded timeout which caused object to be reset.", "TIMEOUT"),
     ],
 )
-def test_worker_d1_transient_read_failure_returns_retryable_503(monkeypatch, capsys, message, error_code):
+def test_worker_d1_retryable_read_failure_returns_503(monkeypatch, capsys, message, error_code):
     _worker, api, _db = build_router_api(monkeypatch)
 
     class FailingStatement:
@@ -1590,6 +1638,86 @@ def test_worker_d1_transient_read_failure_returns_retryable_503(monkeypatch, cap
     record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert record["errorCode"] == error_code
     assert message not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    ("message", "error_code"),
+    [
+        ("D1 DB is overloaded. Too many requests queued.", "OVERLOADED"),
+        ("D1 DB storage operation exceeded timeout which caused object to be reset.", "TIMEOUT"),
+    ],
+)
+def test_worker_d1_capacity_read_failure_is_not_retryable(monkeypatch, capsys, message, error_code):
+    _worker, api, _db = build_router_api(monkeypatch)
+
+    class FailingStatement:
+        def bind(self, *params):
+            return self
+
+        async def first(self):
+            raise RuntimeError(message)
+
+    api.env.DB.prepare = lambda _sql: FailingStatement()
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/settings")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 500
+    assert payload["code"] == "DEPENDENCY_FAILURE"
+    assert payload["retryable"] is False
+    assert payload["stage"] == "d1_read"
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["errorCode"] == error_code
+    assert message not in json.dumps(record)
+
+
+@pytest.mark.parametrize("boundary", ["r2_read", "d1_read"])
+def test_worker_dependency_failure_drops_raw_exception_references(monkeypatch, capsys, boundary):
+    worker, api, _db = build_router_api(monkeypatch)
+    sentinel = f"raw-{boundary}-sentinel"
+    raw_message = f"Network connection lost. {sentinel}"
+
+    if boundary == "r2_read":
+        async def fail_get(_key):
+            raise RuntimeError(raw_message)
+
+        api.env.CACHE.get = fail_get
+        def direct_call():
+            return api.r2_json("public/manifest.json", {})
+
+        request = RouteRequest(path="/api/health")
+    else:
+        class FailingStatement:
+            def bind(self, *params):
+                return self
+
+            async def first(self):
+                raise RuntimeError(raw_message)
+
+        api.env.DB.prepare = lambda _sql: FailingStatement()
+        def direct_call():
+            return api.db_first("SELECT 1")
+
+        request = RouteRequest(path="/api/settings")
+
+    with pytest.raises(worker.DependencyFailure) as caught:
+        asyncio.run(direct_call())
+
+    failure = caught.value
+    assert failure.__context__ is None
+    assert failure.__cause__ is None
+    traceback = failure.__traceback__
+    while traceback is not None:
+        if Path(traceback.tb_frame.f_code.co_filename).name in {"worker.py", "worker_observability.py"}:
+            exception_locals = [
+                value for value in traceback.tb_frame.f_locals.values() if isinstance(value, BaseException)
+            ]
+            assert all(sentinel not in str(value) for value in exception_locals)
+        traceback = traceback.tb_next
+
+    response = asyncio.run(api.fetch(request))
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert sentinel not in response.body
+    assert sentinel not in json.dumps(record)
 
 
 def test_worker_d1_unclassified_read_failure_is_not_retryable(monkeypatch):

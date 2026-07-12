@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from scripts import check_deployment_preflight as deployment_preflight
 from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
 from scripts.check_deployment_preflight import (
@@ -53,6 +55,26 @@ def test_worker_observability_requires_persisted_logs_and_sampled_traces(tmp_pat
     )
 
     assert deployment_preflight.validate_worker_observability(wrangler) == []
+
+
+@pytest.mark.parametrize(
+    ("config_text", "expected_problem"),
+    [
+        ('observability = "enabled"\n', "observability must be a table"),
+        ("observability = []\n", "observability must be a table"),
+        ('[observability]\nenabled = true\nlogs = "enabled"\n', "observability.logs must be a table"),
+        ("[observability]\nenabled = true\nlogs = []\n", "observability.logs must be a table"),
+        ('[observability]\nenabled = true\ntraces = "enabled"\n', "observability.traces must be a table"),
+        ("[observability]\nenabled = true\ntraces = []\n", "observability.traces must be a table"),
+    ],
+)
+def test_worker_observability_rejects_non_table_sections(tmp_path, config_text, expected_problem):
+    wrangler = tmp_path / "wrangler.toml"
+    wrangler.write_text(config_text, encoding="utf-8")
+
+    problems = deployment_preflight.validate_worker_observability(wrangler)
+
+    assert expected_problem in problems
 
 
 def test_validate_deploy_workflow_accepts_current_guardrails():

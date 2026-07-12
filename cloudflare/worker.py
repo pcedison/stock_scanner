@@ -32,15 +32,45 @@ async def on_fetch(request, env):
         return await Api(env).fetch(request, request_id=request_id)
     except Exception as exc:
         path = urlparse(str(getattr(request, "url", ""))).path.rstrip("/") or "/"
-        return observability.failure_response(
+        response = observability.failure_response(
             error_response, request_id, request, path, exc, started, dependency=False, stage="worker"
         )
+        headers = {**SECURITY_HEADERS, **cors_headers_for_env(env, request)}
+        observability.add_response_headers(response, headers, request_id)
+        return response
 
 
 def d1_param(value):
     # Pyodide may pass Python None to JS as undefined, which D1 rejects.
     # Empty strings round-trip as "not set" for the nullable fields we bind.
     return "" if value is None else value
+
+
+def cors_allowed_origins_for_env(env):
+    configured = csv_env_value(env, "APP_CORS_ALLOW_ORIGINS")
+    configured = configured or csv_env_value(env, "WORKER_CORS_ALLOW_ORIGINS")
+    return observability.cors_allowed_origins(
+        configured,
+        DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS,
+        production=is_production_environment(env),
+        allow_local=env_flag(env, "APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"),
+        allow_insecure=env_flag(env, "APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"),
+        is_local_origin=is_local_cors_origin,
+        is_https_origin=is_https_origin,
+    )
+
+
+def cors_headers_for_env(env, request=None, allowed_origins=None):
+    if allowed_origins is None:
+        allowed_origins = cors_allowed_origins_for_env(env)
+    request_origin = str(request.headers.get("origin") or "") if request is not None else ""
+    return observability.cors_headers(
+        allowed_origins,
+        request_origin,
+        production=is_production_environment(env),
+        local_request_origin=bool(_LOCALHOST_ORIGIN_RE.match(request_origin)),
+        csrf_header_name=CSRF_HEADER_NAME,
+    )
 
 
 class Api:
@@ -94,35 +124,10 @@ class Api:
         return str(request.headers.get(CSRF_HEADER_NAME) or "") == CSRF_HEADER_VALUE
 
     def cors_allowed_origins(self):
-        configured = (
-            csv_env_value(self.env, "APP_CORS_ALLOW_ORIGINS")
-            or csv_env_value(self.env, "WORKER_CORS_ALLOW_ORIGINS")
-        )
-        production = is_production_environment(self.env)
-        allowed = list(dict.fromkeys(configured))
-        if not production:
-            allowed.extend(origin for origin in DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS if origin not in allowed)
-
-        if production and not env_flag(self.env, "APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
-            allowed = [origin for origin in allowed if not is_local_cors_origin(origin)]
-        if production and not env_flag(self.env, "APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
-            allowed = [origin for origin in allowed if is_https_origin(origin)]
-        return tuple(allowed)
+        return cors_allowed_origins_for_env(self.env)
 
     def cors_headers(self, request=None):
-        allowed_origins = self._cors_allowed_origins
-        origin = allowed_origins[0] if allowed_origins else "null"
-        if request is not None:
-            req_origin = str(request.headers.get("origin") or "")
-            if req_origin in allowed_origins or (not is_production_environment(self.env) and _LOCALHOST_ORIGIN_RE.match(req_origin)):
-                origin = req_origin
-        return {
-            "access-control-allow-origin": origin,
-            "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "access-control-allow-headers": f"content-type,{CSRF_HEADER_NAME}",
-            "access-control-allow-credentials": "true",
-            "vary": "Origin",
-        }
+        return cors_headers_for_env(self.env, request, self._cors_allowed_origins)
 
     async def route(self, request, path: str, query: dict[str, list[str]]):
         method = request.method.upper()
@@ -337,18 +342,19 @@ class Api:
     async def r2_json(self, key: str, fallback):
         if key in self._r2_cache:
             return self._r2_cache[key]
-        try:
-            obj = js_to_py(await self.env.CACHE.get(key))
-        except DependencyFailure:
-            raise
-        except Exception as exc:
-            raise observability.wrap_dependency_failure(DependencyFailure, "r2_read", True, exc) from None
+        async def get():
+            return js_to_py(await self.env.CACHE.get(key))
+
+        obj = await observability.dependency_call(get, DependencyFailure, "r2_read", True)
         if obj is None:
             self._r2_cache[key] = fallback
             return fallback
+        text = await observability.dependency_call(
+            lambda: obj.text(), DependencyFailure, "r2_read", True
+        )
         try:
-            result = json.loads(await obj.text())
-        except Exception:
+            result = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
             result = fallback
         self._r2_cache[key] = result
         return result
@@ -475,18 +481,15 @@ class Api:
         }
 
     async def _db_call(self, operation: str, sql: str, params, *, write: bool):
-        try:
+        async def call():
             statement = self.env.DB.prepare(sql)
             if params:
                 statement = statement.bind(*(d1_param(param) for param in params))
-            result = js_to_py(await getattr(statement, operation)())
-        except DependencyFailure:
-            raise
-        except Exception as exc:
-            retryable = False if write else observability.d1_read_retryable(exc)
-            stage = "d1_write" if write else "d1_read"
-            raise observability.wrap_dependency_failure(DependencyFailure, stage, retryable, exc) from None
-        return result
+            return js_to_py(await getattr(statement, operation)())
+
+        stage = "d1_write" if write else "d1_read"
+        retryable = False if write else observability.d1_read_retryable
+        return await observability.dependency_call(call, DependencyFailure, stage, retryable)
 
     async def db_run(self, sql: str, *params):
         return await self._db_call("run", sql, params, write=True)
@@ -742,7 +745,7 @@ class Api:
 
     async def replace_holdings(self, user_id: int, holdings: list[dict]):
         now = utc_now()
-        try:
+        async def replace():
             stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
             for h in holdings:
                 stmts.append(
@@ -764,11 +767,9 @@ class Api:
                         now,
                     )
                 )
-            await self.env.DB.batch(to_js(stmts))
-        except DependencyFailure:
-            raise
-        except Exception as exc:
-            raise observability.wrap_dependency_failure(DependencyFailure, "d1_write", False, exc) from None
+            return await self.env.DB.batch(to_js(stmts))
+
+        await observability.dependency_call(replace, DependencyFailure, "d1_write", False)
         return await self.list_holdings(user_id)
 
     async def get_settings(self):
