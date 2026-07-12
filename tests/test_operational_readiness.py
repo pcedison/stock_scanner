@@ -1,4 +1,7 @@
+import shlex
 from pathlib import Path
+
+import pytest
 
 from scripts.check_operational_readiness import (
     valid_health_url,
@@ -6,22 +9,24 @@ from scripts.check_operational_readiness import (
     validate_local_readiness,
 )
 
-HEALTH_CHECK_COMMANDS = (
-    "python scripts/check_cloudflare_health.py",
-    "python scripts/run_remote_smoke.py",
+HEALTH_CHECK_PATHS = (
+    "scripts/check_cloudflare_health.py",
+    "scripts/run_remote_smoke.py",
+)
+REQUIRED_HEALTH_OPTIONS = (
+    ("--max-refresh-delay-minutes", "15"),
+    ("--max-cache-age-hours", "36"),
 )
 
 
-def _workflow_python_commands(workflow_text: str) -> list[str]:
+def _workflow_python_commands(workflow_text: str) -> list[list[str]]:
     lines = workflow_text.splitlines()
     commands = []
     index = 0
     while index < len(lines):
         stripped = lines[index].strip()
         command_start = stripped.removeprefix("if ")
-        is_command = not stripped.startswith("#") and any(
-            command_start.startswith(command) for command in HEALTH_CHECK_COMMANDS
-        )
+        is_command = not stripped.startswith("#") and command_start.startswith("python ")
         if not is_command or not stripped.endswith("\\"):
             index += 1
             continue
@@ -29,9 +34,24 @@ def _workflow_python_commands(workflow_text: str) -> list[str]:
         while parts[-1].endswith("\\") and index + 1 < len(lines):
             index += 1
             parts.append(lines[index].strip())
-        commands.append("\n".join(parts))
+        joined = " ".join(part.removesuffix("\\").rstrip() for part in parts)
+        tokens = shlex.split(joined, comments=True, posix=True)
+        if tokens[:1] == ["if"]:
+            tokens = tokens[1:]
+        if len(tokens) >= 2 and tokens[0] == "python" and tokens[1] in HEALTH_CHECK_PATHS:
+            commands.append(tokens)
         index += 1
     return commands
+
+
+def _assert_health_command_options(command: list[str]) -> None:
+    assert command[:1] == ["python"]
+    assert command[1] in HEALTH_CHECK_PATHS
+    for option, value in REQUIRED_HEALTH_OPTIONS:
+        option_indexes = [index for index, token in enumerate(command) if token == option]
+        assert len(option_indexes) == 1
+        option_index = option_indexes[0]
+        assert command[option_index + 1 : option_index + 2] == [value]
 
 
 def _write_readiness_fixture(
@@ -131,31 +151,50 @@ def test_health_workflows_configure_refresh_grace_and_cache_age_ceiling():
         commands = _workflow_python_commands(path.read_text(encoding="utf-8"))
         assert len(commands) == expected_count
         for command in commands:
-            assert "--max-refresh-delay-minutes 15" in command
-            assert "--max-cache-age-hours 36" in command
+            _assert_health_command_options(command)
 
 
-def test_workflow_python_commands_ignore_comments_and_keep_command_limits_separate():
+def test_workflow_command_options_reject_inline_shell_comments():
+    workflow_text = "\n".join(
+        (
+            "python scripts/check_cloudflare_health.py \\",
+            "  --max-cache-age-hours 36 # --max-refresh-delay-minutes 15",
+        )
+    )
+    command = _workflow_python_commands(workflow_text)[0]
+
+    with pytest.raises(AssertionError):
+        _assert_health_command_options(command)
+
+
+def test_workflow_command_options_reject_duplicate_options():
+    workflow_text = "\n".join(
+        (
+            "python scripts/run_remote_smoke.py \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-cache-age-hours 36",
+        )
+    )
+    command = _workflow_python_commands(workflow_text)[0]
+
+    with pytest.raises(AssertionError):
+        _assert_health_command_options(command)
+
+
+def test_workflow_python_commands_reject_suffix_lookalikes_and_comments():
     workflow_text = "\n".join(
         (
             "# python scripts/check_cloudflare_health.py \\",
             "#   --max-refresh-delay-minutes 15 \\",
             "#   --max-cache-age-hours 36",
-            "python scripts/check_cloudflare_health.py \\",
+            "python scripts/check_cloudflare_health.py.bak \\",
             "  --max-refresh-delay-minutes 15 \\",
-            "  --max-refresh-delay-minutes 15 \\",
-            "  --max-cache-age-hours 36",
-            "python scripts/run_remote_smoke.py \\",
             "  --max-cache-age-hours 36",
         )
     )
 
-    commands = _workflow_python_commands(workflow_text)
-
-    assert len(commands) == 2
-    assert commands[0].count("--max-refresh-delay-minutes 15") == 2
-    assert "--max-cache-age-hours 36" in commands[0]
-    assert "--max-refresh-delay-minutes 15" not in commands[1]
+    assert _workflow_python_commands(workflow_text) == []
 
 
 def test_local_operational_readiness_rejects_mismatched_production_concurrency(tmp_path):
