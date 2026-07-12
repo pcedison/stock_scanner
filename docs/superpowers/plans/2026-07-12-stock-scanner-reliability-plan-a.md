@@ -28,12 +28,14 @@
 - Modify: `tests/test_cloudflare_worker.py:1396`
 - Modify: `tests/test_deployment_preflight.py`
 - Modify: `scripts/check_deployment_preflight.py`
+- Create: `cloudflare/worker_observability.py`
 - Modify: `cloudflare/worker_support.py:80-110,178-205`
 - Modify: `cloudflare/worker.py:19-80,332-345,468-487`
 - Modify: `cloudflare/wrangler.toml`
 
 **Interfaces:**
 - Produces: `DependencyFailure(stage: str, retryable: bool, cause: Exception)` in `worker_support.py`.
+- Produces: focused `worker_observability.py` (maximum 200 lines) for request IDs, fixed safe dependency classifications, duration, and structured JSON logging.
 - Produces: additive `error_response(detail, status, headers, *, code, request_id, retryable, stage)`.
 - Produces: one server-generated request ID per Worker invocation, returned as `X-Request-ID` on every response.
 - Produces: `validate_worker_observability(path: Path) -> list[str]` used by deployment preflight.
@@ -116,8 +118,9 @@ def test_worker_observability_requires_persisted_logs(tmp_path):
     assert any("observability" in problem for problem in problems)
 
     wrangler.write_text(
-        '[observability]\nenabled = true\nhead_sampling_rate = 1\n'
-        '[observability.logs]\nenabled = true\ninvocation_logs = true\npersist = true\n',
+        '[observability]\nenabled = true\n'
+        '[observability.logs]\nenabled = true\nhead_sampling_rate = 1\ninvocation_logs = true\npersist = true\n'
+        '[observability.traces]\nenabled = true\nhead_sampling_rate = 0.1\npersist = true\n',
         encoding="utf-8",
     )
     assert validate_worker_observability(wrangler) == []
@@ -173,7 +176,7 @@ def error_response(
 
 Add `DependencyFailure` to `worker_support.__all__`, because `worker.py` imports support symbols through the existing star-import boundary.
 
-In `worker.py`, create the request ID with `secrets.token_hex(12)`, store it only on the per-request `Api` instance during `fetch`, add it to all returned responses, and log failures as one JSON object. The log function must never receive headers, query text, request body, D1 parameters, or the original exception string:
+Create `worker_observability.py` and import it from `worker.py` through flat-worker and package fallbacks, matching the existing support import style. Generate request IDs with `secrets.token_hex(12)`, store them only on the per-request `Api` instance during `fetch`, add them to all returned responses, and log failures as one JSON object. The observability module must use only Python standard-library imports, remain at or below 200 lines, and must never receive headers, query text, request body, D1 parameters, or the original exception string:
 
 ```python
 def log_worker_failure(*, request_id, request, path, stage, error_type, error_code, status, duration_ms):
@@ -229,7 +232,7 @@ Expected: all selected tests pass, preflight prints `Deployment preflight passed
 - [ ] **Step 7: Commit Task 1**
 
 ```powershell
-git add cloudflare\worker.py cloudflare\worker_support.py cloudflare\wrangler.toml scripts\check_deployment_preflight.py tests\test_cloudflare_worker.py tests\test_deployment_preflight.py
+git add cloudflare\worker.py cloudflare\worker_observability.py cloudflare\worker_support.py cloudflare\wrangler.toml scripts\check_deployment_preflight.py tests\test_cloudflare_worker.py tests\test_deployment_preflight.py
 git commit -m "feat: add traceable worker errors"
 ```
 
