@@ -896,9 +896,9 @@ test("successful market refresh clears last-good warning", async ({ page, isMobi
       });
       return;
     }
-    successfulScan.entry = [{ stockCode: "2454", companyName: "聯發科", status: "ENTRY", reasons: [] }];
-    successfulScan.watch = [];
-    successfulScan.excluded = [];
+  successfulScan.entry = successfulScan.entry.map((item, index) =>
+    index === 0 ? { ...item, stockCode: "2454", companyName: "聯發科" } : item,
+  );
     successfulScan.generatedAt = "2026-07-12T02:00:00+00:00";
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(successfulScan) });
   });
@@ -908,11 +908,13 @@ test("successful market refresh clears last-good warning", async ({ page, isMobi
   fail = false;
   await page.locator("#refresh-market-scan-btn").click();
   await expect(page.locator(".market-scan-warning")).toHaveCount(0);
-  await expect(page.locator(".market-result-code strong").first()).toHaveText("2454");
+  await expect(page.locator(".market-result-code strong").filter({ hasText: "2454" })).toHaveCount(1);
 });
 ```
 
 Cover warning lifecycle outside the two E2E cases with focused tests/source harnesses: scheduler-provided scans clear/derive the warning through the same acceptance helper; background GET/shared-promise failures use the same failure helper; and a Task 2 HTTP 200 payload with `cacheStatus.refreshStatus="unavailable"` displays a Chinese non-blocking warning plus a valid request ID. A later normal success clears it.
+
+The successful fixture must retain the original first entry's `OFFICIAL_Q` reason and period so it remains in the active `announced` group; only stock code/name are replaced, and all other entries/groups remain intact.
 
 - [ ] **Step 3: Run RED**
 
