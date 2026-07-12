@@ -4,6 +4,20 @@ compatibility_date = "2026-05-14"
 compatibility_flags = ["python_workers", "disable_python_no_global_handlers", "disable_python_external_sdk"]
 workers_dev = true
 
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.1
+persist = true
+
 [vars]
 APP_ENV = "production"
 APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"

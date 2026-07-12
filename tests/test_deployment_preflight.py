@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from scripts import check_deployment_preflight as deployment_preflight
 from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
 from scripts.check_deployment_preflight import (
     validate_deploy_workflow,
@@ -26,6 +27,32 @@ APP_CORS_ALLOW_ORIGINS = "https://app.example,http://localhost:8787,http://bad.e
 
     assert any("local" in problem for problem in problems)
     assert any("https" in problem for problem in problems)
+
+
+def test_worker_observability_requires_persisted_logs_and_sampled_traces(tmp_path):
+    wrangler = tmp_path / "wrangler.toml"
+    wrangler.write_text('name = "demo"\nmain = "worker.py"\n', encoding="utf-8")
+
+    problems = deployment_preflight.validate_worker_observability(wrangler)
+
+    assert any("observability" in problem for problem in problems)
+
+    wrangler.write_text(
+        "[observability]\n"
+        "enabled = true\n"
+        "[observability.logs]\n"
+        "enabled = true\n"
+        "head_sampling_rate = 1\n"
+        "invocation_logs = true\n"
+        "persist = true\n"
+        "[observability.traces]\n"
+        "enabled = true\n"
+        "head_sampling_rate = 0.1\n"
+        "persist = true\n",
+        encoding="utf-8",
+    )
+
+    assert deployment_preflight.validate_worker_observability(wrangler) == []
 
 
 def test_validate_deploy_workflow_accepts_current_guardrails():

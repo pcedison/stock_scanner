@@ -90,6 +90,14 @@ SECURITY_HEADERS = {
 }
 
 
+class DependencyFailure(Exception):
+    def __init__(self, stage: str, retryable: bool, cause: Exception):
+        self.stage = stage
+        self.retryable = retryable
+        self.error_type = type(cause).__name__
+        super().__init__(self.error_type)
+
+
 class ForbiddenError(Exception):
     pass
 
@@ -201,8 +209,16 @@ def text_response(content, status=200, media_type="text/plain; charset=utf-8", h
     return Response.new(content, to_js({"status": status, "headers": response_headers}, dict_converter=Object.fromEntries))
 
 
-def error_response(detail, status=400, headers=None):
-    return json_response({"detail": detail}, status=status, headers=headers)
+def error_response(detail, status=400, headers=None, *, code=None, request_id=None, retryable=None, stage=None):
+    payload = {"detail": detail}
+    metadata = (("code", code), ("requestId", request_id), ("retryable", retryable), ("stage", stage))
+    for key, value in metadata:
+        if value is not None:
+            payload[key] = bool(value) if key == "retryable" else value
+    response_headers = dict(headers or {})
+    if request_id:
+        response_headers["x-request-id"] = request_id
+    return json_response(payload, status=status, headers=response_headers)
 
 
 def manifest_quality(manifest):
@@ -508,21 +524,14 @@ def report_response(payload, report_format: str, title: str, filename_prefix: st
 
 
 __all__ = (
-    "AUTH_FAILURE_LIMIT",
-    "AUTH_FAILURE_WINDOW_SECONDS",
-    "AUTH_LOCK_SECONDS",
-    "BadRequestError",
-    "CSRF_HEADER_NAME",
-    "CSRF_HEADER_VALUE",
-    "DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS",
-    "DEFAULT_SETTINGS",
-    "ForbiddenError",
-    "HOLDING_EXIT_CODES",
-    "MIN_CACHE_ANALYSIS",
-    "MIN_CACHE_COMPANIES",
-    "NotFoundError",
-    "PASSWORD_ALGORITHM",
-    "PASSWORD_ITERATIONS",
+    "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_SECONDS",
+    "AUTH_LOCK_SECONDS", "BadRequestError",
+    "CSRF_HEADER_NAME", "CSRF_HEADER_VALUE",
+    "DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS", "DEFAULT_SETTINGS",
+    "DependencyFailure", "ForbiddenError",
+    "HOLDING_EXIT_CODES", "MIN_CACHE_ANALYSIS",
+    "MIN_CACHE_COMPANIES", "NotFoundError",
+    "PASSWORD_ALGORITHM", "PASSWORD_ITERATIONS",
     "RateLimitError",
     "REVENUE_GROWTH_MODES",
     "SECURITY_HEADERS",

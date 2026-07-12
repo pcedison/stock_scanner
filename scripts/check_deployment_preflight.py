@@ -45,6 +45,35 @@ def validate_worker_cors(wrangler_path: Path = DEFAULT_WRANGLER) -> list[str]:
     return problems
 
 
+def validate_worker_observability(wrangler_path: Path = DEFAULT_WRANGLER) -> list[str]:
+    config = tomllib.loads(wrangler_path.read_text(encoding="utf-8"))
+    observability = config.get("observability") or {}
+    logs = observability.get("logs") or {}
+    traces = observability.get("traces") or {}
+    problems: list[str] = []
+
+    def has_rate(value, expected: float) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value == expected
+
+    if observability.get("enabled") is not True:
+        problems.append("Worker observability.enabled must be true")
+    if logs.get("enabled") is not True:
+        problems.append("Worker observability.logs.enabled must be true")
+    if not has_rate(logs.get("head_sampling_rate"), 1):
+        problems.append("Worker observability.logs.head_sampling_rate must be 1")
+    if logs.get("invocation_logs") is not True:
+        problems.append("Worker observability.logs.invocation_logs must be true")
+    if logs.get("persist") is not True:
+        problems.append("Worker observability.logs.persist must be true")
+    if traces.get("enabled") is not True:
+        problems.append("Worker observability.traces.enabled must be true")
+    if not has_rate(traces.get("head_sampling_rate"), 0.1):
+        problems.append("Worker observability.traces.head_sampling_rate must be 0.1")
+    if traces.get("persist") is not True:
+        problems.append("Worker observability.traces.persist must be true")
+    return problems
+
+
 def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> list[str]:
     problems: list[str] = []
     text = workflow_path.read_text(encoding="utf-8")
@@ -139,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         *validate_workflow_yaml(args.workflow_dir),
         *validate_seed_zip_selection(args.workflow_dir),
         *validate_worker_cors(args.wrangler),
+        *validate_worker_observability(args.wrangler),
         *validate_deploy_workflow(args.deploy_workflow),
         *validate_health_url(args.require_health_url),
     ]

@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import re
 import sys
 import types
 from datetime import datetime
@@ -215,6 +216,7 @@ def test_worker_options_preflight_uses_cors_and_security_headers(monkeypatch):
     headers = response.headers
     assert headers["access-control-allow-origin"] == "http://localhost:8000"
     assert headers["strict-transport-security"].startswith("max-age=31536000")
+    assert re.fullmatch(r"[0-9a-f]{24}", headers["x-request-id"])
 
 
 def test_worker_production_requires_super_user_binding(monkeypatch):
@@ -227,6 +229,39 @@ def test_worker_production_requires_super_user_binding(monkeypatch):
                 APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
             )
         )
+
+
+def test_worker_on_fetch_maps_runtime_security_initialization_failure(monkeypatch, capsys):
+    worker = load_worker_module(monkeypatch)
+    env = types.SimpleNamespace(
+        APP_ENV="production",
+        APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
+        DB=RoutingFakeD1(),
+        CACHE=FakeR2Cache(),
+    )
+
+    response = asyncio.run(
+        worker.on_fetch(
+            RouteRequest(path="/api/health", headers={"authorization": "Bearer hidden"}),
+            env,
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 500
+    assert payload == {
+        "detail": "伺服器暫時無法處理請求，請稍後再試。",
+        "code": "INTERNAL_ERROR",
+        "requestId": response.headers["x-request-id"],
+        "retryable": False,
+        "stage": "worker",
+    }
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["requestId"] == payload["requestId"]
+    assert record["stage"] == "worker"
+    serialized = json.dumps({"payload": payload, "record": record})
+    assert "SUPER_USER_USERNAME" not in serialized
+    assert "Bearer hidden" not in serialized
 
 
 def test_worker_production_csrf_guard_requires_custom_header(monkeypatch):
@@ -269,6 +304,31 @@ def test_worker_error_response_preserves_rate_limit_retry_after(monkeypatch):
 
     assert response.init["status"] == 429
     assert response.headers["retry-after"] == "30"
+
+
+def test_worker_error_response_adds_safe_metadata_and_request_header(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    response = worker.error_response(
+        "dependency failed",
+        status=503,
+        headers={"retry-after": "30"},
+        code="DEPENDENCY_UNAVAILABLE",
+        request_id="request-123",
+        retryable=True,
+        stage="r2_read",
+    )
+
+    assert response.init["status"] == 503
+    assert response.headers["retry-after"] == "30"
+    assert response.headers["x-request-id"] == "request-123"
+    assert json.loads(response.body) == {
+        "detail": "dependency failed",
+        "code": "DEPENDENCY_UNAVAILABLE",
+        "requestId": "request-123",
+        "retryable": True,
+        "stage": "r2_read",
+    }
 
 
 def test_worker_manifest_quality_flags_undersized_seed(monkeypatch):
@@ -425,6 +485,49 @@ def test_worker_db_helpers_normalize_d1_shapes(monkeypatch):
     assert fake_db.prepared[0].params == (1,)
     assert fake_db.prepared[1].params == (1,)
     assert fake_db.prepared[3].params == ("",)
+
+
+def test_worker_db_run_wraps_write_failure_as_nonretryable(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    class FailingStatement:
+        def bind(self, *params):
+            return self
+
+        async def run(self):
+            raise RuntimeError("Network connection lost")
+
+    class FailingD1:
+        def prepare(self, sql):
+            return FailingStatement()
+
+    api = worker.Api(env=types.SimpleNamespace(DB=FailingD1()))
+
+    with pytest.raises(worker.DependencyFailure) as caught:
+        asyncio.run(api.db_run("UPDATE items SET value = ?", 1))
+
+    assert caught.value.stage == "d1_write"
+    assert caught.value.retryable is False
+    assert caught.value.error_type == "RuntimeError"
+
+
+def test_worker_replace_holdings_wraps_batch_failure_as_nonretryable(monkeypatch):
+    worker = load_worker_module(monkeypatch)
+
+    class FailingBatchD1:
+        def prepare(self, sql):
+            return FakeStatement(sql)
+
+        async def batch(self, statements):
+            raise RuntimeError("Network connection lost")
+
+    api = worker.Api(env=types.SimpleNamespace(DB=FailingBatchD1()))
+
+    with pytest.raises(worker.DependencyFailure) as caught:
+        asyncio.run(api.replace_holdings(7, []))
+
+    assert caught.value.stage == "d1_write"
+    assert caught.value.retryable is False
 
 
 def test_worker_r2_json_caches_misses_and_parses_json(monkeypatch):
@@ -1020,7 +1123,19 @@ def test_worker_on_fetch_entrypoint_serves_health(monkeypatch):
 
     assert response.init["status"] == 200
     assert response.headers["x-frame-options"] == "DENY"
+    assert re.fullmatch(r"[0-9a-f]{24}", response.headers["x-request-id"])
     assert json.loads(response.body)["status"] == "ok"
+
+
+def test_worker_fetch_generates_a_new_request_id_per_invocation(monkeypatch):
+    _worker, api, _db = build_router_api(monkeypatch)
+
+    first = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    second = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+
+    assert re.fullmatch(r"[0-9a-f]{24}", first.headers["x-request-id"])
+    assert re.fullmatch(r"[0-9a-f]{24}", second.headers["x-request-id"])
+    assert first.headers["x-request-id"] != second.headers["x-request-id"]
 
 
 def test_worker_set_response_header_supports_js_headers(monkeypatch):
@@ -1393,16 +1508,124 @@ def test_worker_r2_json_falls_back_on_invalid_json(monkeypatch):
     assert result == {"fallback": True}
 
 
-def test_worker_fetch_maps_unexpected_error_to_500(monkeypatch):
+def test_worker_fetch_maps_unexpected_error_to_500(monkeypatch, capsys):
     worker, api, _db = build_router_api(monkeypatch)
 
-    async def boom(key, fallback):
-        raise RuntimeError("boom")
+    async def boom(_key, _fallback):
+        raise RuntimeError("secret-value must never be returned")
 
     api.r2_json = boom
-    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    response = asyncio.run(
+        api.fetch(RouteRequest(path="/api/health", headers={"authorization": "Bearer hidden"}))
+    )
+    payload = json.loads(response.body)
+
     assert response.init["status"] == 500
-    assert json.loads(response.body)["detail"].startswith("伺服器")
+    assert payload["detail"] == "伺服器暫時無法處理請求，請稍後再試。"
+    assert payload["code"] == "INTERNAL_ERROR"
+    assert payload["retryable"] is False
+    assert payload["stage"] == "route"
+    assert payload["requestId"]
+    assert response.headers["x-request-id"] == payload["requestId"]
+
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_request_failed"
+    assert record["requestId"] == payload["requestId"]
+    assert record["method"] == "GET"
+    assert record["path"] == "/api/health"
+    assert record["errorType"] == "RuntimeError"
+    assert record["durationMs"] >= 0
+    serialized = json.dumps(record)
+    assert "secret-value" not in serialized
+    assert "Bearer hidden" not in serialized
+
+
+def test_worker_r2_read_failure_returns_retryable_503(monkeypatch, capsys):
+    _worker, api, _db = build_router_api(monkeypatch)
+
+    async def fail_get(_key):
+        raise RuntimeError("R2 temporarily unavailable")
+
+    api.env.CACHE.get = fail_get
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["retryable"] is True
+    assert payload["stage"] == "r2_read"
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["errorCode"] == "UNCLASSIFIED"
+    assert "R2 temporarily unavailable" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    ("message", "error_code"),
+    [
+        ("Network connection lost.", "NETWORK_LOST"),
+        ("D1 DB reset because its code was updated.", "RESET"),
+        ("Cannot resolve D1 DB due to transient issue on remote node.", "TRANSIENT_REMOTE_NODE"),
+        ("D1 DB is overloaded. Too many requests queued.", "OVERLOADED"),
+        ("D1 DB storage operation exceeded timeout which caused object to be reset.", "TIMEOUT"),
+    ],
+)
+def test_worker_d1_transient_read_failure_returns_retryable_503(monkeypatch, capsys, message, error_code):
+    _worker, api, _db = build_router_api(monkeypatch)
+
+    class FailingStatement:
+        def bind(self, *params):
+            return self
+
+        async def first(self):
+            raise RuntimeError(message)
+
+    api.env.DB.prepare = lambda _sql: FailingStatement()
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/settings")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["retryable"] is True
+    assert payload["stage"] == "d1_read"
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["errorCode"] == error_code
+    assert message not in json.dumps(record)
+
+
+def test_worker_d1_unclassified_read_failure_is_not_retryable(monkeypatch):
+    _worker, api, _db = build_router_api(monkeypatch)
+
+    class FailingStatement:
+        def bind(self, *params):
+            return self
+
+        async def first(self):
+            raise RuntimeError("syntax or permission error")
+
+    api.env.DB.prepare = lambda _sql: FailingStatement()
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/settings")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 500
+    assert payload["code"] == "DEPENDENCY_FAILURE"
+    assert payload["retryable"] is False
+    assert payload["stage"] == "d1_read"
+
+
+def test_worker_d1_write_failure_is_not_marked_safe_to_retry(monkeypatch):
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {}})
+
+    async def fail_refresh(_manifest, force=False):
+        raise worker.DependencyFailure("d1_write", False, RuntimeError("Network connection lost"))
+
+    api.ensure_refresh_job = fail_refresh
+    response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/cache/refresh", body="")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 500
+    assert payload["code"] == "DEPENDENCY_FAILURE"
+    assert payload["retryable"] is False
+    assert payload["stage"] == "d1_write"
 
 
 def test_worker_cache_policy_windows(monkeypatch):

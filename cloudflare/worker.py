@@ -16,16 +16,25 @@ try:
 except ModuleNotFoundError:
     from cloudflare.worker_support import *  # noqa: F403
 
+try:
+    import worker_observability as observability
+except ModuleNotFoundError:
+    from cloudflare import worker_observability as observability
+
+CLIENT_ERROR_STATUS = {BadRequestError: 400, NotFoundError: 404, ValidationError: 422, PermissionError: 401, ForbiddenError: 403}
+set_response_header = observability.set_response_header
+
+
 async def on_fetch(request, env):
-    return await Api(env).fetch(request)
-
-
-def set_response_header(response, key: str, value: str) -> None:
-    headers = getattr(response, "headers", None)
-    if headers is not None and hasattr(headers, "set"):
-        headers.set(key, value)
-    elif isinstance(headers, dict):
-        headers[key] = value
+    request_id = observability.new_request_id()
+    started = observability.start_timer()
+    try:
+        return await Api(env).fetch(request, request_id=request_id)
+    except Exception as exc:
+        path = urlparse(str(getattr(request, "url", ""))).path.rstrip("/") or "/"
+        return observability.failure_response(
+            error_response, request_id, request, path, exc, started, dependency=False, stage="worker"
+        )
 
 
 def d1_param(value):
@@ -42,40 +51,36 @@ class Api:
         validate_runtime_security(env, self._super_user)
         self._cors_allowed_origins = self.cors_allowed_origins()
 
-    async def fetch(self, request):
-        if request.method == "OPTIONS":
-            return Response.new(
-                "",
-                to_js({"status": 204, "headers": {**SECURITY_HEADERS, **self.cors_headers(request)}}, dict_converter=Object.fromEntries),
-            )
-
+    async def fetch(self, request, request_id=None):
+        self._request_id = request_id or observability.new_request_id()
+        started = observability.start_timer()
+        make_failure_response = observability.failure_response
         parsed = urlparse(request.url)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
 
-        try:
-            if self.requires_csrf_header(request, path) and not self.has_valid_csrf_header(request):
-                response = error_response("CSRF header required", status=403)
-            else:
-                response = await self.route(request, path, query)
-        except BadRequestError as exc:
-            response = error_response(str(exc), status=400)
-        except NotFoundError as exc:
-            response = error_response(str(exc), status=404)
-        except ValidationError as exc:
-            response = error_response(str(exc), status=422)
-        except PermissionError as exc:
-            response = error_response(str(exc), status=401)
-        except ForbiddenError as exc:
-            response = error_response(str(exc), status=403)
-        except RateLimitError as exc:
-            response = error_response(str(exc), status=429, headers={"retry-after": str(exc.retry_after_seconds)})
-        except Exception as exc:
-            print(f"Cloudflare Worker API error: {exc}")
-            response = error_response("伺服器暫時無法處理請求，請稍後再試。", status=500)
+        if request.method == "OPTIONS":
+            response = Response.new(
+                "",
+                to_js({"status": 204, "headers": {**SECURITY_HEADERS, **self.cors_headers(request)}}, dict_converter=Object.fromEntries),
+            )
+        else:
+            try:
+                if self.requires_csrf_header(request, path) and not self.has_valid_csrf_header(request):
+                    response = error_response("CSRF header required", status=403)
+                else:
+                    response = await self.route(request, path, query)
+            except (BadRequestError, NotFoundError, ValidationError, PermissionError, ForbiddenError) as exc:
+                status = next(status for error_type, status in CLIENT_ERROR_STATUS.items() if isinstance(exc, error_type))
+                response = error_response(str(exc), status=status)
+            except RateLimitError as exc:
+                response = error_response(str(exc), status=429, headers={"retry-after": str(exc.retry_after_seconds)})
+            except DependencyFailure as exc:
+                response = make_failure_response(error_response, self._request_id, request, path, exc, started, dependency=True)
+            except Exception as exc:
+                response = make_failure_response(error_response, self._request_id, request, path, exc, started, dependency=False)
 
-        for key, value in {**SECURITY_HEADERS, **self.cors_headers(request)}.items():
-            set_response_header(response, key, value)
+        observability.add_response_headers(response, {**SECURITY_HEADERS, **self.cors_headers(request)}, self._request_id)
         return response
 
     def requires_csrf_header(self, request, path: str) -> bool:
@@ -332,14 +337,18 @@ class Api:
     async def r2_json(self, key: str, fallback):
         if key in self._r2_cache:
             return self._r2_cache[key]
-        obj = js_to_py(await self.env.CACHE.get(key))
+        try:
+            obj = js_to_py(await self.env.CACHE.get(key))
+        except DependencyFailure:
+            raise
+        except Exception as exc:
+            raise observability.wrap_dependency_failure(DependencyFailure, "r2_read", True, exc) from None
         if obj is None:
             self._r2_cache[key] = fallback
             return fallback
         try:
             result = json.loads(await obj.text())
-        except Exception as exc:
-            print(f"R2 JSON parse error for key={key}: {exc}")
+        except Exception:
             result = fallback
         self._r2_cache[key] = result
         return result
@@ -465,23 +474,28 @@ class Api:
             "recentJobs": [self.refresh_job_payload(job) for job in jobs],
         }
 
+    async def _db_call(self, operation: str, sql: str, params, *, write: bool):
+        try:
+            statement = self.env.DB.prepare(sql)
+            if params:
+                statement = statement.bind(*(d1_param(param) for param in params))
+            result = js_to_py(await getattr(statement, operation)())
+        except DependencyFailure:
+            raise
+        except Exception as exc:
+            retryable = False if write else observability.d1_read_retryable(exc)
+            stage = "d1_write" if write else "d1_read"
+            raise observability.wrap_dependency_failure(DependencyFailure, stage, retryable, exc) from None
+        return result
+
     async def db_run(self, sql: str, *params):
-        statement = self.env.DB.prepare(sql)
-        if params:
-            statement = statement.bind(*(d1_param(param) for param in params))
-        return js_to_py(await statement.run())
+        return await self._db_call("run", sql, params, write=True)
 
     async def db_first(self, sql: str, *params):
-        statement = self.env.DB.prepare(sql)
-        if params:
-            statement = statement.bind(*(d1_param(param) for param in params))
-        return js_to_py(await statement.first())
+        return await self._db_call("first", sql, params, write=False)
 
     async def db_all(self, sql: str, *params):
-        statement = self.env.DB.prepare(sql)
-        if params:
-            statement = statement.bind(*(d1_param(param) for param in params))
-        result = js_to_py(await statement.all())
+        result = await self._db_call("all", sql, params, write=False)
         if isinstance(result, dict):
             return result.get("results", [])
         return result or []
@@ -728,28 +742,33 @@ class Api:
 
     async def replace_holdings(self, user_id: int, holdings: list[dict]):
         now = utc_now()
-        stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
-        for h in holdings:
-            stmts.append(
-                self.env.DB.prepare(
-                    """INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, stock_code) DO UPDATE SET
-                        name = excluded.name,
-                        shares = excluded.shares,
-                        average_cost = excluded.average_cost,
-                        updated_at = excluded.updated_at"""
-                ).bind(
-                    user_id,
-                    h["stockCode"],
-                    h.get("name") or "",
-                    h.get("shares", 0),
-                    d1_param(h.get("averageCost")),
-                    now,
-                    now,
+        try:
+            stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
+            for h in holdings:
+                stmts.append(
+                    self.env.DB.prepare(
+                        """INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, stock_code) DO UPDATE SET
+                            name = excluded.name,
+                            shares = excluded.shares,
+                            average_cost = excluded.average_cost,
+                            updated_at = excluded.updated_at"""
+                    ).bind(
+                        user_id,
+                        h["stockCode"],
+                        h.get("name") or "",
+                        h.get("shares", 0),
+                        d1_param(h.get("averageCost")),
+                        now,
+                        now,
+                    )
                 )
-            )
-        await self.env.DB.batch(to_js(stmts))
+            await self.env.DB.batch(to_js(stmts))
+        except DependencyFailure:
+            raise
+        except Exception as exc:
+            raise observability.wrap_dependency_failure(DependencyFailure, "d1_write", False, exc) from None
         return await self.list_holdings(user_id)
 
     async def get_settings(self):
