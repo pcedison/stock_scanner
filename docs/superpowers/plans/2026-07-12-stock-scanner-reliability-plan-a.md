@@ -435,15 +435,19 @@ git commit -m "fix: serve cached scan when refresh queue fails"
 - Modify: `tests/test_cloudflare_worker.py:379-400`
 - Modify: `tests/test_cloudflare_health_check.py`
 - Modify: `tests/test_remote_smoke.py`
+- Modify: `tests/test_code_size_budgets.py`
 - Modify: `cloudflare/worker.py:146-155`
 - Modify: `cloudflare/worker_support.py:127-133`
+- Create: `cloudflare/worker_health.py` (maximum 120 lines; payload composition only, no Worker/JS globals)
 - Modify: `scripts/check_cloudflare_health.py`
 - Modify: `scripts/run_remote_smoke.py`
+- Modify: `scripts/check_code_size_budgets.py`
 - Modify: `.github/workflows/cloudflare-health-monitor.yml`
 - Modify: `.github/workflows/cloudflare-r2-seed-refresh.yml`
 
 **Interfaces:**
 - Produces: `/api/health.cacheStatus` using `Api.cache_status_from_manifest`.
+- Produces: a focused health payload composer so the 880-line Worker budget is not raised or compressed.
 - Produces: `validate_health_payload(..., max_refresh_delay_minutes: float | None)` with legacy fallback.
 - Produces: Worker timestamp parsing that treats naive ISO timestamps as UTC, matching both operational scripts.
 - Preserves: raw manifest at `/api/health.cache`, fixed 36-hour maximum-age safety ceiling, strict default behavior for callers that omit the new grace, and rolling compatibility with old Workers lacking `cacheStatus`.
@@ -585,27 +589,33 @@ Expected: missing `cacheStatus`, missing parameter, and current unconditional de
 
 - [ ] **Step 4: Implement dynamic health status and grace**
 
-In the Worker health route:
+In `worker_health.py`, compose the health payload from the manifest, quality, and the cache-status/policy callbacks. The Worker route delegates to that helper:
 
 ```python
-quality = manifest_quality(manifest)
-cache_status = self.cache_status_from_manifest(
-    manifest,
-    {"status": "not_requested", "reason": self.cache_policy()["reason"]},
-)
-return json_response({
-    "status": "ok" if quality["ok"] and not cache_status["isStale"] else "degraded",
-    "runtime": "cloudflare-python-worker",
-    "time": utc_now(),
-    "cache": manifest,
-    "cacheStatus": cache_status,
-    "cacheQuality": quality,
-}, public_cache_seconds=60)
+def health_payload(manifest, manifest_quality, cache_status_from_manifest, cache_policy, utc_now):
+    quality = manifest_quality(manifest)
+    policy = cache_policy()
+    cache_status = cache_status_from_manifest(
+        manifest,
+        {"status": "not_requested", "reason": policy["reason"]},
+    )
+    return {
+        "status": "ok" if quality["ok"] and not cache_status["isStale"] else "degraded",
+        "runtime": "cloudflare-python-worker",
+        "time": utc_now(),
+        "cache": manifest,
+        "cacheStatus": cache_status,
+        "cacheQuality": quality,
+    }
 ```
+
+The Worker passes its existing functions/methods to `health_payload` and wraps the returned dict with `json_response(..., public_cache_seconds=60)`.
 
 In `validate_health_payload`, calculate refresh delay from `cacheStatus.nextRefreshAfter`. If `cacheStatus` exists, allow `status="degraded"` only while the delay is within the configured grace and cache quality remains good. Once grace is exceeded, report a refresh-policy problem. If `cacheStatus` is absent, retain the existing `status == "ok"` and maximum-age behavior for rolling deploys.
 
 Normalize timestamps consistently: naive ISO values are UTC, aware values are converted to UTC, and invalid values return `None`.
+
+Add `cloudflare/worker_health.py: 120` to the normal size-budget map/test. Do not raise any existing budget. The module must not import Worker/JS globals or duplicate cache policy/date logic.
 
 Add CLI flag:
 
@@ -624,6 +634,8 @@ Pass `--max-refresh-delay-minutes 15` in both the direct health checker and `run
 ```powershell
 ..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task3-green tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py tests\test_remote_smoke.py tests\test_operational_readiness.py
 ..\..\.venv\Scripts\python.exe scripts\check_operational_readiness.py
+..\..\.venv\Scripts\python.exe scripts\check_code_size_budgets.py
+npx.cmd wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir C:\tmp\stock-worker-task3-dry-run
 ```
 
 Expected: all selected tests and operational readiness pass.
@@ -631,7 +643,7 @@ Expected: all selected tests and operational readiness pass.
 - [ ] **Step 6: Commit Task 3**
 
 ```powershell
-git add cloudflare\worker.py cloudflare\worker_support.py scripts\check_cloudflare_health.py scripts\run_remote_smoke.py .github\workflows\cloudflare-health-monitor.yml .github\workflows\cloudflare-r2-seed-refresh.yml tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py tests\test_remote_smoke.py tests\test_operational_readiness.py
+git add cloudflare\worker.py cloudflare\worker_support.py cloudflare\worker_health.py scripts\check_cloudflare_health.py scripts\run_remote_smoke.py scripts\check_code_size_budgets.py .github\workflows\cloudflare-health-monitor.yml .github\workflows\cloudflare-r2-seed-refresh.yml tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py tests\test_remote_smoke.py tests\test_operational_readiness.py tests\test_code_size_budgets.py
 git commit -m "fix: align health with cache refresh policy"
 ```
 
