@@ -238,30 +238,105 @@ git commit -m "feat: add traceable worker errors"
 
 ---
 
+### Task 1A: Repair observability findings before proceeding
+
+**Files:**
+- Modify: `tests/test_cloudflare_worker.py`
+- Modify: `tests/test_deployment_preflight.py`
+- Modify: `tests/test_code_size_budgets.py`
+- Modify: `cloudflare/worker.py`
+- Modify: `cloudflare/worker_observability.py`
+- Modify: `scripts/check_deployment_preflight.py`
+- Modify: `scripts/check_code_size_budgets.py`
+
+**Blocking review findings:**
+- D1 read failures classified as `OVERLOADED` or `TIMEOUT` are safe fixed log classifications, but they are not advertised as retryable. Only network loss, reset/code-update/storage-reset, and transient remote-node failures are retryable read failures.
+- An exception from `await r2_object.text()` is a retryable `r2_read` dependency failure. A successfully read but malformed JSON artifact may retain the existing fallback behavior.
+- Sanitized `DependencyFailure` objects must not retain the raw exception through `__context__`, `__cause__`, or a reachable traceback. Build the safe failure inside the handler, leave the `except` block, and only then raise it.
+- An `Api(env)` initialization failure for an allowed Pages origin must retain safe CORS/security headers and `X-Request-ID`, using CORS calculation that does not depend on successful API initialization.
+- Malformed observability TOML types return actionable preflight problems instead of raising `AttributeError`.
+- The 200-line budget for `cloudflare/worker_observability.py` is enforced by the normal size gate. Do not raise any existing budget.
+
+- [ ] **Step 1: Add RED regression tests**
+
+Add focused tests that prove:
+
+1. `OVERLOADED` and `TIMEOUT` D1 reads return HTTP 500, `DEPENDENCY_FAILURE`, and `retryable=false`; `NETWORK_LOST`, `RESET`, and `TRANSIENT_REMOTE_NODE` remain HTTP 503 and retryable.
+2. R2 object-body I/O failure returns the safe `r2_read` 503 envelope, while valid body I/O followed by malformed JSON retains the documented fallback.
+3. A secret sentinel placed in a raw R2/D1 exception is absent from the response/log and unreachable through `DependencyFailure.__context__`, `__cause__`, and traceback frames.
+4. Runtime-security initialization failure with the configured Pages `Origin` returns the safe envelope with matching request ID, security headers, and `Access-Control-Allow-Origin`.
+5. Scalar/list values at `observability`, `observability.logs`, or `observability.traces` produce validation problems rather than an exception.
+6. The automated size-budget map contains `cloudflare/worker_observability.py: 200`.
+
+- [ ] **Step 2: Run RED**
+
+```powershell
+..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task1a-red tests\test_cloudflare_worker.py tests\test_deployment_preflight.py tests\test_code_size_budgets.py
+```
+
+Expected: each new regression fails for the reviewed reason.
+
+- [ ] **Step 3: Implement the narrow repairs**
+
+Keep fixed error classification separate from retryability, split R2 body I/O from JSON decoding, raise sanitized failures outside active exception handlers, and reuse a pure CORS calculation in both normal and initialization-failure paths. Preserve successful payloads and all Task 1 security constraints.
+
+- [ ] **Step 4: Run all Task 1 gates**
+
+```powershell
+..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task1a-green tests\test_cloudflare_worker.py tests\test_deployment_preflight.py tests\test_code_size_budgets.py
+..\..\.venv\Scripts\python.exe scripts\check_code_size_budgets.py
+..\..\.venv\Scripts\python.exe scripts\check_deployment_preflight.py
+npx.cmd wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir C:\tmp\stock-worker-task1a-dry-run
+..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task1a-full
+```
+
+Expected: focused tests, all static gates, Wrangler bundling, and full pytest pass.
+
+- [ ] **Step 5: Commit and re-review Task 1A**
+
+```powershell
+git add cloudflare\worker.py cloudflare\worker_observability.py scripts\check_deployment_preflight.py scripts\check_code_size_budgets.py tests\test_cloudflare_worker.py tests\test_deployment_preflight.py tests\test_code_size_budgets.py
+git commit -m "fix: harden worker failure boundaries"
+```
+
+Do not begin Task 2 until an independent reviewer reports no Critical or Important findings for the combined Task 1 range.
+
+---
+
 ### Task 2: Preserve the market scan when refresh enqueue fails
 
 **Files:**
 - Modify: `tests/test_cloudflare_worker.py:1255-1267`
 - Modify: `cloudflare/worker.py:249-259`
+- Modify: `cloudflare/worker_observability.py`
 
 **Interfaces:**
 - Consumes: Task 1 request ID and structured failure logger.
-- Produces: legacy market POST success with `cacheStatus.refreshStatus="unavailable"` when only refresh enqueue fails.
-- Preserves: the same HTTP 200 market arrays and no fail-open behavior for any other write path.
+- Produces: legacy market POST success with `cacheStatus.refreshStatus="unavailable"` only when a verified last-good R2 scan was already loaded and `ensure_refresh_job` reports a D1 dependency failure.
+- Preserves: the same compacted arrays as the successful GET, the dependency's original retryability, and no fail-open behavior for malformed/missing R2 scans, non-D1 failures, unexpected exceptions, or any other route.
 
 - [ ] **Step 1: Write the failing degradation test**
 
 ```python
-def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("stage", "retryable"),
+    (("d1_read", True), ("d1_write", False)),
+)
+def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(
+    monkeypatch, capsys, stage, retryable
+):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     scan = {"entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "last good"}], "watch": [], "excluded": []}
     worker, api, _db = build_router_api(
         monkeypatch,
         r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
     )
+    expected = worker.compact_market_scan(scan)
 
     async def fail_refresh(_manifest, force=False):
-        raise worker.DependencyFailure("d1_write", False, RuntimeError("Network connection lost"))
+        failure = worker.DependencyFailure(stage, retryable, RuntimeError("secret sentinel"))
+        failure.error_code = "NETWORK_LOST"
+        raise failure
 
     api.ensure_refresh_job = fail_refresh
     response = asyncio.run(api.fetch(RouteRequest(
@@ -272,17 +347,23 @@ def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(monke
     payload = json.loads(response.body)
 
     assert response.init["status"] == 200
-    assert payload["entry"] == scan["entry"]
-    assert payload["watch"] == scan["watch"]
-    assert payload["excluded"] == scan["excluded"]
+    assert payload["entry"] == expected["entry"]
+    assert payload["watch"] == expected["watch"]
+    assert payload["excluded"] == expected["excluded"]
     assert payload["cacheStatus"]["refreshStatus"] == "unavailable"
-    assert payload["cacheStatus"]["retryable"] is True
+    assert payload["cacheStatus"]["retryable"] is retryable
     assert payload["cacheStatus"]["requestId"] == response.headers["x-request-id"]
     record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["event"] == "worker_dependency_degraded"
     assert record["stage"] == "refresh_queue"
+    assert record["status"] == 200
+    assert record["errorCode"] == "NETWORK_LOST"
+    assert record["requestId"] == response.headers["x-request-id"]
+    assert record["durationMs"] >= 0
+    assert "secret sentinel" not in json.dumps(record)
 ```
 
-Call `pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")` before `api.fetch` so this test deterministically enters the stale refresh path.
+The request uses `refreshMode="force"`; no clock pin is needed. Also add negative tests proving that a missing/malformed scan plus the same queue failure, a non-D1 `DependencyFailure`, and an unexpected `RuntimeError` do not return HTTP 200. Keep or extend sibling-route regressions so `/api/cache/refresh`, auth, settings, holdings, reports, and admin failures remain normal failures.
 
 - [ ] **Step 2: Run RED**
 
@@ -290,35 +371,38 @@ Call `pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")` before 
 ..\..\.venv\Scripts\python.exe -m pytest -q -o filterwarnings= --basetemp C:\tmp\pytest-plan-a-task2-red tests\test_cloudflare_worker.py -k "scan_market_post_serves_last_good"
 ```
 
-Expected: the current Worker returns 500.
+Expected: the current Worker returns a dependency error and lacks the narrow unavailable metadata/log event.
 
 - [ ] **Step 3: Implement the narrow fail-open boundary**
 
-Load the manifest and scan before enqueueing, as today. Wrap only `ensure_refresh_job`:
+Load the manifest and scan before enqueueing, as today. Before the call, record whether the R2 value is a verified scan: it must be a dict and each of `entry`, `watch`, and `excluded` must be a list. Wrap only the complete `ensure_refresh_job` call (its existing-job read, cleanup write, and insert write):
 
 ```python
 try:
     refresh_status = await self.ensure_refresh_job(manifest, force=refresh_mode == "force")
 except DependencyFailure as exc:
+    if not has_last_good or exc.stage not in {"d1_read", "d1_write"}:
+        raise
     log_worker_failure(
+        event="worker_dependency_degraded",
         request_id=self._request_id,
         request=request,
         path=path,
         stage="refresh_queue",
         error_type=exc.error_type,
-        error_code="REFRESH_QUEUE_UNAVAILABLE",
-        status=503,
-        duration_ms=0,
+        error_code=getattr(exc, "error_code", "UNCLASSIFIED"),
+        status=200,
+        duration_ms=duration_ms(refresh_started),
     )
     refresh_status = {
         "status": "unavailable",
         "reason": self.cache_policy()["reason"],
-        "retryable": True,
+        "retryable": exc.retryable,
         "requestId": self._request_id,
     }
 ```
 
-Do not apply this catch to `/api/cache/refresh`, settings, authentication, holdings, reports, or admin routes.
+After `cache_status_from_manifest` returns, add `retryable` and `requestId` to that route-local cache-status dict only when refresh status is unavailable; do not expect `cache_status_from_manifest` to preserve arbitrary keys. Keep dependency classification (`errorCode`) distinct from the business degradation event. Do not apply this catch to `/api/cache/refresh`, settings, authentication, holdings, reports, or admin routes. Do not raise any size budget; use the remaining focused observability-module budget or a readability-preserving extraction if needed.
 
 - [ ] **Step 4: Run GREEN and the full Worker tests**
 
@@ -331,7 +415,7 @@ Expected: all selected tests pass.
 - [ ] **Step 5: Commit Task 2**
 
 ```powershell
-git add cloudflare\worker.py tests\test_cloudflare_worker.py
+git add cloudflare\worker.py cloudflare\worker_observability.py tests\test_cloudflare_worker.py
 git commit -m "fix: serve cached scan when refresh queue fails"
 ```
 
@@ -342,15 +426,19 @@ git commit -m "fix: serve cached scan when refresh queue fails"
 **Files:**
 - Modify: `tests/test_cloudflare_worker.py:379-400`
 - Modify: `tests/test_cloudflare_health_check.py`
+- Modify: `tests/test_remote_smoke.py`
 - Modify: `cloudflare/worker.py:146-155`
+- Modify: `cloudflare/worker_support.py:127-133`
 - Modify: `scripts/check_cloudflare_health.py`
+- Modify: `scripts/run_remote_smoke.py`
 - Modify: `.github/workflows/cloudflare-health-monitor.yml`
 - Modify: `.github/workflows/cloudflare-r2-seed-refresh.yml`
 
 **Interfaces:**
 - Produces: `/api/health.cacheStatus` using `Api.cache_status_from_manifest`.
 - Produces: `validate_health_payload(..., max_refresh_delay_minutes: float | None)` with legacy fallback.
-- Preserves: raw manifest at `/api/health.cache`, fixed 36-hour maximum-age safety ceiling, and rolling compatibility with old Workers lacking `cacheStatus`.
+- Produces: Worker timestamp parsing that treats naive ISO timestamps as UTC, matching both operational scripts.
+- Preserves: raw manifest at `/api/health.cache`, fixed 36-hour maximum-age safety ceiling, strict default behavior for callers that omit the new grace, and rolling compatibility with old Workers lacking `cacheStatus`.
 
 - [ ] **Step 1: Add Worker stale-boundary RED tests**
 
@@ -370,7 +458,7 @@ def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
         },
     }
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:49+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:48+00:00")
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
     assert response.init["status"] == 200
@@ -379,6 +467,8 @@ def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
     assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-12T00:52:48")
     assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
 ```
+
+Add before/exact/after boundary cases. At exactly `nextRefreshAfter`, `isStale` is true; one second before it is false. Add `parse_time` parity tests for a naive timestamp, `Z`, `+08:00`, and invalid text. The existing health-entrypoint fixture must include a valid `generatedAt` so its `status="ok"` assertion still describes a fresh cache.
 
 - [ ] **Step 2: Add health-script RED tests for grace and rolling fallback**
 
@@ -432,6 +522,22 @@ def test_validate_health_payload_accepts_policy_stale_inside_grace():
     assert summary["refreshDelayMinutes"] == pytest.approx(7.2)
 
 
+def test_validate_health_payload_accepts_exact_grace_boundary():
+    payload = _healthy_health_payload()
+    payload["status"] = "degraded"
+    payload["cacheStatus"] = {
+        "isStale": True,
+        "nextRefreshAfter": "2026-07-12T00:52:48+00:00",
+    }
+    summary = validate_health_payload(
+        payload,
+        max_cache_age_hours=36,
+        max_refresh_delay_minutes=15,
+        now=datetime(2026, 7, 12, 1, 7, 48, tzinfo=UTC),
+    )
+    assert summary["refreshDelayMinutes"] == pytest.approx(15)
+
+
 def test_validate_health_payload_old_worker_uses_age_fallback():
     payload = _healthy_health_payload()
     payload.pop("cacheStatus", None)
@@ -444,7 +550,7 @@ def test_validate_health_payload_old_worker_uses_age_fallback():
     assert summary["cacheAgeHours"] is not None
 ```
 
-The test helper must include non-blocking financial freshness and cache quality.
+The test helper must include non-blocking financial freshness and cache quality. Add a raw-manifest/top-level `nextRefreshAfter` precedence test and a remote-smoke forwarding test. `run_public_smoke` and its CLI accept `max_refresh_delay_minutes=None` and pass it unchanged to `validate_health_payload`; the default remains strict for other callers and old Workers.
 
 - [ ] **Step 3: Run RED**
 
@@ -476,6 +582,8 @@ return json_response({
 
 In `validate_health_payload`, calculate refresh delay from `cacheStatus.nextRefreshAfter`. If `cacheStatus` exists, allow `status="degraded"` only while the delay is within the configured grace and cache quality remains good. Once grace is exceeded, report a refresh-policy problem. If `cacheStatus` is absent, retain the existing `status == "ok"` and maximum-age behavior for rolling deploys.
 
+Normalize timestamps consistently: naive ISO values are UTC, aware values are converted to UTC, and invalid values return `None`.
+
 Add CLI flag:
 
 ```python
@@ -486,7 +594,7 @@ parser.add_argument(
 )
 ```
 
-Pass `--max-refresh-delay-minutes 15` in both health and R2 workflows while keeping `--max-cache-age-hours 36`.
+Pass `--max-refresh-delay-minutes 15` in both the direct health checker and `run_remote_smoke.py` invocation in the health workflow, and in the R2 workflow checker, while keeping `--max-cache-age-hours 36` everywhere.
 
 - [ ] **Step 5: Run GREEN and health workflow gates**
 
@@ -500,7 +608,7 @@ Expected: all selected tests and operational readiness pass.
 - [ ] **Step 6: Commit Task 3**
 
 ```powershell
-git add cloudflare\worker.py scripts\check_cloudflare_health.py .github\workflows\cloudflare-health-monitor.yml .github\workflows\cloudflare-r2-seed-refresh.yml tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py tests\test_remote_smoke.py tests\test_operational_readiness.py
+git add cloudflare\worker.py cloudflare\worker_support.py scripts\check_cloudflare_health.py scripts\run_remote_smoke.py .github\workflows\cloudflare-health-monitor.yml .github\workflows\cloudflare-r2-seed-refresh.yml tests\test_cloudflare_worker.py tests\test_cloudflare_health_check.py tests\test_remote_smoke.py tests\test_operational_readiness.py
 git commit -m "fix: align health with cache refresh policy"
 ```
 
@@ -518,8 +626,8 @@ git commit -m "fix: align health with cache refresh policy"
 
 **Interfaces:**
 - Produces: `refresh_due_at(health_payload) -> datetime | None`.
-- Extends: `early_refresh_decision(..., job_check_error: str, refresh_ahead_minutes: float)`.
-- Preserves: force, pending-job, unreachable-health, and 36-hour legacy paths.
+- Extends: `early_refresh_decision(..., job_check_error: str = "", refresh_ahead_minutes: float = 60)` without breaking direct callers.
+- Preserves: force, pending-job, unreachable/non-OK health, policy-stale, and unconditional 36-hour safety-ceiling paths.
 
 - [ ] **Step 1: Add RED decision tests**
 
@@ -556,21 +664,21 @@ def test_early_refresh_decision_job_check_error_fails_open():
     assert any("pending-job" in message for message in decision["messages"])
 ```
 
-Add a CLI test passing `--job-check-error` and `--refresh-ahead-minutes 60` and asserting `run_refresh=true` in the GitHub output file.
+Add before/exact/after proactive-boundary tests (one second before the 60-minute window does not refresh; exactly entering it does). Add cases for `cacheStatus.isStale=true` with a future timestamp, `status="degraded"` with a future timestamp, age 37 hours with a future timestamp, and healthy/future/no-other-trigger not refreshing. Add a CLI test passing `--job-check-error` and `--refresh-ahead-minutes 60` and asserting `run_refresh=true` in the GitHub output file.
 
 - [ ] **Step 2: Add workflow static RED tests**
 
-Require:
+Parse the active YAML schedules and require:
 
 ```python
-assert 'cron: "7,22,37,52 * * * *"' in r2_workflow
-assert 'cron: "11,41 * * * *"' in health_workflow
+assert r2_schedules == ["7,22,37,52 * * * *"]
+assert health_schedules == ["11,41 * * * *"]
 assert "--refresh-ahead-minutes 60" in r2_workflow
 assert "--job-check-error" in r2_workflow
 assert "--max-refresh-delay-minutes 15" in health_workflow
 ```
 
-Also assert the lightweight Cloudflare API request records a non-secret error marker when curl exits nonzero or returns `success:false`; never copy the response body into the marker.
+Also assert the lightweight Cloudflare API request records a fixed non-secret error marker for any of: curl nonzero, malformed/non-object JSON, outer `success` other than exact `true`, query-level failure, missing/non-integer count, or explicit `success:false`. Valid `cnt=0` remains a successful zero-pending result. Use a secret sentinel in the rejected body/error and assert it is absent from decision JSON, stdout, stderr, GitHub output, and summary.
 
 - [ ] **Step 3: Run RED**
 
@@ -582,13 +690,21 @@ Expected: missing parameters, missing proactive policy, and old cron expressions
 
 - [ ] **Step 4: Implement the decision logic**
 
-Parse `health_payload.cacheStatus.nextRefreshAfter`, falling back to `health_payload.cache.nextRefreshAfter`. Treat the refresh as due when:
+Parse `health_payload.cacheStatus.nextRefreshAfter`, falling back to `health_payload.cache.nextRefreshAfter`. Compute `stale_refresh` as the OR of:
+
+- health fetch error;
+- non-`ok` health status;
+- `cacheStatus.isStale is True`;
+- the proactive next-refresh boundary;
+- cache age exceeding 36 hours.
+
+Treat the proactive boundary as due when:
 
 ```python
 current >= next_refresh_after - timedelta(minutes=refresh_ahead_minutes)
 ```
 
-If `job_check_error` is non-empty, set `stale_refresh=True` and enter heavy setup. Continue using `health_age_hours > max_cache_age_hours` only when no valid next-refresh timestamp exists.
+If `job_check_error` is non-empty, enter heavy setup even if health looks fresh. The cache-age ceiling is unconditional even when a valid but incorrect future next-refresh timestamp exists; cache age is merely the sole normal-policy fallback when there is no valid next-refresh timestamp.
 
 Add CLI options:
 
@@ -597,7 +713,9 @@ early.add_argument("--job-check-error", default="")
 early.add_argument("--refresh-ahead-minutes", type=float, default=60)
 ```
 
-In the workflow, capture curl exit status and Cloudflare API `success` without printing the payload. Pass the fixed marker `D1 pending-job query unavailable` when either check fails. Change R2 cron to `7,22,37,52 * * * *` and health cron to `11,41 * * * *`.
+In the workflow, capture curl exit status and validate the response shape without printing the payload. Pass only the fixed marker `D1 pending-job query unavailable` for every invalid/error shape listed above. Change R2 cron to `7,22,37,52 * * * *` and health cron to `11,41 * * * *`.
+
+This fail-open guarantee is deliberately scoped to the lightweight early decision: the workflow must not incorrectly skip a needed rebuild because the pending-job check failed. Later migrations/full D1 operations retain their existing failure semantics; a sustained D1 outage is not claimed to permit a complete R2 rebuild in Task 4.
 
 - [ ] **Step 5: Run GREEN and workflow gates**
 

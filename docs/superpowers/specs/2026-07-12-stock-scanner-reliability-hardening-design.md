@@ -44,9 +44,9 @@ Unexpected dependency failures are wrapped at the R2/D1 boundary and returned as
 }
 ```
 
-Unknown application failures use `INTERNAL_ERROR`, HTTP 500, `retryable: false`, and stage `worker`. R2/D1 transient failures use HTTP 503 and a dependency stage. Logs are JSON objects containing event, request ID, method, pathname (never query text), status, duration, dependency stage, exception class, and a bounded/redacted diagnostic message.
+Unknown application failures use `INTERNAL_ERROR`, HTTP 500, `retryable: false`, and stage `worker`. R2 body-I/O failures and D1 read failures caused by network loss, storage/code reset, or a transient remote node use HTTP 503 and a dependency stage. D1 overload and query-timeout classifications remain non-retryable because the platform guidance is to optimize, split, or shed load rather than add retries. Logs contain only fixed safe classifications plus event, request ID, method, pathname (never query text), status, duration, dependency stage, and exception class; raw exception text and exception chains are not retained.
 
-The legacy market refresh POST has one deliberate degradation exception: after a verified R2 scan has already been loaded, failure to enqueue its D1 refresh job does not discard that data. It returns the last-good scan with HTTP 200 and `cacheStatus.refreshStatus="unavailable"`, while emitting the structured dependency error. Authentication, settings, holdings, and other writes never receive this fail-open behavior.
+The legacy market refresh POST has one deliberate degradation exception: after a verified R2 scan has already been loaded, a D1 read/write failure while checking or enqueueing its refresh job does not discard that data. It returns the last-good scan with HTTP 200 and `cacheStatus.refreshStatus="unavailable"`, while emitting the structured dependency event. `cacheStatus.retryable` preserves the original dependency classification, so an ambiguous D1 write is never advertised as safe to repeat. Missing/malformed scans, non-D1 failures, authentication, settings, holdings, and other routes never receive this fail-open behavior.
 
 ### A2. Idempotent browser retry and last-good rendering
 
