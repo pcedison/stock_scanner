@@ -318,7 +318,7 @@ Execution evidence (2026-07-13): commit `66e8ae1`; focused gate `121 passed, 1 s
 - Consumes: Task 1 pointer/generation index/page schemas.
 - Keeps: legacy market GET/POST and full report contracts unchanged.
 
-- [ ] **Step 1: Write API contract and parser tests**
+- [x] **Step 1: Write API contract and parser tests**
 
 Test FastAPI/Worker parity for required keys and statuses; strict enum validation; `cursor >= 0`; `1 <= limit <= 100`; cursor beyond total; a window spanning two physical pages; requested generation mismatch; missing/malformed page; pointer missing; and proof that v2 routes never read `market_scan_summary.json`.
 
@@ -336,7 +336,7 @@ def test_parse_market_results_query_rejects_invalid_values(query, message):
         parse_market_results_query(query)
 ```
 
-- [ ] **Step 2: Run RED API tests**
+- [x] **Step 2: Run RED API tests**
 
 Run:
 
@@ -346,7 +346,7 @@ python -m pytest tests\test_worker_market_query.py tests\test_cloudflare_worker.
 
 Expected: FAIL because the v2 routes and Worker query module do not exist.
 
-- [ ] **Step 3: Implement the Worker query module**
+- [x] **Step 3: Implement the Worker query module**
 
 Use immutable validated query data:
 
@@ -375,7 +375,7 @@ def parse_market_results_query(query: dict[str, list[str]]) -> MarketResultsQuer
 
 `select_page_references()` must return at most two references for a 100-row API page size and 100-row request limit. `merge_market_pages()` must verify generation/disclosure/category/cursor identity on every loaded page before returning a sliced window.
 
-- [ ] **Step 4: Add thin Worker and FastAPI routes**
+- [x] **Step 4: Add thin Worker and FastAPI routes**
 
 Worker route behavior:
 
@@ -395,7 +395,7 @@ GET results:
 
 FastAPI uses `build_market_generation()` and `query_market_generation()` over the existing `ScanCacheService` result so local development has the same success contract. Add both paths to `PUBLIC_DIRECT_FALLBACK_ROUTES` as GET-only routes.
 
-- [ ] **Step 5: Run GREEN API and runtime verification**
+- [x] **Step 5: Run GREEN API and runtime verification**
 
 Run:
 
@@ -410,7 +410,7 @@ git diff --check
 
 Expected: all commands exit `0`; legacy tests remain unchanged and v2 responses never exceed their budgets.
 
-- [ ] **Step 6: Review and commit Task 3**
+- [x] **Step 6: Review and commit Task 3**
 
 After independent review and a fresh Step 5:
 
@@ -418,6 +418,8 @@ After independent review and a fresh Step 5:
 git add cloudflare\worker_market_query.py cloudflare\worker.py backend\routers\market.py frontend\api_client.js scripts\check_code_size_budgets.py tests\test_worker_market_query.py tests\test_cloudflare_worker.py tests\test_api_worker_contracts.py tests\test_api.py tests\test_routers_coverage.py tests\test_frontend_parser.py
 git commit -m "feat: serve paged market queries"
 ```
+
+Execution evidence (2026-07-13): commit `879faf3`; focused gate `264 passed`; full Python gate `892 passed, 1 skipped` from `893 collected`; Ruff, ESLint, Prettier, code-size, Wrangler dry-run, Wrangler dev smoke, and `git diff --check` all exited `0`. The Worker reads exact R2 `arrayBuffer()` bytes, validates raw size/UTF-8/canonical JSON/hash plus strict index/page/item/reason schemas, keeps immutable generation pinning, and returns bounded `no-store` responses. FastAPI mirrors `200`/`409`/`422`/`503` contracts while retaining current and previous generations. Independent spec, quality, and verification reviews reported Critical `0`, Important `0`, Minor `0`, Ready `Yes`; the verifier also exercised index and cross-page pinned results through real local workerd/Pyodide. No push or deployment was performed.
 
 ---
 
