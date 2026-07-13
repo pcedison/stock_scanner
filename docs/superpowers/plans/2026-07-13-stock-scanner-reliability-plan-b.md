@@ -204,7 +204,7 @@ Execution evidence (2026-07-13): commit `f64423b`; focused gate `65 passed`; ful
 - Produces: ordered `UploadPlanItem` rows where `public/market_scan_index.json` is last.
 - Produces: strict validation summary fields `marketGenerationId`, `marketPageCount`, and `marketMaxPageBytes`.
 
-- [ ] **Step 1: Write package and validator mutation tests**
+- [x] **Step 1: Write package and validator mutation tests**
 
 Cover missing page, wrong hash, wrong generation ID, index/page size overflow, duplicate cursor, cursor gap, wrong `nextCursor`, aggregate count mismatch, duplicate/missing stock identity, unsafe page path, unreferenced page, stale orphan generation in ZIP, and wrong upload order.
 
@@ -223,7 +223,7 @@ def test_validator_rejects_mutated_page_hash(tmp_path):
         validate_seed_zip(seed_zip)
 ```
 
-- [ ] **Step 2: Run RED package and validator tests**
+- [x] **Step 2: Run RED package and validator tests**
 
 Run:
 
@@ -233,7 +233,7 @@ python -m pytest tests\test_package_cloudflare_seed_cache.py tests\test_cloudfla
 
 Expected: FAIL because v2 files are not packaged, validated, or ordered.
 
-- [ ] **Step 3: Implement referenced-generation packaging**
+- [x] **Step 3: Implement referenced-generation packaging**
 
 Add a helper that reads the pointer and returns only safe referenced paths:
 
@@ -252,7 +252,7 @@ def referenced_market_generation_files(seed_dir: Path) -> list[Path]:
 
 The package script must include `market_scan_index.json` and this exact list. It must not glob every directory under `market_scan/v2`.
 
-- [ ] **Step 4: Implement strict v2 validation and upload ordering**
+- [x] **Step 4: Implement strict v2 validation and upload ordering**
 
 Validation must use raw ZIP bytes for hash and size checks, verify every page reference exactly once, reconstruct all six disclosure/category lists, and compare both counts and `(stockCode, disclosure, category)` identities with legacy `market_scan_latest.json`.
 
@@ -268,7 +268,7 @@ public_pointer
 
 Keep `.github/workflows/cloudflare-r2-seed-refresh.yml` as a simple ordered TSV consumer; add a static test that it never sorts the TSV after generation.
 
-- [ ] **Step 5: Run GREEN package and validator verification**
+- [x] **Step 5: Run GREEN package and validator verification**
 
 Run:
 
@@ -282,7 +282,7 @@ git diff --check
 
 Expected: all commands exit `0`; valid generation passes and every mutant fails for its intended reason.
 
-- [ ] **Step 6: Review and commit Task 2**
+- [x] **Step 6: Review and commit Task 2**
 
 After independent review and a fresh Step 5:
 
@@ -290,6 +290,8 @@ After independent review and a fresh Step 5:
 git add scripts\package_cloudflare_seed_cache.py scripts\validate_cloudflare_seed_inputs.py scripts\cloudflare_seed_upload_plan.py tests\test_package_cloudflare_seed_cache.py tests\test_cloudflare_seed_inputs.py tests\test_r2_refresh_workflow_scripts.py .github\workflows\cloudflare-r2-seed-refresh.yml
 git commit -m "feat: publish market generations atomically"
 ```
+
+Execution evidence (2026-07-13): commit `66e8ae1`; focused gate `121 passed, 1 skipped` (Windows symlink privilege); full Python gate `816 passed, 1 skipped`; Ruff, operational readiness, deployment preflight, and `git diff --check` all exited `0`. The package contains only the pointer-referenced generation, validates canonical v2 bytes and archive budgets, uploads pages/index before manifest and pointer, and fails closed without overwriting retained rollback backups. Independent spec, quality, and verification reviews reported Critical `0`, Important `0`, Minor `0`, Ready `Yes`. No push or deployment was performed.
 
 ---
 
