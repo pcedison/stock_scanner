@@ -865,23 +865,24 @@ Execution evidence (2026-07-13): commit `c0f5fc9`; the Task 7 RED gate produced 
 - Create: `tests/test_cloudflare_refresh_control.py`
 - Modify: `cloudflare/worker.py`
 - Modify: `cloudflare/worker_refresh_jobs.py`
+- Modify: `cloudflare/worker_market_resilience.py`
 - Modify: `cloudflare/wrangler.toml`
 - Modify: `scripts/check_cloudflare_worker_secrets.py`
 - Modify: `scripts/run_wrangler_dev_smoke.py`
 - Modify: `tests/test_wrangler_dev_smoke.py`
 - Modify: `tests/test_cloudflare_worker.py`
-- Modify: `.github/workflows/cloudflare-deploy.yml`
+- Modify: `tests/test_deployment_preflight.py`
 - Modify: `scripts/check_code_size_budgets.py`
 
 **Interfaces:**
 
-- Produces: top-level `async def on_scheduled(controller, env, ctx)` delegated to `run_scheduled_refresh(env, scheduled_time)`.
+- Produces: top-level `async def on_scheduled(controller, env, ctx)` delegated to `run_scheduled_refresh(Api(env), scheduled_time)`.
 - Consumes: Task 5 atomic enqueue and Task 7 dispatch state.
 - Consumes secret: `GITHUB_ACTIONS_DISPATCH_TOKEN` only when `GITHUB_DISPATCH_ENABLED=true`.
-- Consumes vars: `GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_FILE`, `GITHUB_WORKFLOW_REF`, `GITHUB_DISPATCH_ENABLED`.
-- Release blocker: the public refresh command remains unauthenticated; CSRF/CORS must never be treated as authorization. Before any Task 6 endpoint or scheduled dispatcher deployment, add a persisted server-side global cooldown/rate/freshness gate (or stronger authorization) that applies across cache generations and terminal jobs.
+- Consumes vars: `GITHUB_REPOSITORY`, `GITHUB_REFRESH_WORKFLOW_FILE`, `GITHUB_REFRESH_WORKFLOW_REF`, `GITHUB_DISPATCH_ENABLED`.
+- Release blocker resolved for local code: CSRF/CORS is not treated as authorization, and public refresh commands now pass through a persisted D1 global cooldown/freshness gate across client keys, cache generations, active jobs, terminal jobs, and terminal races. Production cron/dispatch remains disabled until Task 10 renders an explicitly authorized release config.
 
-- [ ] **Step 1: Write due/dispatch/state-machine tests**
+- [x] **Step 1: Write due/dispatch/state-machine tests**
 
 Cover fresh/no-op, ahead-window enqueue, dispatch disabled, pending conditional claim, GitHub 2xx success, 4xx failed, network/5xx unknown, no automatic retry after ambiguous response, safe error codes, and no secret/header/body in logs. Add abuse regressions proving that distinct anonymous/manual keys submitted after each terminal transition cannot create or dispatch another expensive rebuild inside the protected global window, that changing cache generation does not bypass the window, and that the fixed CSRF header alone grants no override. The 15-minute GitHub fallback may consume only jobs admitted by this authoritative gate.
 
@@ -894,7 +895,7 @@ async def test_ambiguous_dispatch_keeps_job_queued_for_schedule_fallback(fake_co
     assert fake_control.github.calls == 1
 ```
 
-- [ ] **Step 2: Run RED scheduled tests**
+- [x] **Step 2: Run RED scheduled tests**
 
 Run:
 
@@ -904,7 +905,7 @@ python -m pytest tests\test_cloudflare_refresh_control.py tests\test_cloudflare_
 
 Expected: scheduled handler, dispatch module, vars, and secret checks are absent.
 
-- [ ] **Step 3: Implement one-shot safe dispatch**
+- [x] **Step 3: Implement one-shot safe dispatch**
 
 Scheduled flow:
 
@@ -934,7 +935,7 @@ Do not retry the GitHub request because a timeout may occur after GitHub accepte
 
 The abuse gate is a production release invariant, not an in-memory browser debounce. It must query persisted refresh history independently of client keys and cache generation. At minimum, successful/queued/running public work is globally bounded by the active cache policy interval; failed work receives a bounded retry cooldown. A rejected command returns a safe `429` with `Retry-After`. Any operator override must use real server-side authorization or a secret-gated control path and must not be enabled by the public CSRF value.
 
-- [ ] **Step 4: Configure cron and secret boundaries**
+- [x] **Step 4: Configure cron and secret boundaries**
 
 Keep the committed production cron empty so deploying additive code cannot enqueue or mutate production state:
 
@@ -945,7 +946,7 @@ crons = []
 
 Task 10's release-config renderer may produce `crons = ["2,17,32,47 * * * *"]` only with an explicit `--enable-production-cron` argument. That authorized cron runs five minutes before the existing GitHub fallback schedule. Deploy checks require `GITHUB_ACTIONS_DISPATCH_TOKEN` only when dispatch is enabled. Local smoke forces dispatch disabled and uses Wrangler `--test-scheduled`; it never reads a real token. Extend the local smoke to apply all migrations to an isolated persistence directory and exercise the real Python Worker command/status routes: POST `202` with exact payload, `Location`, and `no-store`; GET returned status `200` and `no-store`; repeated key returns the same job; malformed/uppercase job ID returns `404`.
 
-- [ ] **Step 5: Run GREEN scheduled verification**
+- [x] **Step 5: Run GREEN scheduled verification**
 
 Run:
 
@@ -962,14 +963,16 @@ git diff --check
 
 Expected: all commands exit `0`; mock dispatch occurs once; local runtime never contacts GitHub.
 
-- [ ] **Step 6: Review and commit Task 8**
+- [x] **Step 6: Review and commit Task 8**
 
 After security/Cloudflare review and fresh Step 5:
 
 ```powershell
-git add cloudflare\worker_refresh_control.py cloudflare\worker.py cloudflare\worker_refresh_jobs.py cloudflare\wrangler.toml scripts\check_cloudflare_worker_secrets.py scripts\run_wrangler_dev_smoke.py scripts\check_code_size_budgets.py .github\workflows\cloudflare-deploy.yml tests\test_cloudflare_refresh_control.py tests\test_cloudflare_worker.py tests\test_wrangler_dev_smoke.py
+git add cloudflare\worker_refresh_control.py cloudflare\worker.py cloudflare\worker_refresh_jobs.py cloudflare\worker_market_resilience.py cloudflare\wrangler.toml scripts\check_cloudflare_worker_secrets.py scripts\run_wrangler_dev_smoke.py scripts\check_code_size_budgets.py tests\test_cloudflare_refresh_control.py tests\test_cloudflare_worker.py tests\test_deployment_preflight.py tests\test_wrangler_dev_smoke.py
 git commit -m "feat: dispatch due refresh jobs"
 ```
+
+Execution evidence (2026-07-13): commit `f9cc2fc`; the Task 8 RED gate first failed during collection because `cloudflare.worker_refresh_control` did not exist. The final focused scheduled/dispatch/refresh gate passed `52/52`, and the broader focused gate including wrangler/secret guardrails passed `63/63`. The full Python gate exited `0` with one existing skip. Ruff, code-size budgets, deployment preflight, operational readiness, `git diff --check`, and a Wrangler `4.103.0` dry-run all exited `0`; the dry-run bundled `worker_refresh_control.py` and kept `GITHUB_DISPATCH_ENABLED="false"` with empty committed crons. A true local Wrangler Python Worker smoke applied local D1 migrations, returned refresh command HTTP `202`, status HTTP `200`, malformed uppercase ID HTTP `404`, and exercised `/cdn-cgi/handler/scheduled?format=json` with dispatch disabled and no GitHub token. No push, PR, production deploy, or production cron enablement was performed.
 
 ---
 
