@@ -66,9 +66,9 @@
 - Produces: `build_market_generation(scan, page_size=100, cache_status_inputs=None) -> MarketGeneration`.
 - Produces: `query_market_generation(index, pages, disclosure, category, cursor, limit) -> dict[str, Any]` for FastAPI parity.
 
-- [ ] **Step 1: Write generation contract tests**
+- [x] **Step 1: Write generation contract tests**
 
-Add tests that prove freshness period beats a future active period, canonical key order yields the same 24-hex generation ID, `100/101` rows produce `1/2` pages, all page hashes match exact bytes, entry sorting happens before slicing, and announced plus pending identities exactly equal the legacy universe.
+Add tests that prove freshness period beats a future active period, canonical key order yields the same 24-hex generation ID, a changed cache-status envelope yields a different generation ID, `100/101` rows produce `1/2` pages, all page hashes match exact bytes, entry sorting happens before slicing, and announced plus pending identities exactly equal the legacy universe. Query tests must reject boolean cursors/limits, negative totals, unsafe or mismatched object keys, wrong byte counts, reversed/duplicate/gapped/overlapping references, and page metadata that disagrees with the reference.
 
 ```python
 def test_generation_is_canonical_and_preserves_identity():
@@ -87,7 +87,7 @@ def test_generation_uses_freshness_period_and_splits_101_rows():
     assert [ref["count"] for ref in refs] == [100, 1]
 ```
 
-- [ ] **Step 2: Run RED generation tests**
+- [x] **Step 2: Run RED generation tests**
 
 Run:
 
@@ -97,7 +97,7 @@ python -m pytest tests\test_market_query.py -q --basetemp (Join-Path $env:TEMP '
 
 Expected: FAIL because `backend.services.market_query` and its interfaces do not exist.
 
-- [ ] **Step 3: Implement the pure generation module**
+- [x] **Step 3: Implement the pure generation module**
 
 Implement these exact public types and constants:
 
@@ -123,7 +123,7 @@ def canonical_json_bytes(payload: Any) -> bytes:
 Define `build_market_generation(scan: Mapping[str, Any], *, page_size: int = PAGE_SIZE, cache_status_inputs: Mapping[str, Any] | None = None) -> MarketGeneration`. The completed function must:
 
 1. validate `page_size == 100`;
-2. canonicalize the compact scan and derive `generation_id = sha256(bytes).hexdigest()[:24]`;
+2. canonicalize a content envelope containing the normalized compact scan and validated `cache_status_inputs`, then derive `generation_id = sha256(bytes).hexdigest()[:24]`; this prevents the same immutable object key from receiving different index bytes;
 3. classify disclosure using `freshnessFinancialReport.period` before `activeFinancialReport.period`;
 4. sort the full entry list by the existing E4 PER ordering before slicing;
 5. write page payloads with `schemaVersion`, `generationId`, `disclosure`, `category`, `cursor`, `limit`, `total`, `nextCursor`, and `items`;
@@ -137,9 +137,9 @@ generation_index_key = f"public/market_scan/v2/{generation_id}/index.json"
 files[generation_index_key] = canonical_json_bytes(generation_index)
 ```
 
-- [ ] **Step 4: Wire the builder into the seed build**
+- [x] **Step 4: Wire the builder into the seed build**
 
-After `write_market_scan_summary(scan_payload)`, write:
+After `write_market_scan_summary(scan_payload)`, write the following in both the live-build path and `copy_offline_seed_payload()` path. The default `offline_first` execution must not return before v2 files and manifest metadata exist. Validate the recursive-delete target before deleting any existing output. Write all immutable page and generation-index bytes first, then atomically replace `market_scan_index.json` from a same-directory temporary file only after every immutable write succeeds:
 
 ```python
 generation = build_market_generation(
@@ -150,16 +150,16 @@ generation = build_market_generation(
         "latestFinancialPeriod": latest_financial_period(scan_payload),
     },
 )
-write_json(OUT_DIR / "market_scan_index.json", generation.index)
 for object_key, content in generation.files.items():
     target = OUT_DIR / object_key.removeprefix("public/")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
+atomic_write_bytes(OUT_DIR / "market_scan_index.json", canonical_json_bytes(generation.index))
 ```
 
 Update `clear_seed_output()` to remove `cloudflare/seed/market_scan/v2` recursively only after resolving and checking that the target remains under `OUT_DIR`. Add manifest fields `marketApiSchemaVersion`, `marketGenerationId`, `marketIndexBytes`, `marketPageCount`, and `marketMaxPageBytes`.
 
-- [ ] **Step 5: Run GREEN generation verification**
+- [x] **Step 5: Run GREEN generation verification**
 
 Run:
 
@@ -172,7 +172,7 @@ git diff --check
 
 Expected: all commands exit `0`; fixture index is under `50 KiB`, every page is under `500 KiB`, and aggregate identities match legacy.
 
-- [ ] **Step 6: Review and commit Task 1**
+- [x] **Step 6: Review and commit Task 1**
 
 Request a read-only spec and quality review of Task 1, fix every Critical/Important finding, rerun Step 5, then commit:
 
@@ -180,6 +180,8 @@ Request a read-only spec and quality review of Task 1, fix every Critical/Import
 git add backend\services\market_query.py scripts\build_cloudflare_seed.py scripts\check_code_size_budgets.py tests\test_market_query.py tests\test_cloudflare_seed_build.py
 git commit -m "feat: build versioned market generations"
 ```
+
+Execution evidence (2026-07-13): commit `f64423b`; focused gate `65 passed`; full Python gate `775 passed`; real summary `1,752` identities across `21` pages with a `5,865`-byte index and `155,264`-byte maximum page; independent spec and quality reviews both reported Critical `0`, Important `0`, Minor `0`, Ready `Yes`. No push or deployment was performed.
 
 ---
 
