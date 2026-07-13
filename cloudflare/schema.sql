@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS refresh_jobs (
     started_at TEXT,
     finished_at TEXT,
     owner_run_id TEXT,
+    dispatch_status TEXT NOT NULL DEFAULT 'pending',
+    dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+    dispatched_at TEXT,
+    dispatch_error_code TEXT,
     updated_at TEXT NOT NULL,
     error TEXT
 );
@@ -62,3 +66,4 @@ CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status ON refresh_jobs(job_type, sta
 CREATE INDEX IF NOT EXISTS idx_refresh_jobs_owner_run ON refresh_jobs(job_type, status, owner_run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_refresh_jobs_idempotency_key ON refresh_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_refresh_jobs_active_cache ON refresh_jobs(job_type, cache_key) WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_refresh_jobs_dispatch ON refresh_jobs(job_type, status, dispatch_status, queued_at);

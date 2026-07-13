@@ -1,3 +1,5 @@
+import re
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -97,6 +99,15 @@ def test_validate_deploy_workflow_accepts_current_guardrails():
     problems = validate_deploy_workflow(Path(".github/workflows/cloudflare-deploy.yml"))
 
     assert problems == []
+
+
+def test_deploy_applies_d1_migrations_before_live_worker_upload():
+    text = Path(".github/workflows/cloudflare-deploy.yml").read_text(encoding="utf-8")
+
+    migration_index = text.index('wrangler d1 migrations apply "$CF_D1_DATABASE" --remote')
+    live_deploy_index = text.index("wrangler deploy --config cloudflare/wrangler.toml --strict")
+
+    assert migration_index < live_deploy_index
 
 
 def test_cloudflare_worker_secret_parser_detects_missing_bindings():
@@ -226,7 +237,8 @@ def test_r2_refresh_job_completion_is_scoped_to_claiming_run():
     text = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
 
     assert (
-        "UPDATE refresh_jobs SET status = 'running', owner_run_id = '${GITHUB_RUN_ID}', "
+        "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', "
+        "owner_run_id = '${GITHUB_RUN_ID}', "
         "started_at = datetime('now'), updated_at = datetime('now') "
         "WHERE job_type = 'market_scan' AND status = 'queued';"
     ) in text
@@ -245,6 +257,65 @@ def test_r2_refresh_job_completion_is_scoped_to_claiming_run():
     assert "status IN ('queued', 'running')" in text
     assert "SET status = 'success'" in text
     assert "SET status = 'failed'" in text
+
+
+def test_r2_refresh_workflow_sql_claims_and_finalizes_only_its_jobs():
+    text = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    updates = re.findall(r'--command "(UPDATE refresh_jobs SET [^"]+;)"', text)
+    claim = next(sql for sql in updates if "dispatch_status = 'workflow_claimed'" in sql)
+    success = next(sql for sql in updates if "SET status = 'success'" in sql)
+    failed = next(sql for sql in updates if "SET status = 'failed'" in sql)
+
+    database = sqlite3.connect(":memory:")
+    database.executescript(Path("cloudflare/schema.sql").read_text(encoding="utf-8"))
+    rows = (
+        ("pending", "market_scan", "cache-pending", "queued", "pending"),
+        ("dispatched", "market_scan", "cache-dispatched", "queued", "dispatched"),
+        ("dispatch-failed", "market_scan", "cache-failed", "queued", "failed"),
+        ("dispatch-unknown", "market_scan", "cache-unknown", "queued", "unknown"),
+        ("other-type", "other_job", "cache-other", "queued", "pending"),
+    )
+    database.executemany(
+        """
+        INSERT INTO refresh_jobs
+        (id, job_type, cache_key, status, reason, queued_at, updated_at, dispatch_status)
+        VALUES (?, ?, ?, ?, 'manual', '2026-07-13', '2026-07-13', ?)
+        """,
+        rows,
+    )
+
+    database.execute(claim.replace("${GITHUB_RUN_ID}", "1001"))
+    claimed = dict(database.execute("SELECT id, owner_run_id FROM refresh_jobs"))
+    assert claimed == {
+        "pending": "1001",
+        "dispatched": "1001",
+        "dispatch-failed": "1001",
+        "dispatch-unknown": "1001",
+        "other-type": None,
+    }
+    assert set(
+        database.execute(
+            "SELECT status, dispatch_status FROM refresh_jobs WHERE job_type = 'market_scan'"
+        )
+    ) == {("running", "workflow_claimed")}
+
+    database.execute(
+        """
+        INSERT INTO refresh_jobs
+        (id, job_type, cache_key, status, reason, queued_at, updated_at)
+        VALUES ('later', 'market_scan', 'cache-later', 'queued', 'manual', '2026-07-13', '2026-07-13')
+        """
+    )
+    database.execute(claim.replace("${GITHUB_RUN_ID}", "1002"))
+    assert database.execute("SELECT owner_run_id FROM refresh_jobs WHERE id = 'pending'").fetchone()[0] == "1001"
+    assert database.execute("SELECT owner_run_id FROM refresh_jobs WHERE id = 'later'").fetchone()[0] == "1002"
+
+    database.execute(success.replace("${GITHUB_RUN_ID}", "1001"))
+    assert database.execute("SELECT status FROM refresh_jobs WHERE id = 'pending'").fetchone()[0] == "success"
+    assert database.execute("SELECT status FROM refresh_jobs WHERE id = 'later'").fetchone()[0] == "running"
+    database.execute(failed.replace("${GITHUB_RUN_ID}", "1002"))
+    assert database.execute("SELECT status FROM refresh_jobs WHERE id = 'later'").fetchone()[0] == "failed"
+    assert database.execute("SELECT status FROM refresh_jobs WHERE id = 'other-type'").fetchone()[0] == "queued"
 
 
 def test_seed_refresh_workflow_surfaces_manual_pr_when_actions_cannot_create_one():

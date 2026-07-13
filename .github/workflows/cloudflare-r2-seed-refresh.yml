@@ -171,7 +171,7 @@ jobs:
           npx wrangler d1 execute "$CF_D1_DATABASE" \
             --remote \
             --config cloudflare/wrangler.toml \
-            --command "UPDATE refresh_jobs SET status = 'running', owner_run_id = '${GITHUB_RUN_ID}', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
+            --command "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', owner_run_id = '${GITHUB_RUN_ID}', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
 
       - name: Rebuild seed from official sources
         if: steps.refresh-check.outputs.run_refresh == 'true'

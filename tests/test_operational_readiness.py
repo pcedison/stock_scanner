@@ -129,8 +129,9 @@ jobs:
           python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/cloudflare_seed_upload_plan.py
-          echo "UPDATE refresh_jobs SET status = 'success' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
-          echo "UPDATE refresh_jobs SET status = 'failed' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
+          echo "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', owner_run_id = '${{GITHUB_RUN_ID}}' WHERE job_type = 'market_scan' AND status = 'queued'"
+          echo "UPDATE refresh_jobs SET status = 'success' WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
+          echo "UPDATE refresh_jobs SET status = 'failed' WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
           python scripts/run_remote_smoke.py
 """.strip(),
         encoding="utf-8",
@@ -180,6 +181,15 @@ def test_authoritative_refresh_check_carries_early_stale_evidence_into_final_or(
     final_or_index = script.index(final_or, stale_output_index)
 
     assert initial_index < health_failure_index < stale_output_index < final_or_index
+
+
+def test_refresh_workflow_applies_migrations_before_dispatch_state_claim():
+    text = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+
+    migration_index = text.index('wrangler d1 migrations apply "$CF_D1_DATABASE"')
+    claim_index = text.index("dispatch_status = 'workflow_claimed'")
+
+    assert migration_index < claim_index
 
 
 def test_workflow_command_options_reject_inline_shell_comments():
@@ -271,6 +281,25 @@ jobs:
     problems = validate_local_readiness(tmp_path)
 
     assert any("health monitor" in problem and "pipefail" in problem for problem in problems)
+
+
+def test_local_operational_readiness_rejects_unscoped_refresh_job_mutations(tmp_path):
+    _write_readiness_fixture(tmp_path)
+    workflow = tmp_path / ".github" / "workflows" / "cloudflare-r2-seed-refresh.yml"
+    text = workflow.read_text(encoding="utf-8")
+    workflow.write_text(
+        text.replace("dispatch_status = 'workflow_claimed', ", "").replace(
+            "WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${GITHUB_RUN_ID}'",
+            "WHERE status = 'running'",
+        ),
+        encoding="utf-8",
+    )
+
+    problems = validate_local_readiness(tmp_path)
+
+    assert any("workflow claim" in problem for problem in problems)
+    assert any("owner-scoped refresh job success" in problem for problem in problems)
+    assert any("owner-scoped refresh job failure" in problem for problem in problems)
 
 
 def test_cloudflare_deployment_doc_uses_latest_seed_artifact_pattern():
