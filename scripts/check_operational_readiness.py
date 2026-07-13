@@ -90,11 +90,21 @@ def validate_local_readiness(root: Path = ROOT_DIR) -> list[str]:
             problems.append(f"R2 seed refresh workflow concurrency group must be shared production group {PRODUCTION_CONCURRENCY_GROUP}")
         r2_required_patterns = {
             "D1 refresh job polling": r"SELECT COUNT\(\*\) AS pending_count FROM refresh_jobs",
-            "committed seed restore": r"unzip -o .* -d data",
+            "persistent seed hydration": r"scripts/hydrate_cloudflare_seed_inputs\.py",
             "online seed rebuild": r"CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed\.py",
             "testable R2 upload plan": r"scripts/cloudflare_seed_upload_plan\.py",
-            "refresh job success marker": r"status = 'success'",
-            "refresh job failure marker": r"status = 'failed'",
+            "refresh job workflow claim": (
+                r"UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', "
+                r"owner_run_id = '\$\{GITHUB_RUN_ID\}'[^\r\n]*WHERE job_type = 'market_scan' AND status = 'queued'"
+            ),
+            "owner-scoped refresh job success marker": (
+                r"UPDATE refresh_jobs SET status = 'success'[^\r\n]*WHERE job_type = 'market_scan' "
+                r"AND status = 'running' AND owner_run_id = '\$\{GITHUB_RUN_ID\}'"
+            ),
+            "owner-scoped refresh job failure marker": (
+                r"UPDATE refresh_jobs SET status = 'failed'[^\r\n]*WHERE job_type = 'market_scan' "
+                r"AND status = 'running' AND owner_run_id = '\$\{GITHUB_RUN_ID\}'"
+            ),
             "remote smoke": r"scripts/run_remote_smoke\.py",
         }
         for label, pattern in r2_required_patterns.items():

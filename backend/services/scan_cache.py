@@ -57,6 +57,35 @@ def _public_job(job: dict) -> dict:
     return public
 
 
+def _validate_scan_payload(payload: object) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("Scan result is empty or inconsistent")
+    entry = payload.get("entry")
+    watch = payload.get("watch")
+    excluded = payload.get("excluded")
+    if not isinstance(entry, list) or not isinstance(watch, list) or not isinstance(excluded, list):
+        raise ValueError("Scan result is empty or inconsistent")
+    actual_universe_size = len(entry) + len(watch) + len(excluded)
+    reported_universe_size = payload.get("universeSize", actual_universe_size)
+    if (
+        isinstance(reported_universe_size, bool)
+        or not isinstance(reported_universe_size, int)
+        or reported_universe_size != actual_universe_size
+        or actual_universe_size <= 0
+    ):
+        raise ValueError("Scan result is empty or inconsistent")
+
+
+def _validated_cache_item(item: object) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        _validate_scan_payload(item.get("payload"))
+    except ValueError:
+        return None
+    return copy.deepcopy(item)
+
+
 class ScanCacheService:
     def __init__(
         self,
@@ -104,6 +133,7 @@ class ScanCacheService:
     def store(
         self, key: str, settings: ScannerSettings, payload: dict, policy: dict | None = None, context: dict | None = None
     ) -> dict:
+        _validate_scan_payload(payload)
         item = {
             "storedAt": utc_now(),
             "settings": _settings_payload(settings),
@@ -125,8 +155,14 @@ class ScanCacheService:
             signature = self._file_signature(self.scan_cache_path)
             if signature != self._memory_cache_signature:
                 cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
-                self._memory_cache = copy.deepcopy(cache.get("items", {}))
+                disk_items = cache.get("items", {})
+                self._memory_cache = copy.deepcopy(disk_items) if isinstance(disk_items, dict) else {}
                 self._memory_cache_signature = signature
+            self._memory_cache = {
+                cache_key: validated
+                for cache_key, item in self._memory_cache.items()
+                if (validated := _validated_cache_item(item)) is not None
+            }
             items = copy.deepcopy(self._memory_cache)
             state = self._read_json(self.refresh_state_path, {"version": 1, "jobs": []})
         jobs = state.get("jobs", [])
@@ -228,12 +264,17 @@ class ScanCacheService:
         with self._lock:
             signature = self._file_signature(self.scan_cache_path)
             if signature == self._memory_cache_signature and key in self._memory_cache:
-                return copy.deepcopy(self._memory_cache[key])
+                item = _validated_cache_item(self._memory_cache[key])
+                if item is None:
+                    self._memory_cache.pop(key, None)
+                return item
             cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
             self._memory_cache = copy.deepcopy(cache.get("items", {}))
             self._memory_cache_signature = signature
-            item = cache.get("items", {}).get(key)
-            return copy.deepcopy(item) if item else None
+            item = _validated_cache_item(cache.get("items", {}).get(key))
+            if item is None:
+                self._memory_cache.pop(key, None)
+            return item
 
     @staticmethod
     def _file_signature(path: Path) -> tuple[int, int] | None:

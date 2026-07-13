@@ -26,7 +26,7 @@ def validate_health_url(url: str) -> str:
 
 def preflight_url_from_health_url(url: str) -> str:
     parsed = urlparse(validate_health_url(url))
-    path = parsed.path[: -len("/api/health")] + "/api/scan/market"
+    path = parsed.path[: -len("/api/health")] + "/api/scan/market/refresh"
     return parsed._replace(path=path, query="", fragment="").geturl()
 
 
@@ -51,7 +51,7 @@ def validate_cors_headers(
         allowed_headers = _split_header_values(headers.get("access-control-allow-headers"))
         if "post" not in methods or "options" not in methods:
             problems.append("preflight methods do not allow POST and OPTIONS")
-        for header in ("content-type", "x-stock-scanner-csrf"):
+        for header in ("content-type", "x-stock-scanner-csrf", "idempotency-key"):
             if header not in allowed_headers:
                 problems.append(f"preflight headers do not allow {header}")
 
@@ -79,7 +79,7 @@ def check_worker_cors(health_url: str, origin: str, timeout: int = 20) -> None:
             headers={
                 **_request_headers(safe_origin),
                 "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "content-type,x-stock-scanner-csrf",
+                "Access-Control-Request-Headers": "content-type,x-stock-scanner-csrf,idempotency-key",
             },
             method="OPTIONS",
         )

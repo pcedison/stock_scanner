@@ -13,10 +13,12 @@ from fastapi.testclient import TestClient
 
 import backend.dependencies as deps_module
 import backend.main as main_module
+import backend.routers.market as market_module
 from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, AuthService, AuthUser
-from tests.test_cloudflare_worker import load_worker_module
+from backend.services.market_query import build_market_generation
+from tests.test_cloudflare_worker import build_router_api, load_worker_module
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "api_worker_contracts.json").read_text(encoding="utf-8"))
 
@@ -501,3 +503,92 @@ def test_production_csrf_behavior_matches_fastapi_and_worker(monkeypatch):
 
     assert fastapi_response.status_code == worker_status(worker_response) == 403
     assert fastapi_response.json()["detail"] == worker_payload(worker_response)["detail"] == "CSRF header required"
+
+
+def test_market_v2_success_validation_and_generation_status_contracts_match(monkeypatch):
+    scan = {
+        "generatedAt": "2026-07-13T00:00:00+00:00",
+        "filingContext": {},
+        "entry": [
+            {
+                "stockCode": "2330",
+                "companyName": "TSMC",
+                "status": "ENTRY",
+                "summary": "announced",
+                "reasons": [],
+                "detailsAvailable": True,
+                "hasFullDetails": False,
+            }
+        ],
+        "watch": [],
+        "excluded": [],
+        "cacheStatus": {"servedAt": "stable"},
+    }
+    monkeypatch.setattr(market_module, "scan_market_cached", lambda: scan)
+    fastapi = TestClient(main_module.app)
+    generation = build_market_generation({key: value for key, value in scan.items() if key != "cacheStatus"})
+    r2 = {
+        "public/market_scan_index.json": generation.index,
+        "public/manifest.json": {"generatedAt": scan["generatedAt"]},
+        **{key: json.loads(value) for key, value in generation.files.items()},
+    }
+
+    worker, api, _db = build_router_api(monkeypatch, r2=r2)
+    query = "?disclosure=announced&category=entry&cursor=0&limit=1"
+
+    fast_index = fastapi.get("/api/scan/market/index")
+    worker_index = run_worker_fetch(api, "GET", "/api/scan/market/index")
+    assert fast_index.status_code == worker_status(worker_index) == 200
+    assert fast_index.headers["cache-control"] == worker_index.headers["cache-control"] == "no-store"
+    assert set(fast_index.json()) >= {"schemaVersion", "generationId", "disclosures", "counts", "cacheStatus"}
+    assert set(worker_payload(worker_index)) >= {"schemaVersion", "generationId", "disclosures", "counts", "cacheStatus"}
+
+    fast_results = fastapi.get(f"/api/scan/market/results{query}")
+    worker_results = run_worker_fetch(api, "GET", f"/api/scan/market/results{query}")
+    required = {
+        "schemaVersion",
+        "generationId",
+        "disclosure",
+        "category",
+        "cursor",
+        "limit",
+        "total",
+        "nextCursor",
+        "items",
+    }
+    assert fast_results.status_code == worker_status(worker_results) == 200
+    assert fast_results.headers["cache-control"] == worker_results.headers["cache-control"] == "no-store"
+    assert set(fast_results.json()) == set(worker_payload(worker_results)) == required
+
+    invalid_query = "?disclosure=other&category=entry&cursor=0&limit=1"
+    fast_invalid = fastapi.get(f"/api/scan/market/results{invalid_query}")
+    worker_invalid = run_worker_fetch(api, "GET", f"/api/scan/market/results{invalid_query}")
+    assert fast_invalid.status_code == worker_status(worker_invalid) == 422
+    assert fast_invalid.headers["cache-control"] == worker_invalid.headers["cache-control"] == "no-store"
+
+    mismatch_query = f"{query}&generationId={'f' * 24}"
+    fast_mismatch = fastapi.get(f"/api/scan/market/results{mismatch_query}")
+    worker_mismatch = run_worker_fetch(api, "GET", f"/api/scan/market/results{mismatch_query}")
+    assert fast_mismatch.status_code == worker_status(worker_mismatch) == 409
+    assert fast_mismatch.headers["cache-control"] == worker_mismatch.headers["cache-control"] == "no-store"
+
+
+def test_refresh_command_worker_contract_is_additive_and_payload_bounded(monkeypatch):
+    _worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": {"generatedAt": "2026-07-13T00:00:00+00:00"}},
+    )
+
+    response = run_worker_fetch(
+        api,
+        "POST",
+        "/api/scan/market/refresh",
+        headers={"idempotency-key": "contract-refresh-1"},
+    )
+    payload = worker_payload(response)
+
+    assert worker_status(response) == 202
+    assert set(payload) == {"jobId", "status", "requestId", "statusUrl"}
+    assert response.headers["Location"] == payload["statusUrl"]
+    assert len(json.dumps(payload).encode("utf-8")) < 1024
+    assert not {"entry", "watch", "excluded", "cacheStatus"} & set(payload)

@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 COUNT_FIELDS = ("pending_count", "cnt")
+JOB_CHECK_ERROR = "D1 pending-job query unavailable"
 
 
 def load_json_value(json_text: str) -> Any:
@@ -63,6 +64,26 @@ def find_count_or_none(value: Any, fields: tuple[str, ...]) -> int | None:
     return None
 
 
+def cloudflare_pending_count(value: Any) -> int:
+    if not isinstance(value, dict) or value.get("success") is not True:
+        raise ValueError(JOB_CHECK_ERROR)
+
+    query_results = value.get("result")
+    if not isinstance(query_results, list) or len(query_results) != 1:
+        raise ValueError(JOB_CHECK_ERROR)
+    query = query_results[0]
+    if not isinstance(query, dict) or query.get("success") is not True:
+        raise ValueError(JOB_CHECK_ERROR)
+
+    rows = query.get("results")
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise ValueError(JOB_CHECK_ERROR)
+    count = rows[0].get("cnt")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError(JOB_CHECK_ERROR)
+    return count
+
+
 def parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -73,6 +94,19 @@ def parse_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def refresh_due_at(health_payload: dict[str, Any]) -> datetime | None:
+    if not isinstance(health_payload, dict):
+        return None
+    for field in ("cacheStatus", "cache"):
+        cache = health_payload.get(field)
+        if not isinstance(cache, dict):
+            continue
+        due_at = parse_timestamp(cache.get("nextRefreshAfter"))
+        if due_at is not None:
+            return due_at
+    return None
 
 
 def health_age_hours(health_payload: dict[str, Any], now: datetime | None = None) -> float | None:
@@ -95,6 +129,8 @@ def early_refresh_decision(
     health_error: str,
     health_url_configured: bool,
     max_cache_age_hours: float,
+    job_check_error: str = "",
+    refresh_ahead_minutes: float = 60,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if force:
@@ -108,14 +144,37 @@ def early_refresh_decision(
     messages: list[str] = []
     stale_refresh = False
     age_hours = None
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+
+    if job_check_error:
+        messages.append(JOB_CHECK_ERROR)
     if health_error:
         stale_refresh = True
         messages.append("Health URL unreachable; treating as stale.")
     elif health_payload is not None:
-        age_hours = health_age_hours(health_payload, now=now)
-        if age_hours is None:
+        status = health_payload.get("status")
+        if status is not None and status != "ok":
             stale_refresh = True
-            messages.append("Production seed timestamp is missing; R2 rebuild will run.")
+            messages.append("Health status is not ok; R2 rebuild will run.")
+
+        cache_status = health_payload.get("cacheStatus")
+        if isinstance(cache_status, dict) and cache_status.get("isStale") is True:
+            stale_refresh = True
+            messages.append("Health cache policy reports stale; R2 rebuild will run.")
+
+        due_at = refresh_due_at(health_payload)
+        if due_at is not None and current >= due_at - timedelta(minutes=refresh_ahead_minutes):
+            stale_refresh = True
+            messages.append("Production seed is within the refresh-ahead window; R2 rebuild will run.")
+
+        age_hours = health_age_hours(health_payload, now=current)
+        if age_hours is None:
+            if due_at is None:
+                stale_refresh = True
+                messages.append("Production seed timestamp is missing; R2 rebuild will run.")
         elif age_hours > max_cache_age_hours:
             stale_refresh = True
             messages.append(f"Production seed is stale ({age_hours:.1f}h old); R2 rebuild will run.")
@@ -125,11 +184,11 @@ def early_refresh_decision(
         stale_refresh = True
         messages.append("Health URL configured but no payload was captured; treating as stale.")
 
-    if pending_count <= 0 and not stale_refresh:
+    if pending_count <= 0 and not stale_refresh and not job_check_error:
         messages.append("No pending refresh jobs and seed is fresh; skipping heavy setup.")
 
     return {
-        "runRefresh": pending_count > 0 or stale_refresh,
+        "runRefresh": pending_count > 0 or stale_refresh or bool(job_check_error),
         "pendingCount": pending_count,
         "staleRefresh": stale_refresh,
         "cacheAgeHours": age_hours,
@@ -167,16 +226,24 @@ def run_pending_count(args: argparse.Namespace) -> int:
 
 
 def run_early_check(args: argparse.Namespace) -> int:
-    api_payload = load_json_file(args.cloudflare_api_json_file)
     health_payload = load_json_file(args.health_json_file)
-    pending_count = 0 if api_payload is None else find_count(api_payload)
+    pending_count = 0
+    job_check_error = JOB_CHECK_ERROR if args.job_check_error else ""
+    if args.cloudflare_api_json_file is not None:
+        try:
+            api_payload = load_json_file(args.cloudflare_api_json_file)
+            pending_count = cloudflare_pending_count(api_payload)
+        except (OSError, UnicodeError, ValueError):
+            job_check_error = JOB_CHECK_ERROR
     decision = early_refresh_decision(
         force=args.force,
         pending_count=pending_count,
         health_payload=health_payload if isinstance(health_payload, dict) else None,
         health_error=args.health_error or "",
+        job_check_error=job_check_error,
         health_url_configured=args.health_url_configured,
         max_cache_age_hours=args.max_cache_age_hours,
+        refresh_ahead_minutes=args.refresh_ahead_minutes,
     )
     write_github_outputs(decision, args.github_output, args.github_step_summary)
     print(json.dumps(decision, ensure_ascii=False, indent=2, sort_keys=True))
@@ -198,8 +265,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     early.add_argument("--cloudflare-api-json-file", type=Path)
     early.add_argument("--health-json-file", type=Path)
     early.add_argument("--health-error", default="")
+    early.add_argument("--job-check-error", default="")
     early.add_argument("--health-url-configured", action="store_true")
     early.add_argument("--max-cache-age-hours", type=float, default=36)
+    early.add_argument("--refresh-ahead-minutes", type=float, default=60)
     early.add_argument("--github-output", type=Path)
     early.add_argument("--github-step-summary", type=Path)
     early.set_defaults(func=run_early_check)

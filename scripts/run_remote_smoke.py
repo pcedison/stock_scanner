@@ -84,6 +84,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     market_scan = payloads.get("marketScan") or {}
     auth_me = payloads.get("authMe") or {}
     bad_login = payloads.get("badLogin") or {}
+    runtime_config = payloads.get("runtimeConfig") or {}
 
     if health.get("runtime") != "cloudflare-python-worker":
         problems.append("health.runtime is not cloudflare-python-worker")
@@ -102,6 +103,10 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         problems.append(f"market scan returned only {market_rows} rows")
     if not isinstance(market_scan.get("cacheStatus"), dict):
         problems.append("market scan is missing cacheStatus")
+    if runtime_config.get("marketScanApiVersion") not in {"v1", "v2"}:
+        problems.append("runtime-config is missing a valid marketScanApiVersion")
+    if not isinstance(runtime_config.get("edgeCacheEnabled"), bool):
+        problems.append("runtime-config is missing edgeCacheEnabled")
     if problems:
         raise RuntimeError("; ".join(problems))
     return {
@@ -110,6 +115,8 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         "activeProvider": data_sources.get("activeProvider"),
         "schedulerAction": app_status.get("schedulerAutoScan", {}).get("action"),
         "marketScanRows": market_rows,
+        "marketScanApiVersion": runtime_config.get("marketScanApiVersion"),
+        "edgeCacheEnabled": runtime_config.get("edgeCacheEnabled"),
     }
 
 
@@ -120,6 +127,7 @@ def run_public_smoke(
     propagation_timeout: int = 90,
     max_cache_age_hours: float | None = None,
     reject_offline_seed: bool = False,
+    max_refresh_delay_minutes: float | None = None,
 ) -> dict[str, Any]:
     base_url = base_url_from_health_url(health_url)
     client = RemoteClient(base_url, timeout)
@@ -134,6 +142,7 @@ def run_public_smoke(
                 health,
                 expected_manifest,
                 max_cache_age_hours=max_cache_age_hours,
+                max_refresh_delay_minutes=max_refresh_delay_minutes,
                 reject_offline_seed=reject_offline_seed,
             )
             payloads = {
@@ -147,6 +156,7 @@ def run_public_smoke(
                     )[0],
                 },
                 "appStatus": client.request_json("/api/app-status"),
+                "runtimeConfig": client.request_json("/api/runtime-config"),
                 "dataSources": client.request_json("/api/data-sources/status"),
                 "marketScan": client.request_json(
                     "/api/scan/market",
@@ -184,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail when cache.sourceLastCheckedAt or generatedAt is older than this many hours",
     )
     parser.add_argument(
+        "--max-refresh-delay-minutes",
+        type=float,
+        help="Allow this many minutes after cacheStatus.nextRefreshAfter before failing",
+    )
+    parser.add_argument(
         "--reject-offline-seed",
         action="store_true",
         help="Fail when the deployed manifest reports qualityGates.buildMode=offline",
@@ -197,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             args.timeout,
             args.propagation_timeout,
             max_cache_age_hours=args.max_cache_age_hours,
+            max_refresh_delay_minutes=args.max_refresh_delay_minutes,
             reject_offline_seed=args.reject_offline_seed,
         )
     except RuntimeError as exc:

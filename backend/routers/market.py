@@ -3,9 +3,12 @@ single-stock analysis, market/holdings scans, cache status, and reports."""
 
 from __future__ import annotations
 
+import re
+from collections import OrderedDict
 from datetime import date
+from threading import RLock
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 
 from backend import dependencies as deps
@@ -33,6 +36,14 @@ from backend.dependencies import (
     scan_cache_service,
 )
 from backend.services.calendar import load_market_calendar, update_market_calendar
+from backend.services.market_query import (
+    MAX_INDEX_BYTES,
+    MAX_PAGE_BYTES,
+    MarketGeneration,
+    build_market_generation,
+    canonical_json_bytes,
+    query_market_generation,
+)
 from backend.services.market_scan import data_sources_status_payload
 from backend.services.scheduler import should_wake_up
 
@@ -185,6 +196,159 @@ def scan_market_cached() -> dict:
         refresh_mode="auto",
         context=cache_context,
     )
+
+
+_SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
+_SUMMARY_REASON_KEYS = ("code", "title", "passed", "severity", "message")
+_SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X1", "X2", "X3", "X4", "X5"}
+_MARKET_QUERY_HEADERS = {"Cache-Control": "no-store"}
+_market_generation_lock = RLock()
+_market_generations: OrderedDict[str, MarketGeneration] = OrderedDict()
+
+
+def _remember_market_generation(generation: MarketGeneration) -> None:
+    with _market_generation_lock:
+        _market_generations[generation.generation_id] = generation
+        _market_generations.move_to_end(generation.generation_id)
+        while len(_market_generations) > 2:
+            _market_generations.popitem(last=False)
+
+
+def _remembered_market_generation(generation_id: str) -> MarketGeneration | None:
+    with _market_generation_lock:
+        return _market_generations.get(generation_id)
+
+
+def _market_query_error(status_code: int, detail: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=detail, headers=_MARKET_QUERY_HEADERS)
+
+
+def _compact_market_query_scan(scan: dict) -> dict:
+    compact = {key: value for key, value in scan.items() if key != "cacheStatus"}
+    for category in ("entry", "watch", "excluded", "results"):
+        items = compact.get(category)
+        if not isinstance(items, list):
+            continue
+        compact_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            result = {key: item.get(key) for key in _SUMMARY_RESULT_KEYS if key in item}
+            reasons = item.get("reasons")
+            if isinstance(reasons, list):
+                result["reasons"] = [
+                    {key: reason.get(key) for key in _SUMMARY_REASON_KEYS if key in reason}
+                    for reason in reasons
+                    if isinstance(reason, dict) and str(reason.get("code") or "") in _SUMMARY_REASON_CODES
+                ]
+            result["detailsAvailable"] = True
+            result["hasFullDetails"] = False
+            compact_items.append(result)
+        compact[category] = compact_items
+    compact["detailMode"] = "summary"
+    return compact
+
+
+def _latest_financial_period(scan: dict) -> str | None:
+    freshness = scan.get("financialFreshness")
+    cached = freshness.get("latestCachedFinancialPeriod") if isinstance(freshness, dict) else None
+    if isinstance(cached, str) and cached:
+        return cached
+    context = scan.get("filingContext")
+    if not isinstance(context, dict):
+        return None
+    for field in ("freshnessFinancialReport", "activeFinancialReport"):
+        report = context.get(field)
+        period = report.get("period") if isinstance(report, dict) else None
+        if isinstance(period, str) and period:
+            return period
+    return None
+
+
+def _current_market_generation() -> tuple[MarketGeneration, dict]:
+    try:
+        scan = jsonable_encoder(scan_market_cached())
+        if not isinstance(scan, dict):
+            raise ValueError("market scan must be an object")
+        filing_context = scan.get("filingContext")
+        context = filing_context if isinstance(filing_context, dict) else {}
+        generation = build_market_generation(
+            _compact_market_query_scan(scan),
+            cache_status_inputs={
+                "generatedAt": scan.get("generatedAt"),
+                "latestRevenuePeriod": context.get("monthlyRevenuePeriod"),
+                "latestFinancialPeriod": _latest_financial_period(scan),
+            },
+        )
+    except (TypeError, ValueError) as exc:
+        raise _market_query_error(503, "market_query_unavailable") from exc
+    _remember_market_generation(generation)
+    cache_status = scan.get("cacheStatus")
+    return generation, dict(cache_status) if isinstance(cache_status, dict) else {}
+
+
+def _market_results_params(request: Request) -> tuple[str, str, int, int, str | None]:
+    def one(name: str, *, optional: bool = False) -> str | None:
+        values = request.query_params.getlist(name)
+        if optional and not values:
+            return None
+        if len(values) != 1 or not values[0]:
+            raise _market_query_error(422, f"invalid {name}")
+        return values[0]
+
+    disclosure = one("disclosure")
+    category = one("category")
+    cursor_raw = one("cursor")
+    limit_raw = one("limit")
+    generation_id = one("generationId", optional=True)
+    if disclosure not in {"announced", "pending"}:
+        raise _market_query_error(422, "invalid disclosure")
+    if category not in {"entry", "watch", "excluded"}:
+        raise _market_query_error(422, "invalid category")
+    if not isinstance(cursor_raw, str) or not re.fullmatch(r"[0-9]+", cursor_raw):
+        raise _market_query_error(422, "invalid cursor")
+    if len(cursor_raw) > 32 or len(cursor_raw.lstrip("0") or "0") > 7:
+        raise _market_query_error(422, "invalid cursor")
+    if not isinstance(limit_raw, str) or not re.fullmatch(r"[0-9]+", limit_raw):
+        raise _market_query_error(422, "invalid limit")
+    if len(limit_raw) > 32 or len(limit_raw.lstrip("0") or "0") > 3:
+        raise _market_query_error(422, "invalid limit")
+    cursor, limit = int(cursor_raw), int(limit_raw)
+    if cursor > 2_000_000:
+        raise _market_query_error(422, "invalid cursor")
+    if not 1 <= limit <= 100:
+        raise _market_query_error(422, "invalid limit")
+    if generation_id is not None and not re.fullmatch(r"[0-9a-f]{24}", generation_id):
+        raise _market_query_error(422, "invalid generationId")
+    return disclosure, category, cursor, limit, generation_id
+
+
+@router.get("/api/scan/market/index")
+def scan_market_index(response: Response) -> dict:
+    response.headers.update(_MARKET_QUERY_HEADERS)
+    generation, cache_status = _current_market_generation()
+    payload = {**generation.index, "cacheStatus": cache_status}
+    if len(canonical_json_bytes(payload)) >= MAX_INDEX_BYTES:
+        raise _market_query_error(503, "market_query_unavailable")
+    return payload
+
+
+@router.get("/api/scan/market/results")
+def scan_market_results(request: Request, response: Response) -> dict:
+    response.headers.update(_MARKET_QUERY_HEADERS)
+    disclosure, category, cursor, limit, requested_generation = _market_results_params(request)
+    generation = _remembered_market_generation(requested_generation) if requested_generation is not None else None
+    if generation is None:
+        generation, _cache_status = _current_market_generation()
+    if requested_generation is not None and requested_generation != generation.generation_id:
+        raise _market_query_error(409, "generation_mismatch")
+    try:
+        payload = query_market_generation(generation.index, generation.files, disclosure, category, cursor, limit)
+    except ValueError as exc:
+        raise _market_query_error(503, "market_query_unavailable") from exc
+    if len(canonical_json_bytes(payload)) >= MAX_PAGE_BYTES:
+        raise _market_query_error(503, "market_query_unavailable")
+    return payload
 
 
 @router.get("/api/cache/status")

@@ -251,6 +251,108 @@ def test_scan_market_returns_entry_watch_and_excluded_lists():
     assert all(item["reasons"] for group in ["entry", "watch", "excluded"] for item in payload[group])
 
 
+def test_market_v2_index_results_and_generation_mismatch_contract():
+    index_response = client.get("/api/scan/market/index")
+    index = index_response.json()
+
+    assert index_response.status_code == 200
+    assert index_response.headers["cache-control"] == "no-store"
+    assert index["schemaVersion"] == 2
+    assert len(index["generationId"]) == 24
+    assert "cacheStatus" in index
+    disclosure, category = next(
+        (disclosure, category)
+        for disclosure in ("announced", "pending")
+        for category in ("entry", "watch", "excluded")
+        if index["disclosures"][disclosure][category]["count"]
+    )
+
+    results_response = client.get(
+        "/api/scan/market/results",
+        params={
+            "disclosure": disclosure,
+            "category": category,
+            "cursor": 0,
+            "limit": 1,
+            "generationId": index["generationId"],
+        },
+    )
+    results = results_response.json()
+
+    assert results_response.status_code == 200
+    assert results_response.headers["cache-control"] == "no-store"
+    assert set(results) == {
+        "schemaVersion",
+        "generationId",
+        "disclosure",
+        "category",
+        "cursor",
+        "limit",
+        "total",
+        "nextCursor",
+        "items",
+    }
+    assert results["generationId"] == index["generationId"]
+    assert len(results["items"]) == 1
+
+    mismatch = client.get(
+        "/api/scan/market/results",
+        params={
+            "disclosure": disclosure,
+            "category": category,
+            "cursor": 0,
+            "limit": 1,
+            "generationId": "f" * 24 if index["generationId"] != "f" * 24 else "e" * 24,
+        },
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.headers["cache-control"] == "no-store"
+    assert mismatch.json()["detail"] == "generation_mismatch"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"disclosure": "other", "category": "watch", "cursor": "0", "limit": "100"},
+        {"disclosure": "announced", "category": "other", "cursor": "0", "limit": "100"},
+        {"disclosure": "announced", "category": "watch", "cursor": "-1", "limit": "100"},
+        {"disclosure": "announced", "category": "watch", "cursor": "true", "limit": "100"},
+        {"disclosure": "announced", "category": "watch", "cursor": "2000001", "limit": "100"},
+        {"disclosure": "announced", "category": "watch", "cursor": "9" * 5000, "limit": "100"},
+        {"disclosure": "announced", "category": "watch", "cursor": "0" * 5000, "limit": "100"},
+        {"disclosure": "announced", "category": "watch", "cursor": "0", "limit": "0" * 5000},
+        {"disclosure": "announced", "category": "watch", "cursor": "0", "limit": "101"},
+        {
+            "disclosure": "announced",
+            "category": "watch",
+            "cursor": "0",
+            "limit": "100",
+            "generationId": "A" * 24,
+        },
+        {},
+    ],
+)
+def test_market_v2_results_rejects_invalid_query_values(params):
+    response = client.get("/api/scan/market/results", params=params)
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_market_v2_results_rejects_duplicate_query_values():
+    response = client.get(
+        "/api/scan/market/results",
+        params=[
+            ("disclosure", "announced"),
+            ("category", "watch"),
+            ("cursor", "0"),
+            ("limit", "1"),
+            ("limit", "2"),
+        ],
+    )
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_scan_holdings_returns_exit_for_exit_mock_stock():
     response = client.post(
         "/api/scan/holdings",

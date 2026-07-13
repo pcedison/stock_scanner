@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -32,6 +33,12 @@ def wrangler_secret_list_command(config: Path) -> list[str]:
     return [npx, "wrangler", "secret", "list", "--config", str(config)]
 
 
+def dispatch_enabled(config: Path) -> bool:
+    data = tomllib.loads(config.read_text(encoding="utf-8"))
+    value = (data.get("vars") or {}).get("GITHUB_DISPATCH_ENABLED", "")
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify required Cloudflare Worker secret bindings exist.")
     parser.add_argument("names", nargs="+", help="Required Worker secret names")
@@ -54,12 +61,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Could not parse wrangler secret list output: {exc}", file=sys.stderr)
         return 1
 
-    missing = missing_secret_names(available, args.names)
+    required = list(args.names)
+    if dispatch_enabled(args.config):
+        required.append("GITHUB_ACTIONS_DISPATCH_TOKEN")
+    missing = missing_secret_names(available, required)
     if missing:
         print(f"Missing {len(missing)} required Cloudflare Worker secret binding(s).", file=sys.stderr)
         return 1
 
-    print(f"Cloudflare Worker secret bindings present: {len(args.names)} required binding(s).")
+    print(f"Cloudflare Worker secret bindings present: {len(required)} required binding(s).")
     return 0
 
 

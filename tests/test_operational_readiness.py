@@ -1,10 +1,67 @@
+import shlex
 from pathlib import Path
+
+import pytest
+import yaml
 
 from scripts.check_operational_readiness import (
     valid_health_url,
     validate_external_environment,
     validate_local_readiness,
 )
+
+HEALTH_CHECK_PATHS = (
+    "scripts/check_cloudflare_health.py",
+    "scripts/run_remote_smoke.py",
+)
+REQUIRED_HEALTH_OPTIONS = (
+    ("--max-refresh-delay-minutes", "15"),
+    ("--max-cache-age-hours", "36"),
+)
+
+
+def _workflow_python_commands(workflow_text: str) -> list[list[str]]:
+    lines = workflow_text.splitlines()
+    commands = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        command_start = stripped.removeprefix("if ")
+        is_command = not stripped.startswith("#") and command_start.startswith("python ")
+        if not is_command or not stripped.endswith("\\"):
+            index += 1
+            continue
+        parts = [stripped]
+        while parts[-1].endswith("\\") and index + 1 < len(lines):
+            index += 1
+            parts.append(lines[index].strip())
+        joined = " ".join(part.removesuffix("\\").rstrip() for part in parts)
+        tokens = shlex.split(joined, comments=True, posix=True)
+        if tokens[:1] == ["if"]:
+            tokens = tokens[1:]
+        if len(tokens) >= 2 and tokens[0] == "python" and tokens[1] in HEALTH_CHECK_PATHS:
+            commands.append(tokens)
+        index += 1
+    return commands
+
+
+def _assert_health_command_options(command: list[str]) -> None:
+    assert command[:1] == ["python"]
+    assert command[1] in HEALTH_CHECK_PATHS
+    for option, value in REQUIRED_HEALTH_OPTIONS:
+        option_indexes = [index for index, token in enumerate(command) if token == option]
+        assert len(option_indexes) == 1
+        option_index = option_indexes[0]
+        assert command[option_index + 1 : option_index + 2] == [value]
+
+
+def _workflow_step_script(path: Path, step_id: str) -> str:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("id") == step_id:
+                return step["run"]
+    raise AssertionError(f"workflow step {step_id!r} was not found")
 
 
 def _write_readiness_fixture(
@@ -69,11 +126,12 @@ jobs:
     steps:
       - run: |
           SELECT COUNT(*) AS pending_count FROM refresh_jobs
-          unzip -o "$SEED_ZIP" -d data
+          python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/cloudflare_seed_upload_plan.py
-          echo "UPDATE refresh_jobs SET status = 'success' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
-          echo "UPDATE refresh_jobs SET status = 'failed' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
+          echo "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', owner_run_id = '${{GITHUB_RUN_ID}}' WHERE job_type = 'market_scan' AND status = 'queued'"
+          echo "UPDATE refresh_jobs SET status = 'success' WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
+          echo "UPDATE refresh_jobs SET status = 'failed' WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"
           python scripts/run_remote_smoke.py
 """.strip(),
         encoding="utf-8",
@@ -92,6 +150,90 @@ Solo-maintainer repositories document the exception and use branch protection wi
 
 def test_local_operational_readiness_accepts_current_guardrails():
     assert validate_local_readiness() == []
+
+
+def test_health_workflows_configure_refresh_grace_and_cache_age_ceiling():
+    workflows = (
+        (Path(".github/workflows/cloudflare-health-monitor.yml"), 2),
+        (Path(".github/workflows/cloudflare-r2-seed-refresh.yml"), 3),
+    )
+
+    for path, expected_count in workflows:
+        commands = _workflow_python_commands(path.read_text(encoding="utf-8"))
+        assert len(commands) == expected_count
+        for command in commands:
+            _assert_health_command_options(command)
+
+
+def test_authoritative_refresh_check_carries_early_stale_evidence_into_final_or():
+    script = _workflow_step_script(
+        Path(".github/workflows/cloudflare-r2-seed-refresh.yml"),
+        "refresh-check",
+    )
+    initial = 'stale_refresh="${{ steps.early-check.outputs.stale_refresh }}"'
+    health_failure = "stale_refresh=true"
+    stale_output = 'echo "stale_refresh=$stale_refresh" >> "$GITHUB_OUTPUT"'
+    final_or = 'if [ "$pending_count" -gt 0 ] || [ "$stale_refresh" = "true" ]; then'
+
+    initial_index = script.index(initial)
+    health_failure_index = script.index(health_failure, initial_index)
+    stale_output_index = script.index(stale_output, health_failure_index)
+    final_or_index = script.index(final_or, stale_output_index)
+
+    assert initial_index < health_failure_index < stale_output_index < final_or_index
+
+
+def test_deploy_workflow_is_the_only_d1_migration_owner():
+    deploy = Path(".github/workflows/cloudflare-deploy.yml").read_text(encoding="utf-8")
+    refresh = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    migration = 'wrangler d1 migrations apply "$CF_D1_DATABASE"'
+
+    assert migration in deploy
+    assert deploy.index(migration) < deploy.index("Deploy Python Worker API")
+    assert migration not in refresh
+
+
+def test_workflow_command_options_reject_inline_shell_comments():
+    workflow_text = "\n".join(
+        (
+            "python scripts/check_cloudflare_health.py \\",
+            "  --max-cache-age-hours 36 # --max-refresh-delay-minutes 15",
+        )
+    )
+    command = _workflow_python_commands(workflow_text)[0]
+
+    with pytest.raises(AssertionError):
+        _assert_health_command_options(command)
+
+
+def test_workflow_command_options_reject_duplicate_options():
+    workflow_text = "\n".join(
+        (
+            "python scripts/run_remote_smoke.py \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-cache-age-hours 36",
+        )
+    )
+    command = _workflow_python_commands(workflow_text)[0]
+
+    with pytest.raises(AssertionError):
+        _assert_health_command_options(command)
+
+
+def test_workflow_python_commands_reject_suffix_lookalikes_and_comments():
+    workflow_text = "\n".join(
+        (
+            "# python scripts/check_cloudflare_health.py \\",
+            "#   --max-refresh-delay-minutes 15 \\",
+            "#   --max-cache-age-hours 36",
+            "python scripts/check_cloudflare_health.py.bak \\",
+            "  --max-refresh-delay-minutes 15 \\",
+            "  --max-cache-age-hours 36",
+        )
+    )
+
+    assert _workflow_python_commands(workflow_text) == []
 
 
 def test_local_operational_readiness_rejects_mismatched_production_concurrency(tmp_path):
@@ -140,6 +282,25 @@ jobs:
     problems = validate_local_readiness(tmp_path)
 
     assert any("health monitor" in problem and "pipefail" in problem for problem in problems)
+
+
+def test_local_operational_readiness_rejects_unscoped_refresh_job_mutations(tmp_path):
+    _write_readiness_fixture(tmp_path)
+    workflow = tmp_path / ".github" / "workflows" / "cloudflare-r2-seed-refresh.yml"
+    text = workflow.read_text(encoding="utf-8")
+    workflow.write_text(
+        text.replace("dispatch_status = 'workflow_claimed', ", "").replace(
+            "WHERE job_type = 'market_scan' AND status = 'running' AND owner_run_id = '${GITHUB_RUN_ID}'",
+            "WHERE status = 'running'",
+        ),
+        encoding="utf-8",
+    )
+
+    problems = validate_local_readiness(tmp_path)
+
+    assert any("workflow claim" in problem for problem in problems)
+    assert any("owner-scoped refresh job success" in problem for problem in problems)
+    assert any("owner-scoped refresh job failure" in problem for problem in problems)
 
 
 def test_cloudflare_deployment_doc_uses_latest_seed_artifact_pattern():

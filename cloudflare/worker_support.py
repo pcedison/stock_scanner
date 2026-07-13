@@ -90,6 +90,14 @@ SECURITY_HEADERS = {
 }
 
 
+class DependencyFailure(Exception):
+    def __init__(self, stage: str, retryable: bool, cause: Exception):
+        self.stage = stage
+        self.retryable = retryable
+        self.error_type = type(cause).__name__
+        super().__init__(self.error_type)
+
+
 class ForbiddenError(Exception):
     pass
 
@@ -120,9 +128,12 @@ def parse_time(value):
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def env_value(env, name: str, default=None):
@@ -194,6 +205,17 @@ def json_response(payload, status=200, headers=None, public_cache_seconds=0):
     )
 
 
+def public_edge_cache_headers(max_age: int, stale_while_revalidate: int, stale_if_error: int) -> dict[str, str]:
+    return {
+        "cache-control": "public, max-age=0",
+        "cloudflare-cdn-cache-control": (
+            f"public, max-age={max(0, int(max_age))}, "
+            f"stale-while-revalidate={max(0, int(stale_while_revalidate))}, "
+            f"stale-if-error={max(0, int(stale_if_error))}"
+        ),
+    }
+
+
 def text_response(content, status=200, media_type="text/plain; charset=utf-8", headers=None):
     response_headers = {"content-type": media_type, "cache-control": "no-store", **SECURITY_HEADERS}
     if headers:
@@ -201,8 +223,16 @@ def text_response(content, status=200, media_type="text/plain; charset=utf-8", h
     return Response.new(content, to_js({"status": status, "headers": response_headers}, dict_converter=Object.fromEntries))
 
 
-def error_response(detail, status=400, headers=None):
-    return json_response({"detail": detail}, status=status, headers=headers)
+def error_response(detail, status=400, headers=None, *, code=None, request_id=None, retryable=None, stage=None):
+    payload = {"detail": detail}
+    metadata = (("code", code), ("requestId", request_id), ("retryable", retryable), ("stage", stage))
+    for key, value in metadata:
+        if value is not None:
+            payload[key] = bool(value) if key == "retryable" else value
+    response_headers = dict(headers or {})
+    if request_id:
+        response_headers["x-request-id"] = request_id
+    return json_response(payload, status=status, headers=response_headers)
 
 
 def manifest_quality(manifest):
@@ -508,21 +538,14 @@ def report_response(payload, report_format: str, title: str, filename_prefix: st
 
 
 __all__ = (
-    "AUTH_FAILURE_LIMIT",
-    "AUTH_FAILURE_WINDOW_SECONDS",
-    "AUTH_LOCK_SECONDS",
-    "BadRequestError",
-    "CSRF_HEADER_NAME",
-    "CSRF_HEADER_VALUE",
-    "DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS",
-    "DEFAULT_SETTINGS",
-    "ForbiddenError",
-    "HOLDING_EXIT_CODES",
-    "MIN_CACHE_ANALYSIS",
-    "MIN_CACHE_COMPANIES",
-    "NotFoundError",
-    "PASSWORD_ALGORITHM",
-    "PASSWORD_ITERATIONS",
+    "AUTH_FAILURE_LIMIT", "AUTH_FAILURE_WINDOW_SECONDS",
+    "AUTH_LOCK_SECONDS", "BadRequestError",
+    "CSRF_HEADER_NAME", "CSRF_HEADER_VALUE",
+    "DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS", "DEFAULT_SETTINGS",
+    "DependencyFailure", "ForbiddenError",
+    "HOLDING_EXIT_CODES", "MIN_CACHE_ANALYSIS",
+    "MIN_CACHE_COMPANIES", "NotFoundError",
+    "PASSWORD_ALGORITHM", "PASSWORD_ITERATIONS",
     "RateLimitError",
     "REVENUE_GROWTH_MODES",
     "SECURITY_HEADERS",
@@ -560,6 +583,7 @@ __all__ = (
     "parse_cookies",
     "parse_time",
     "prepare_holding_result",
+    "public_edge_cache_headers",
     "public_user",
     "report_response",
     "runtime_environment",

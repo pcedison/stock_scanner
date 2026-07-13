@@ -37,10 +37,10 @@ def test_validate_origin_requires_https_origin_only():
         validate_https_origin("https://stock-scanner-beta.pages.dev/path")
 
 
-def test_preflight_url_uses_scan_market_endpoint():
+def test_preflight_url_uses_refresh_command_endpoint():
     assert (
         preflight_url_from_health_url("https://worker.example/api/health")
-        == "https://worker.example/api/scan/market"
+        == "https://worker.example/api/scan/market/refresh"
     )
 
 
@@ -61,7 +61,7 @@ def test_validate_cors_headers_accepts_get_and_preflight_headers():
                 "Access-Control-Allow-Origin": origin,
                 "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-                "Access-Control-Allow-Headers": "content-type,x-stock-scanner-csrf",
+                "Access-Control-Allow-Headers": "content-type,x-stock-scanner-csrf,idempotency-key",
             }
         ),
         origin,
@@ -69,15 +69,17 @@ def test_validate_cors_headers_accepts_get_and_preflight_headers():
     )
 
 
-def test_validate_cors_headers_rejects_missing_preflight_headers():
-    with pytest.raises(RuntimeError, match="x-stock-scanner-csrf"):
+@pytest.mark.parametrize("missing", ["x-stock-scanner-csrf", "idempotency-key"])
+def test_validate_cors_headers_rejects_missing_preflight_headers(missing):
+    allowed = {"content-type", "x-stock-scanner-csrf", "idempotency-key"} - {missing}
+    with pytest.raises(RuntimeError, match=missing):
         validate_cors_headers(
             _headers(
                 {
                     "Access-Control-Allow-Origin": "https://stock-scanner-beta.pages.dev",
                     "Access-Control-Allow-Credentials": "true",
                     "Access-Control-Allow-Methods": "GET,OPTIONS",
-                    "Access-Control-Allow-Headers": "content-type",
+                    "Access-Control-Allow-Headers": ",".join(sorted(allowed)),
                 }
             ),
             "https://stock-scanner-beta.pages.dev",

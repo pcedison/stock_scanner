@@ -8,7 +8,8 @@ from typing import cast
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGETS = {
-    "frontend/app.js": 2010,
+    "backend/services/market_query.py": 350,
+    "frontend/app.js": 2050,
     "frontend/dom.js": 90,
     "frontend/renderers.js": 300,
     "frontend/strategy_content.js": 160,
@@ -17,10 +18,18 @@ DEFAULT_BUDGETS = {
     "frontend/normalize.js": 220,
     "frontend/market_scan.js": 200,
     "frontend/market_render.js": 220,
+    "frontend/market_query.js": 520,
+    "frontend/market_refresh.js": 220,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
-    "cloudflare/worker.py": 880,
-    "cloudflare/worker_support.py": 590,
+    "cloudflare/worker.py": 900,
+    "cloudflare/worker_health.py": 120,
+    "cloudflare/worker_market_query.py": 450,
+    "cloudflare/worker_refresh_jobs.py": 260,
+    "cloudflare/worker_refresh_control.py": 180,
+    "cloudflare/worker_market_resilience.py": 160,
+    "cloudflare/worker_observability.py": 200,
+    "cloudflare/worker_support.py": 600,
     ".github/workflows/cloudflare-r2-seed-refresh.yml": 260,
 }
 

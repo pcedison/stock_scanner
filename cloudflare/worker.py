@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Protocol, cast
 from urllib.parse import parse_qs, urlparse
 
 from js import Object, Response
@@ -16,22 +17,77 @@ try:
 except ModuleNotFoundError:
     from cloudflare.worker_support import *  # noqa: F403
 
+try:
+    import worker_health
+    import worker_market_query
+    import worker_market_resilience as market_resilience
+    import worker_observability as observability
+    import worker_refresh_control
+    import worker_refresh_jobs
+except ModuleNotFoundError:
+    from cloudflare import worker_health, worker_market_query, worker_refresh_control, worker_refresh_jobs
+    from cloudflare import worker_market_resilience as market_resilience
+    from cloudflare import worker_observability as observability
+
+CLIENT_ERROR_STATUS = {BadRequestError: 400, NotFoundError: 404, ValidationError: 422, PermissionError: 401, ForbiddenError: 403}
+set_response_header = observability.set_response_header
+
+
+class _DependencyFailureWithCode(Protocol):
+    error_code: str
+
+
 async def on_fetch(request, env):
-    return await Api(env).fetch(request)
+    request_id = observability.new_request_id()
+    started = observability.start_timer()
+    try:
+        return await Api(env).fetch(request, request_id=request_id)
+    except Exception as exc:
+        path = urlparse(str(getattr(request, "url", ""))).path.rstrip("/") or "/"
+        response = observability.failure_response(
+            error_response, request_id, request, path, exc, started, dependency=False, stage="worker"
+        )
+        headers = {**SECURITY_HEADERS, **cors_headers_for_env(env, request)}
+        observability.add_response_headers(response, headers, request_id)
+        return response
 
 
-def set_response_header(response, key: str, value: str) -> None:
-    headers = getattr(response, "headers", None)
-    if headers is not None and hasattr(headers, "set"):
-        headers.set(key, value)
-    elif isinstance(headers, dict):
-        headers[key] = value
+async def on_scheduled(controller, env, ctx):
+    scheduled_time = getattr(controller, "scheduledTime", None)
+    return await worker_refresh_control.run_scheduled_refresh(Api(env), scheduled_time)
 
 
 def d1_param(value):
     # Pyodide may pass Python None to JS as undefined, which D1 rejects.
     # Empty strings round-trip as "not set" for the nullable fields we bind.
     return "" if value is None else value
+
+
+def cors_allowed_origins_for_env(env):
+    configured = csv_env_value(env, "APP_CORS_ALLOW_ORIGINS")
+    configured = configured or csv_env_value(env, "WORKER_CORS_ALLOW_ORIGINS")
+    return observability.cors_allowed_origins(
+        configured,
+        DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS,
+        production=is_production_environment(env),
+        allow_local=env_flag(env, "APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"),
+        allow_insecure=env_flag(env, "APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"),
+        is_local_origin=is_local_cors_origin,
+        is_https_origin=is_https_origin,
+    )
+
+
+def cors_headers_for_env(env, request=None, allowed_origins=None):
+    if allowed_origins is None:
+        allowed_origins = cors_allowed_origins_for_env(env)
+    request_origin = str(request.headers.get("origin") or "") if request is not None else ""
+    return observability.cors_headers(
+        allowed_origins,
+        request_origin,
+        production=is_production_environment(env),
+        local_request_origin=bool(_LOCALHOST_ORIGIN_RE.match(request_origin)),
+        csrf_header_name=CSRF_HEADER_NAME,
+    )
 
 
 class Api:
@@ -42,40 +98,36 @@ class Api:
         validate_runtime_security(env, self._super_user)
         self._cors_allowed_origins = self.cors_allowed_origins()
 
-    async def fetch(self, request):
+    async def fetch(self, request, request_id=None):
+        self._request_id = request_id or observability.new_request_id()
+        started = observability.start_timer()
+        make_failure_response = observability.failure_response
+        parsed = urlparse(request.url)
+        path = parsed.path.rstrip("/") or "/"
+        query = parse_qs(parsed.query, keep_blank_values=path in worker_market_query.ROUTES)
+
         if request.method == "OPTIONS":
-            return Response.new(
+            response = Response.new(
                 "",
                 to_js({"status": 204, "headers": {**SECURITY_HEADERS, **self.cors_headers(request)}}, dict_converter=Object.fromEntries),
             )
+        else:
+            try:
+                if self.requires_csrf_header(request, path) and not self.has_valid_csrf_header(request):
+                    response = error_response("CSRF header required", status=403)
+                else:
+                    response = await self.route(request, path, query)
+            except (BadRequestError, NotFoundError, ValidationError, PermissionError, ForbiddenError) as exc:
+                status = next(status for error_type, status in CLIENT_ERROR_STATUS.items() if isinstance(exc, error_type))
+                response = error_response(str(exc), status=status)
+            except RateLimitError as exc:
+                response = error_response(str(exc), status=429, headers={"retry-after": str(exc.retry_after_seconds)})
+            except DependencyFailure as exc:
+                response = make_failure_response(error_response, self._request_id, request, path, exc, started, dependency=True)
+            except Exception as exc:
+                response = make_failure_response(error_response, self._request_id, request, path, exc, started, dependency=False)
 
-        parsed = urlparse(request.url)
-        path = parsed.path.rstrip("/") or "/"
-        query = parse_qs(parsed.query)
-
-        try:
-            if self.requires_csrf_header(request, path) and not self.has_valid_csrf_header(request):
-                response = error_response("CSRF header required", status=403)
-            else:
-                response = await self.route(request, path, query)
-        except BadRequestError as exc:
-            response = error_response(str(exc), status=400)
-        except NotFoundError as exc:
-            response = error_response(str(exc), status=404)
-        except ValidationError as exc:
-            response = error_response(str(exc), status=422)
-        except PermissionError as exc:
-            response = error_response(str(exc), status=401)
-        except ForbiddenError as exc:
-            response = error_response(str(exc), status=403)
-        except RateLimitError as exc:
-            response = error_response(str(exc), status=429, headers={"retry-after": str(exc.retry_after_seconds)})
-        except Exception as exc:
-            print(f"Cloudflare Worker API error: {exc}")
-            response = error_response("伺服器暫時無法處理請求，請稍後再試。", status=500)
-
-        for key, value in {**SECURITY_HEADERS, **self.cors_headers(request)}.items():
-            set_response_header(response, key, value)
+        observability.add_response_headers(response, {**SECURITY_HEADERS, **self.cors_headers(request)}, self._request_id)
         return response
 
     def requires_csrf_header(self, request, path: str) -> bool:
@@ -89,35 +141,10 @@ class Api:
         return str(request.headers.get(CSRF_HEADER_NAME) or "") == CSRF_HEADER_VALUE
 
     def cors_allowed_origins(self):
-        configured = (
-            csv_env_value(self.env, "APP_CORS_ALLOW_ORIGINS")
-            or csv_env_value(self.env, "WORKER_CORS_ALLOW_ORIGINS")
-        )
-        production = is_production_environment(self.env)
-        allowed = list(dict.fromkeys(configured))
-        if not production:
-            allowed.extend(origin for origin in DEFAULT_DEVELOPMENT_CORS_ALLOW_ORIGINS if origin not in allowed)
-
-        if production and not env_flag(self.env, "APP_ALLOW_LOCAL_CORS_IN_PRODUCTION"):
-            allowed = [origin for origin in allowed if not is_local_cors_origin(origin)]
-        if production and not env_flag(self.env, "APP_ALLOW_INSECURE_CORS_IN_PRODUCTION"):
-            allowed = [origin for origin in allowed if is_https_origin(origin)]
-        return tuple(allowed)
+        return cors_allowed_origins_for_env(self.env)
 
     def cors_headers(self, request=None):
-        allowed_origins = self._cors_allowed_origins
-        origin = allowed_origins[0] if allowed_origins else "null"
-        if request is not None:
-            req_origin = str(request.headers.get("origin") or "")
-            if req_origin in allowed_origins or (not is_production_environment(self.env) and _LOCALHOST_ORIGIN_RE.match(req_origin)):
-                origin = req_origin
-        return {
-            "access-control-allow-origin": origin,
-            "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "access-control-allow-headers": f"content-type,{CSRF_HEADER_NAME}",
-            "access-control-allow-credentials": "true",
-            "vary": "Origin",
-        }
+        return cors_headers_for_env(self.env, request, self._cors_allowed_origins)
 
     async def route(self, request, path: str, query: dict[str, list[str]]):
         method = request.method.upper()
@@ -129,7 +156,7 @@ class Api:
         if path.startswith("/api/admin/"):
             return await self._route_admin(request, method, path)
         if path.startswith("/api/scan/") or path.startswith("/api/analyze/"):
-            return await self._route_scan(request, method, path)
+            return await self._route_scan(request, method, path, query)
         if path.startswith("/api/reports/"):
             return await self._route_reports(request, method, path, query)
         if path.startswith("/api/cache/"):
@@ -143,16 +170,15 @@ class Api:
         if path.startswith("/api/companies"):
             return await self._route_companies(method, path, query)
 
+        if path == "/api/runtime-config" and method == "GET":
+            return json_response(self.runtime_config(), headers=self.runtime_config_cache_headers())
+
         if path == "/api/health" and method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
-            quality = manifest_quality(manifest)
-            return json_response({
-                "status": "ok" if quality["ok"] else "degraded",
-                "runtime": "cloudflare-python-worker",
-                "time": utc_now(),
-                "cache": manifest,
-                "cacheQuality": quality,
-            }, public_cache_seconds=60)
+            payload = worker_health.health_payload(
+                manifest, manifest_quality, self.cache_status_from_manifest, self.cache_policy, utc_now
+            )
+            return json_response(payload, public_cache_seconds=60)
 
         if path == "/api/app-status" and method == "GET":
             data_source, settings = await asyncio.gather(
@@ -231,32 +257,47 @@ class Api:
             return json_response(await self.delete_admin_user(user_id))
         return error_response("Not found", status=404)
 
-    async def _route_scan(self, request, method: str, path: str):
+    async def _route_scan(self, request, method: str, path: str, query):
+        if path == "/api/scan/market/refresh" and method == "POST":
+            manifest = await self.r2_json("public/manifest.json", {})
+            try:
+                job = await self.ensure_refresh_job(
+                    manifest, force=True, client_key=request.headers.get("idempotency-key")
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from None
+            payload = worker_refresh_jobs.refresh_command_payload(job, self._request_id)
+            return json_response(payload, status=202, headers={"Location": payload["statusUrl"]})
+        refresh_status_prefix = "/api/scan/market/refresh/"
+        if path.startswith(refresh_status_prefix) and method == "GET":
+            payload = await worker_refresh_jobs.refresh_job_status(self, path.removeprefix(refresh_status_prefix))
+            return json_response(payload) if payload else error_response("Not found", status=404)
+        if method == "GET" and path in worker_market_query.ROUTES:
+            return await worker_market_query.route(
+                self, path, query, json_response, error_response, observability.dependency_call, DependencyFailure)
         if path == "/api/scan/market" and method == "GET":
-            # Pure read: serve the global R2 seed scan with edge caching and no
-            # refresh side effect, so repeat page loads are served from cache
-            # (0 Worker/R2/D1). Refresh queuing stays on the POST path + cron.
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
-            if not isinstance(scan, dict):
-                scan = empty_market_scan()
             scan = compact_market_scan(scan)
             policy = self.cache_policy()
             scan["cacheStatus"] = self.cache_status_from_manifest(
                 manifest, {"status": "fresh", "reason": policy["reason"]}
             )
-            return json_response(scan, public_cache_seconds=policy["minIntervalSeconds"])
+            return json_response(scan)
         if path == "/api/scan/market" and method == "POST":
             payload = await self.request_json(request)
             refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
-            refresh_status = await self.ensure_refresh_job(manifest, force=refresh_mode == "force")
-            if not isinstance(scan, dict):
-                scan = empty_market_scan()
+            cache_status = await market_resilience.market_refresh_cache_status(
+                api=self, request=request, manifest=manifest, scan=scan, force=refresh_mode == "force",
+                dependency_failure_type=DependencyFailure)
             scan = compact_market_scan(scan)
-            scan["cacheStatus"] = self.cache_status_from_manifest(manifest, refresh_status)
-            return json_response(scan)
+            scan["cacheStatus"] = cache_status
+            return json_response(
+                scan,
+                headers={"Deprecation": "true", "Link": '</api/scan/market/refresh>; rel="successor-version"'},
+            )
         if path == "/api/scan/holdings" and method == "POST":
             return await self.scan_holdings(request)
         if path.startswith("/api/analyze/") and method == "POST":
@@ -332,14 +373,19 @@ class Api:
     async def r2_json(self, key: str, fallback):
         if key in self._r2_cache:
             return self._r2_cache[key]
-        obj = js_to_py(await self.env.CACHE.get(key))
+        async def get():
+            return js_to_py(await self.env.CACHE.get(key))
+
+        obj = await observability.dependency_call(get, DependencyFailure, "r2_read", True)
         if obj is None:
             self._r2_cache[key] = fallback
             return fallback
+        text = await observability.dependency_call(
+            lambda: obj.text(), DependencyFailure, "r2_read", True
+        )
         try:
-            result = json.loads(await obj.text())
-        except Exception as exc:
-            print(f"R2 JSON parse error for key={key}: {exc}")
+            result = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
             result = fallback
         self._r2_cache[key] = result
         return result
@@ -356,6 +402,25 @@ class Api:
         if 8 <= now.day <= 15:
             return {"strategy": "stale_while_revalidate", "reason": "monthly_revenue_window", "minIntervalSeconds": 10800}
         return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
+
+    def market_api_version(self):
+        return "v2" if str(env_value(self.env, "MARKET_SCAN_API_VERSION", "v1")).strip().lower() == "v2" else "v1"
+
+    def edge_cache_enabled(self):
+        return env_flag(self.env, "EDGE_CACHE_ENABLED")
+
+    def runtime_config(self):
+        return {
+            "schemaVersion": 1,
+            "marketScanApiVersion": self.market_api_version(),
+            "edgeCacheEnabled": self.edge_cache_enabled(),
+        }
+
+    def runtime_config_cache_headers(self):
+        return public_edge_cache_headers(60, 60, 300)
+
+    def market_v2_cache_headers(self):
+        return public_edge_cache_headers(300, 60, 3600) if self.edge_cache_enabled() else {}
 
     def cache_status_from_manifest(self, manifest, refresh_status):
         policy = self.cache_policy()
@@ -383,54 +448,21 @@ class Api:
             "quality": manifest_quality(manifest),
         }
 
-    async def ensure_refresh_job(self, manifest, force=False):
-        policy = self.cache_policy()
-        status = self.cache_status_from_manifest(manifest, {"status": "checking", "reason": policy["reason"]})
-        if not force and not status["isStale"]:
-            return {"status": "fresh", "reason": policy["reason"]}
-        cache_key = status["cacheKey"]
-        cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
-        existing = await self.db_first(
-            """
-            SELECT id, status, reason, queued_at, owner_run_id
-            FROM refresh_jobs
-            WHERE job_type = ? AND status IN ('queued', 'running') AND queued_at > ?
-            ORDER BY queued_at DESC
-            LIMIT 1
-            """,
-            "market_scan",
-            cutoff,
-        )
-        if existing:
-            return {
-                "status": existing["status"],
-                "reason": existing["reason"],
-                "jobId": existing["id"],
-                "queuedAt": existing["queued_at"],
-                "ownerRunId": existing.get("owner_run_id"),
-                "ownerRunUrl": self.github_actions_run_url(existing.get("owner_run_id")),
-            }
-        job_id = secrets.token_hex(16)
-        now = utc_now()
-        stale_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-        await self.db_run(
-            "DELETE FROM refresh_jobs WHERE queued_at < ?",
-            stale_cutoff,
-        )
-        await self.db_run(
-            """
-            INSERT INTO refresh_jobs (id, job_type, cache_key, status, reason, queued_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            job_id,
-            "market_scan",
-            cache_key,
-            "queued",
-            policy["reason"],
-            now,
-            now,
-        )
-        return {"status": "queued", "reason": policy["reason"], "jobId": job_id, "queuedAt": now}
+    async def ensure_refresh_job(self, manifest, force=False, client_key=None):
+        failure = None
+        try:
+            return await worker_refresh_jobs.enqueue_or_reuse_refresh_job(
+                self, manifest, force, client_key, datetime.now(UTC)
+            )
+        except worker_refresh_jobs.RefreshJobReadBackError as exc:
+            failure = DependencyFailure("d1_read", True, exc)
+            failure_with_code = cast(_DependencyFailureWithCode, failure)
+            failure_with_code.error_code = "REFRESH_JOB_READ_BACK_INVARIANT"
+        except DependencyFailure as exc:
+            if exc.stage == "d1_write" and getattr(exc, "error_code", "") in observability.RETRYABLE_D1_READ_CODES:
+                exc.retryable = True
+            raise
+        raise failure from None
 
     def github_actions_run_url(self, owner_run_id):
         if not owner_run_id:
@@ -465,23 +497,25 @@ class Api:
             "recentJobs": [self.refresh_job_payload(job) for job in jobs],
         }
 
+    async def _db_call(self, operation: str, sql: str, params, *, write: bool):
+        async def call():
+            statement = self.env.DB.prepare(sql)
+            if params:
+                statement = statement.bind(*(d1_param(param) for param in params))
+            return js_to_py(await getattr(statement, operation)())
+
+        stage = "d1_write" if write else "d1_read"
+        retryable = False if write else observability.d1_read_retryable
+        return await observability.dependency_call(call, DependencyFailure, stage, retryable)
+
     async def db_run(self, sql: str, *params):
-        statement = self.env.DB.prepare(sql)
-        if params:
-            statement = statement.bind(*(d1_param(param) for param in params))
-        return js_to_py(await statement.run())
+        return await self._db_call("run", sql, params, write=True)
 
     async def db_first(self, sql: str, *params):
-        statement = self.env.DB.prepare(sql)
-        if params:
-            statement = statement.bind(*(d1_param(param) for param in params))
-        return js_to_py(await statement.first())
+        return await self._db_call("first", sql, params, write=False)
 
     async def db_all(self, sql: str, *params):
-        statement = self.env.DB.prepare(sql)
-        if params:
-            statement = statement.bind(*(d1_param(param) for param in params))
-        result = js_to_py(await statement.all())
+        result = await self._db_call("all", sql, params, write=False)
         if isinstance(result, dict):
             return result.get("results", [])
         return result or []
@@ -728,28 +762,31 @@ class Api:
 
     async def replace_holdings(self, user_id: int, holdings: list[dict]):
         now = utc_now()
-        stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
-        for h in holdings:
-            stmts.append(
-                self.env.DB.prepare(
-                    """INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, stock_code) DO UPDATE SET
-                        name = excluded.name,
-                        shares = excluded.shares,
-                        average_cost = excluded.average_cost,
-                        updated_at = excluded.updated_at"""
-                ).bind(
-                    user_id,
-                    h["stockCode"],
-                    h.get("name") or "",
-                    h.get("shares", 0),
-                    d1_param(h.get("averageCost")),
-                    now,
-                    now,
+        async def replace():
+            stmts = [self.env.DB.prepare("DELETE FROM holdings WHERE user_id = ?").bind(user_id)]
+            for h in holdings:
+                stmts.append(
+                    self.env.DB.prepare(
+                        """INSERT INTO holdings (user_id, stock_code, name, shares, average_cost, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, stock_code) DO UPDATE SET
+                            name = excluded.name,
+                            shares = excluded.shares,
+                            average_cost = excluded.average_cost,
+                            updated_at = excluded.updated_at"""
+                    ).bind(
+                        user_id,
+                        h["stockCode"],
+                        h.get("name") or "",
+                        h.get("shares", 0),
+                        d1_param(h.get("averageCost")),
+                        now,
+                        now,
+                    )
                 )
-            )
-        await self.env.DB.batch(to_js(stmts))
+            return await self.env.DB.batch(to_js(stmts))
+
+        await observability.dependency_call(replace, DependencyFailure, "d1_write", False)
         return await self.list_holdings(user_id)
 
     async def get_settings(self):

@@ -44,12 +44,17 @@ CREATE TABLE IF NOT EXISTS refresh_jobs (
     id TEXT PRIMARY KEY,
     job_type TEXT NOT NULL,
     cache_key TEXT NOT NULL,
+    idempotency_key TEXT,
     status TEXT NOT NULL,
     reason TEXT NOT NULL,
     queued_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
     owner_run_id TEXT,
+    dispatch_status TEXT NOT NULL DEFAULT 'pending',
+    dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+    dispatched_at TEXT,
+    dispatch_error_code TEXT,
     updated_at TEXT NOT NULL,
     error TEXT
 );
@@ -59,3 +64,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_attempts_locked_until ON auth_attempts(locked_until);
 CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status ON refresh_jobs(job_type, status, queued_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_jobs_owner_run ON refresh_jobs(job_type, status, owner_run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_refresh_jobs_idempotency_key ON refresh_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_refresh_jobs_active_cache ON refresh_jobs(job_type, cache_key) WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_refresh_jobs_dispatch ON refresh_jobs(job_type, status, dispatch_status, queued_at);

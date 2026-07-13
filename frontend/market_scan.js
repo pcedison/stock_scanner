@@ -11,7 +11,7 @@
   // The only app-state coupling (active disclosure tab / column and the current
   // market scan) is injected via `getState()`; `safeText` is borrowed from the
   // normalization module. Bodies are otherwise unchanged from app.js.
-  function createMarketScan({ getState, safeText }) {
+  function createMarketScan({ getState, safeText, findLoadedResult = () => null }) {
     const MARKET_RESULT_COLUMNS = [
       ["entry", "適合進場"],
       ["watch", "接近觀察"],
@@ -35,18 +35,28 @@
 
     function hasInsufficientData(result = {}) {
       const reasons = Array.isArray(result.reasons) ? result.reasons : [];
-      return result.status === "INSUFFICIENT_DATA" || reasons.some((reason) => reason?.severity === "INSUFFICIENT_DATA");
+      return (
+        result.status === "INSUFFICIENT_DATA" || reasons.some((reason) => reason?.severity === "INSUFFICIENT_DATA")
+      );
+    }
+
+    function expectedFinancialPeriod(filingContext = {}) {
+      for (const field of ["freshnessFinancialReport", "activeFinancialReport"]) {
+        const report = filingContext?.[field];
+        if (report && typeof report.period === "string" && report.period) return report.period;
+      }
+      return null;
     }
 
     function hasFinancialReportForContext(result = {}, filingContext = {}) {
-      const targetPeriod = filingContext?.activeFinancialReport?.period;
+      const targetPeriod = expectedFinancialPeriod(filingContext);
       if (!targetPeriod) return true;
       const reasons = Array.isArray(result.reasons) ? result.reasons : [];
       return reasons.some(
         (reason) =>
           reason?.code === "OFFICIAL_Q" &&
           reason?.severity !== "INSUFFICIENT_DATA" &&
-          String(reason?.message || "").includes(targetPeriod)
+          String(reason?.message || "").includes(targetPeriod),
       );
     }
 
@@ -94,7 +104,9 @@
     }
 
     function numericFromText(value) {
-      const match = String(value || "").replace(",", "").match(/-?\d+(?:\.\d+)?/);
+      const match = String(value || "")
+        .replace(",", "")
+        .match(/-?\d+(?:\.\d+)?/);
       return match ? Number(match[0]) : null;
     }
 
@@ -130,7 +142,11 @@
 
     function findMarketResultById(resultId) {
       const marketScan = getState().marketScan;
-      if (!marketScan) return null;
+      if (!marketScan) {
+        const [groupKey, columnKey, stockCode] = String(resultId || "").split(":");
+        const loaded = findLoadedResult(stockCode);
+        return loaded && marketResultId(loaded, groupKey, columnKey) === resultId ? loaded : null;
+      }
       const grouped = groupMarketScanResults(marketScan);
       for (const tab of MARKET_DISCLOSURE_TABS) {
         for (const [columnKey] of MARKET_RESULT_COLUMNS) {

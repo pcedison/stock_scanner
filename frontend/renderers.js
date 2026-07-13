@@ -34,11 +34,11 @@
       };
       return labels[status] || "未知";
     }
-    
+
     function statusClass(status) {
       return `status-${String(status || "neutral").toLowerCase()}`;
     }
-    
+
     function ruleDisplayOrder(rule = {}) {
       const code = String(rule.code || "").toUpperCase();
       let match = code.match(/^E([1-6])$/);
@@ -57,14 +57,16 @@
       if (match) return 110 + Number(match[1]);
       return 900;
     }
-    
+
     function sortRulesForDisplay(reasons = []) {
       return reasons
         .map((reason, index) => ({ reason, index }))
-        .sort((left, right) => ruleDisplayOrder(left.reason) - ruleDisplayOrder(right.reason) || left.index - right.index)
+        .sort(
+          (left, right) => ruleDisplayOrder(left.reason) - ruleDisplayOrder(right.reason) || left.index - right.index,
+        )
         .map((item) => item.reason);
     }
-    
+
     function formatEvidenceValue(item = {}) {
       const value = Number(item.value);
       if (!Number.isFinite(value)) return "待補";
@@ -80,7 +82,7 @@
       }
       return value.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
     }
-    
+
     function evidenceTone(item = {}) {
       const value = Number(item.value);
       if (!Number.isFinite(value)) return { className: "missing", label: "待補" };
@@ -88,34 +90,41 @@
       if (value < 0) return { className: "failed", label: "虧損" };
       return { className: "missing", label: "損益兩平" };
     }
-    
+
     function renderRuleEvidence(rule = {}) {
       const evidence = Array.isArray(rule.evidence) ? rule.evidence.filter(Boolean) : [];
       if (!evidence.length) return "";
-      const numericValues = evidence.map((item) => Math.abs(Number(item.value))).filter((value) => Number.isFinite(value));
+      const numericValues = evidence
+        .map((item) => Math.abs(Number(item.value)))
+        .filter((value) => Number.isFinite(value));
       const maxAbs = numericValues.length ? Math.max(...numericValues) : 0;
-      const bars = evidence.map((item) => {
-        const value = Number(item.value);
-        const tone = evidenceTone(item);
-        const width = Number.isFinite(value) && maxAbs > 0 ? Math.max(8, Math.round((Math.abs(value) / maxAbs) * 100)) : 0;
-        return `
+      const bars = evidence
+        .map((item) => {
+          const value = Number(item.value);
+          const tone = evidenceTone(item);
+          const width =
+            Number.isFinite(value) && maxAbs > 0 ? Math.max(8, Math.round((Math.abs(value) / maxAbs) * 100)) : 0;
+          return `
           <div class="evidence-bar-row">
             <span class="evidence-label">${escapeHtml(item.label || "")}</span>
             <span class="evidence-track"><span class="evidence-bar ${tone.className}" data-evidence-width="${escapeHtml(width)}"></span></span>
             <span class="evidence-value ${tone.className}">${escapeHtml(formatEvidenceValue(item))}</span>
           </div>
         `;
-      }).join("");
-      const rows = evidence.map((item) => {
-        const tone = evidenceTone(item);
-        return `
+        })
+        .join("");
+      const rows = evidence
+        .map((item) => {
+          const tone = evidenceTone(item);
+          return `
           <tr>
             <th scope="row">${escapeHtml(item.label || "")}</th>
             <td class="${tone.className}">${escapeHtml(formatEvidenceValue(item))}</td>
             <td class="${tone.className}">${escapeHtml(tone.label)}</td>
           </tr>
         `;
-      }).join("");
+        })
+        .join("");
       return `
         <div class="rule-evidence" aria-label="${escapeHtml(rule.code || "")} 年度數據">
           <div class="evidence-bars">${bars}</div>
@@ -128,7 +137,7 @@
         </div>
       `;
     }
-    
+
     function applyEvidenceBarWidths(root = null) {
       if (typeof document === "undefined" && !root) return;
       const scope = root || document;
@@ -139,7 +148,7 @@
         bar.style.setProperty("--bar-width", `${width}%`);
       });
     }
-    
+
     function renderRule(rule = {}) {
       const isMissing = rule.severity === "INSUFFICIENT_DATA";
       const stateClass = isMissing ? "missing" : rule.passed ? "passed" : "failed";
@@ -155,7 +164,7 @@
         </div>
       `;
     }
-    
+
     function displayResultStatus(result = {}, disclosureGroup = "") {
       const partialPublished = disclosureGroup === "announced" && isPartialPublishedResult(result);
       const partialHolding = disclosureGroup === "holding" && isPartialPublishedResult(result);
@@ -168,7 +177,7 @@
             : result.summary || "已完成規則分析。",
       };
     }
-    
+
     function resultActionButtons(result, options = {}) {
       const companyName = result.companyName || safeCompanyName(result);
       const tracked = isHoldingTracked(result.stockCode);
@@ -185,7 +194,7 @@
           : "";
       return exitButton || addButton ? `<div class="button-row">${addButton}${exitButton}</div>` : "";
     }
-    
+
     function renderAnalysisCard(result, options = {}) {
       result = result || {};
       const companyName = result.companyName || safeCompanyName(result);
@@ -206,7 +215,7 @@
         </article>
       `;
     }
-    
+
     function strategyThresholdsFor(code, title) {
       const direct = strategyRuleThresholds[code];
       if (direct) return direct;
@@ -214,7 +223,7 @@
       const matches = compactTitle.match(/(>=|>|<|≤|小於|大於)\s*\d+(?:\.\d+)?%?/g);
       return matches?.length ? matches : ["條件檢查"];
     }
-    
+
     function renderStrategyRuleCards(details = strategyStatusDetails) {
       return details
         .map(

@@ -82,9 +82,11 @@ client = TestClient(main_module.app)
 def _use_official_mode(monkeypatch, **settings_kwargs):
     """Switch the app to official mode with the provider's network stubbed out."""
     save_settings(ScannerSettings(use_mock_data=False, **settings_kwargs))
-    monkeypatch.setattr(deps_module.official_provider, "list_snapshots", lambda settings: [])
-    monkeypatch.setattr(deps_module.official_provider, "list_companies", lambda: [])
-    monkeypatch.setattr(deps_module.official_provider, "get_snapshot", lambda code: None)
+    snapshots = deps_module.mock_provider.list_snapshots(ScannerSettings(use_mock_data=True))
+    by_code = {snapshot.company.stockCode: snapshot for snapshot in snapshots}
+    monkeypatch.setattr(deps_module.official_provider, "list_snapshots", lambda settings: snapshots)
+    monkeypatch.setattr(deps_module.official_provider, "list_companies", lambda: [item.company for item in snapshots])
+    monkeypatch.setattr(deps_module.official_provider, "get_snapshot", by_code.get)
     monkeypatch.setattr(deps_module.official_provider, "refresh", lambda force=False: None)
 
 
@@ -130,6 +132,184 @@ def test_scan_market_official_mode_uses_cache(monkeypatch):
     get = client.get("/api/scan/market")
     assert post.status_code == 200
     assert get.status_code == 200
+
+
+def test_market_v2_excludes_volatile_cache_status_and_spans_physical_pages(monkeypatch):
+    served = {"count": 0}
+    stable_scan = {
+        "generatedAt": "2026-07-13T00:00:00+00:00",
+        "filingContext": {
+            "monthlyRevenuePeriod": "2026-06",
+            "freshnessFinancialReport": {"period": "2026Q1"},
+            "activeFinancialReport": {"period": "2026Q2"},
+        },
+        "financialFreshness": {"latestCachedFinancialPeriod": "2026Q1"},
+        "entry": [],
+        "watch": [
+            {
+                "stockCode": f"{index:04d}",
+                "companyName": f"Company {index}",
+                "status": "WATCH",
+                "summary": "announced",
+                "reasons": [
+                    {
+                        "code": "OFFICIAL_Q",
+                        "title": "Financial report",
+                        "passed": True,
+                        "severity": "INFO",
+                        "message": "2026Q1 is available",
+                    }
+                ],
+                "internalEvidence": {"must": "not affect generation"},
+            }
+            for index in range(150)
+        ],
+        "excluded": [],
+    }
+
+    def cached_scan():
+        served["count"] += 1
+        return {**stable_scan, "cacheStatus": {"servedAt": f"request-{served['count']}"}}
+
+    monkeypatch.setattr(market_module, "scan_market_cached", cached_scan)
+
+    first = client.get("/api/scan/market/index").json()
+    second = client.get("/api/scan/market/index").json()
+
+    assert first["generationId"] == second["generationId"]
+    assert first["cacheStatus"] != second["cacheStatus"]
+    assert first["cacheStatusInputs"] == {
+        "generatedAt": "2026-07-13T00:00:00+00:00",
+        "latestRevenuePeriod": "2026-06",
+        "latestFinancialPeriod": "2026Q1",
+    }
+
+    results = client.get(
+        "/api/scan/market/results",
+        params={
+            "disclosure": "announced",
+            "category": "watch",
+            "cursor": 96,
+            "limit": 10,
+            "generationId": first["generationId"],
+        },
+    )
+    assert results.status_code == 200
+    assert [item["stockCode"] for item in results.json()["items"]] == [f"{index:04d}" for index in range(96, 106)]
+
+    beyond = client.get(
+        "/api/scan/market/results",
+        params={"disclosure": "announced", "category": "watch", "cursor": 999, "limit": 10},
+    )
+    assert beyond.status_code == 200
+    assert beyond.json()["items"] == []
+    assert beyond.json()["nextCursor"] is None
+
+
+def test_market_v2_maps_local_generation_build_failure_to_safe_503(monkeypatch):
+    monkeypatch.setattr(market_module, "build_market_generation", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("secret")))
+    safe_client = TestClient(main_module.app, raise_server_exceptions=False)
+
+    index = safe_client.get("/api/scan/market/index")
+    results = safe_client.get(
+        "/api/scan/market/results",
+        params={"disclosure": "announced", "category": "watch", "cursor": 0, "limit": 1},
+    )
+
+    assert index.status_code == 503
+    assert results.status_code == 503
+    assert index.json() == results.json() == {"detail": "market_query_unavailable"}
+
+
+def test_market_v2_generation_memory_keeps_only_current_and_previous(monkeypatch):
+    with market_module._market_generation_lock:
+        market_module._market_generations.clear()
+    calls = {"value": 0}
+
+    def changing_scan():
+        calls["value"] += 1
+        return {
+            "generatedAt": f"2026-07-13T00:00:0{calls['value']}+00:00",
+            "filingContext": {},
+            "entry": [
+                {
+                    "stockCode": "2330",
+                    "companyName": "TSMC",
+                    "status": "ENTRY",
+                    "summary": "announced",
+                    "reasons": [],
+                }
+            ],
+            "watch": [],
+            "excluded": [],
+        }
+
+    monkeypatch.setattr(market_module, "scan_market_cached", changing_scan)
+    generation_ids = [client.get("/api/scan/market/index").json()["generationId"] for _ in range(3)]
+
+    assert len(market_module._market_generations) == 2
+    assert generation_ids[0] not in market_module._market_generations
+    assert list(market_module._market_generations) == generation_ids[1:]
+
+    query = {"disclosure": "announced", "category": "entry", "cursor": 0, "limit": 1}
+    previous = client.get(
+        "/api/scan/market/results",
+        params={**query, "generationId": generation_ids[1]},
+    )
+    assert previous.status_code == 200
+    assert previous.json()["generationId"] == generation_ids[1]
+    assert calls["value"] == 3
+
+    evicted = client.get(
+        "/api/scan/market/results",
+        params={**query, "generationId": generation_ids[0]},
+    )
+    assert evicted.status_code == 409
+    assert calls["value"] == 4
+    assert len(market_module._market_generations) == 2
+    with market_module._market_generation_lock:
+        market_module._market_generations.clear()
+
+
+def test_market_v2_fastapi_rejects_wire_responses_over_budget(monkeypatch):
+    generation = market_module.build_market_generation(
+        {
+            "generatedAt": "2026-07-13T00:00:00+00:00",
+            "filingContext": {},
+            "entry": [{"stockCode": "2330", "status": "ENTRY", "reasons": []}],
+            "watch": [],
+            "excluded": [],
+        }
+    )
+    monkeypatch.setattr(
+        market_module,
+        "_current_market_generation",
+        lambda: (generation, {"padding": "x" * (50 * 1024)}),
+    )
+
+    index = client.get("/api/scan/market/index")
+    assert index.status_code == 503
+
+    monkeypatch.setattr(
+        market_module,
+        "query_market_generation",
+        lambda *_args: {
+            "schemaVersion": 2,
+            "generationId": generation.generation_id,
+            "disclosure": "announced",
+            "category": "entry",
+            "cursor": 0,
+            "limit": 1,
+            "total": 1,
+            "nextCursor": None,
+            "items": [{"stockCode": "2330", "summary": "x" * (500 * 1024)}],
+        },
+    )
+    results = client.get(
+        "/api/scan/market/results",
+        params={"disclosure": "announced", "category": "entry", "cursor": 0, "limit": 1},
+    )
+    assert results.status_code == 503
 
 
 def test_cache_status_endpoint():

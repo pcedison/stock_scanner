@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from scripts.check_code_size_budgets import DEFAULT_BUDGETS
 from scripts.check_frontend_hygiene import (
     dangerous_inner_html_assignments,
     frontend_hygiene_report,
@@ -9,8 +10,14 @@ from scripts.check_frontend_hygiene import (
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
 OPS_DASHBOARD_VERSION = "20260622-ops-dashboard"
-APP_VERSION = OPS_DASHBOARD_VERSION
-MARKET_RENDER_VERSION = OPS_DASHBOARD_VERSION
+TASK6_SCRIPT_VERSION = "20260713-market-refresh-command"
+API_CLIENT_VERSION = TASK6_SCRIPT_VERSION
+APP_VERSION = TASK6_SCRIPT_VERSION
+MARKET_RENDER_VERSION = TASK6_SCRIPT_VERSION
+MARKET_SCAN_VERSION = TASK6_SCRIPT_VERSION
+MARKET_QUERY_VERSION = TASK6_SCRIPT_VERSION
+MARKET_REFRESH_VERSION = TASK6_SCRIPT_VERSION
+STORAGE_VERSION = TASK6_SCRIPT_VERSION
 STRATEGY_CONTENT_VERSION = "20260612-x1-exit-rule"
 DOM_VERSION = "20260525-dom-hardening"
 
@@ -125,16 +132,32 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert 'src="/auth.js?v=20260521-auth-helpers"' in index_html
     assert 'src="/reference_data.js?v=20260522-frontend-split"' in index_html
     assert f'src="/strategy_content.js?v={STRATEGY_CONTENT_VERSION}"' in index_html
-    assert 'src="/storage.js?v=20260522-frontend-split"' in index_html
+    assert f'src="/storage.js?v={STORAGE_VERSION}"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
-    assert 'src="/api_client.js?v=20260530-cacheable-scan-get"' in index_html
+    assert f'src="/api_client.js?v={API_CLIENT_VERSION}"' in index_html
+    assert '<meta name="stock-scanner-market-api-version" content="v1" />' in index_html
+    assert f'src="/market_query.js?v={MARKET_QUERY_VERSION}"' in index_html
+    assert index_html.index('src="/market_query.js') < index_html.index('src="/market_scan.js')
+    assert f'src="/market_refresh.js?v={MARKET_REFRESH_VERSION}"' in index_html
+    assert index_html.index('src="/market_query.js') < index_html.index('src="/market_refresh.js')
+    assert index_html.index('src="/market_refresh.js') < index_html.index('src="/market_scan.js')
+    assert f'src="/market_scan.js?v={MARKET_SCAN_VERSION}"' in index_html
     assert f'src="/market_render.js?v={MARKET_RENDER_VERSION}"' in index_html
     assert f'src="/ops_status.js?v={OPS_DASHBOARD_VERSION}"' in index_html
     assert f'src="/ops_view_renderers.js?v={OPS_DASHBOARD_VERSION}"' in index_html
     assert f'src="/app.js?v={APP_VERSION}"' in index_html
+    for script_name in ("api_client", "app", "storage", "market_query", "market_refresh", "market_scan", "market_render"):
+        assert f'src="/{script_name}.js?v={TASK6_SCRIPT_VERSION}"' in index_html
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css
     assert ".holding-exit-alert-banner.critical" in styles_css
+
+
+def test_market_query_module_has_a_focused_non_expanding_budget():
+    assert DEFAULT_BUDGETS["frontend/market_query.js"] == 520
+    assert DEFAULT_BUDGETS["frontend/market_refresh.js"] == 220
+    assert DEFAULT_BUDGETS["frontend/app.js"] == 2050
+    assert DEFAULT_BUDGETS["frontend/market_render.js"] == 220
 
 
 def test_map_chain_sink_does_not_run_into_following_code():

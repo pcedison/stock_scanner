@@ -1,10 +1,8 @@
 const COMPANIES_PAGE_LIMIT = 500;
 const MAX_COMPANY_PAGES = 10;
 
-const _isCjs =
-  typeof require === "function" && typeof module !== "undefined" && module.exports;
-const _mod = (globalKey, requirePath) =>
-  _isCjs ? require(requirePath) : globalThis[globalKey];
+const _isCjs = typeof require === "function" && typeof module !== "undefined" && module.exports;
+const _mod = (globalKey, requirePath) => (_isCjs ? require(requirePath) : globalThis[globalKey]);
 
 const REFERENCE_DATA = _mod("StockScannerReferenceData", "./reference_data.js");
 const STRATEGY_CONTENT = _mod("StockScannerStrategyContent", "./strategy_content.js");
@@ -16,8 +14,13 @@ const OPS_STATUS_HELPERS = _mod("StockScannerOpsStatus", "./ops_status.js");
 const OPS_VIEW_RENDERER_HELPERS = _mod("StockScannerOpsViewRenderers", "./ops_view_renderers.js");
 const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
 const API_CLIENT_HELPERS = _mod("StockScannerApiClient", "./api_client.js");
+const MARKET_QUERY_HELPERS = _mod("StockScannerMarketQuery", "./market_query.js");
+const MARKET_REFRESH_HELPERS = _mod("StockScannerMarketRefresh", "./market_refresh.js");
+const { createMarketRefreshClient } = MARKET_REFRESH_HELPERS;
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
+const safeRequestId = (value) => (typeof value === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(value) ? value : "");
+const appendRequestId = (message, requestId) => (requestId ? `${message}（追蹤編號：${requestId}）` : message);
 const { authValidationMessage, isSuperUserIdentity, normalizeAuthUser, normalizeAuthUsername } = AUTH_HELPERS;
 const { DEFAULT_COMPANIES } = REFERENCE_DATA;
 const { STRATEGY_STATUS_DETAILS, STRATEGY_RULE_THRESHOLDS } = STRATEGY_CONTENT;
@@ -25,6 +28,10 @@ const API_CLIENT = API_CLIENT_HELPERS.createApiClient({
   csrfHeaderName: CSRF_HEADER_NAME,
   csrfHeaderValue: CSRF_HEADER_VALUE,
 });
+let MARKET_API_VERSION = MARKET_QUERY_HELPERS.marketApiVersion();
+let marketApiVersionFallbackApplied = MARKET_API_VERSION !== "v2";
+const APP_STORAGE = STORAGE_HELPERS.safeStorage();
+const MARKET_QUERY_CLIENT = MARKET_QUERY_HELPERS.createMarketQueryClient({ apiJson, storage: APP_STORAGE });
 
 const DEFAULT_SETTINGS = {
   auto_scan_full_market: true,
@@ -43,6 +50,10 @@ const state = {
   settings: { ...DEFAULT_SETTINGS },
   selectedCompany: null,
   marketScan: null,
+  marketScanWarning: null,
+  marketIndex: null,
+  marketWindow: { items: [], total: 0, windowStart: 0, loading: false, error: null },
+  marketQueryWarning: null,
   holdingsScan: null,
   onboardingDraft: [],
   editingHoldingCode: null,
@@ -75,7 +86,6 @@ const state = {
   isSyncingHoldings: false,
   pendingHoldingsSync: false,
 };
-
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const MOBILE_NAV_BREAKPOINT = 680;
@@ -132,58 +142,44 @@ const {
 } = MARKET_SCAN_HELPERS.createMarketScan({
   getState: () => state,
   safeText,
+  findLoadedResult: (stockCode) => MARKET_QUERY_CLIENT.findLoadedResult(stockCode),
 });
 
 function escapeHtml(value) {
   return DOM_HELPERS.escapeHtml(value);
 }
-
 function emptyStateHtml(message) {
   return DOM_HELPERS.emptyStateHtml(message);
 }
-
 function setEmptyState(target, message) {
   DOM_HELPERS.setEmptyState(target, message);
 }
-
 function setFormError(target, message) {
   DOM_HELPERS.setFormError(target, message);
 }
-
 function setSafeHtml(target, html) {
   DOM_HELPERS.setSafeHtml(target, html);
 }
-
 function clearElement(target) {
   DOM_HELPERS.clearElement(target);
 }
-
-function loadHoldingsFromStorage(storage = localStorage, companies = state.companies) {
+function loadHoldingsFromStorage(storage = APP_STORAGE, companies = state.companies) {
   return STORAGE_HELPERS.loadHoldingsFromStorage(storage, companies, normalizeHoldingRecords);
 }
-
-function loadHoldings() {
-  const normalized = loadHoldingsFromStorage(localStorage, state.companies);
-  saveHoldingsLocalOnly(normalized);
-  return normalized;
-}
-
-function saveHoldingsLocalOnly(holdings = state.holdings, storage = localStorage) {
+function saveHoldingsLocalOnly(holdings = state.holdings, storage = APP_STORAGE) {
   STORAGE_HELPERS.saveHoldingsLocalOnly(holdings, storage, state.companies, normalizeHoldingRecords);
 }
-
-function saveHoldings(holdings = state.holdings, storage = localStorage) {
+function saveHoldings(holdings = state.holdings, storage = APP_STORAGE) {
   const normalized = normalizeHoldingRecords(holdings, state.companies);
   state.holdings = normalized;
   saveHoldingsLocalOnly(normalized, storage);
-  const isBrowserLocalStorage = typeof localStorage !== "undefined" && storage === localStorage;
+  const isBrowserLocalStorage = storage === APP_STORAGE;
   if (isBrowserLocalStorage && state.auth?.authenticated) {
     state.pendingHoldingsSync = true;
     syncHoldingsToServer(normalized);
   }
   if (isBrowserLocalStorage) requestHoldingsScanRefresh();
 }
-
 async function syncHoldingsToServer(holdings = state.holdings) {
   if (!state.auth?.authenticated) return false;
   if (state.isSyncingHoldings) {
@@ -219,7 +215,6 @@ async function syncHoldingsToServer(holdings = state.holdings) {
     }
   }
 }
-
 function isHoldingTracked(stockCode) {
   const normalized = safeText(stockCode);
   return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
@@ -248,12 +243,13 @@ const {
   strategyStatusDetails: STRATEGY_STATUS_DETAILS,
   strategyRuleThresholds: STRATEGY_RULE_THRESHOLDS,
 });
-const { renderDataConsole, renderHoldingCard, renderSchedulerStatus } = OPS_VIEW_RENDERER_HELPERS.createOpsViewRenderers({
-  escapeHtml,
-  safeCompanyName,
-  renderHoldingSignal,
-  displayResultStatus,
-});
+const { renderDataConsole, renderHoldingCard, renderSchedulerStatus } =
+  OPS_VIEW_RENDERER_HELPERS.createOpsViewRenderers({
+    escapeHtml,
+    safeCompanyName,
+    renderHoldingSignal,
+    displayResultStatus,
+  });
 
 const MARKET_RENDER_HELPERS = _mod("StockScannerMarketRender", "./market_render.js");
 const {
@@ -264,10 +260,14 @@ const {
   renderMarketResultRow,
   renderMarketColumn,
   renderScanCacheStatus,
+  acceptMarketScan,
+  renderMarketScanWarning,
 } = MARKET_RENDER_HELPERS.createMarketRender({
   getState: () => state,
   escapeHtml,
   safeText,
+  safeRequestId,
+  appendRequestId,
   safeCompanyName,
   displayResultStatus,
   statusClass,
@@ -282,40 +282,57 @@ const {
   MARKET_RESULT_COLUMNS,
   MARKET_DISCLOSURE_TABS,
 });
+const MARKET_QUERY_COORDINATOR = MARKET_QUERY_HELPERS.createMarketQueryCoordinator({
+  client: MARKET_QUERY_CLIENT,
+  state,
+  getSelection: () => ({
+    disclosure: activeMarketDisclosureKey(),
+    category: activeMarketColumnKey(),
+    uiPage: getMarketPage(activeMarketDisclosureKey(), activeMarketColumnKey()),
+  }),
+  resetUi: resetMarketListUi,
+  render: renderMarketResults,
+});
+const MARKET_REFRESH_CLIENT = createMarketRefreshClient({ apiJson, onSuccess: MARKET_QUERY_COORDINATOR.forceRefresh });
 
 function holdingScanResultByCode(stockCode, scan = state.holdingsScan) {
   const normalized = safeText(stockCode);
   if (!normalized || !scan || !Array.isArray(scan.results)) return null;
   return scan.results.find((result) => safeText(result?.stockCode) === normalized) || null;
 }
-
 function holdingScanMissingByCode(stockCode, scan = state.holdingsScan) {
   const normalized = safeText(stockCode);
   if (!normalized || !scan || !Array.isArray(scan.missing)) return null;
   return scan.missing.find((item) => safeText(item?.stockCode) === normalized) || null;
 }
-
 function holdingExitCodes(result = {}) {
   return HOLDING_SIGNAL_HELPERS.holdingExitCodes(result);
 }
-
 function holdingSignal(result = null, missing = null) {
   const display = result ? displayResultStatus(result, "holding") : null;
-  return HOLDING_SIGNAL_HELPERS.holdingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
-    isScanning: state.isScanningHoldings,
-  });
+  return HOLDING_SIGNAL_HELPERS.holdingSignal(
+    display ? { ...result, status: display.status, summary: display.summary } : result,
+    missing,
+    {
+      isScanning: state.isScanningHoldings,
+    },
+  );
 }
-
 function renderHoldingSignal(result = null, missing = null) {
   const display = result ? displayResultStatus(result, "holding") : null;
-  return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(display ? { ...result, status: display.status, summary: display.summary } : result, missing, {
-    isScanning: state.isScanningHoldings,
-  });
+  return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(
+    display ? { ...result, status: display.status, summary: display.summary } : result,
+    missing,
+    {
+      isScanning: state.isScanningHoldings,
+    },
+  );
 }
-
 function holdingExitAlerts(scan = state.holdingsScan) {
   const results = Array.isArray(scan?.results) ? scan.results : [];
-  const savedHoldingCodes = new Set(state.holdings.map((holding) => String(holding.stockCode || "").trim()).filter(Boolean));
+  const savedHoldingCodes = new Set(
+    state.holdings.map((holding) => String(holding.stockCode || "").trim()).filter(Boolean),
+  );
   return results
     .map((result) => {
       const signal = holdingSignal(result);
@@ -338,7 +355,22 @@ function holdingExitAlerts(scan = state.holdingsScan) {
     });
 }
 
-const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({ query: $, getState: () => state, holdingExitAlerts });
+const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({
+  query: $,
+  getState: () => state,
+  holdingExitAlerts,
+});
+const { renderOverview: renderOverviewStats, updateNavigation: updateMarketColumnNav } =
+  MARKET_QUERY_HELPERS.createMarketCountUi({
+    state,
+    getApiVersion: () => MARKET_API_VERSION,
+    queryAll: $$,
+    labels: MARKET_COLUMN_LABELS,
+    activeTab: activeMarketDisclosureKey,
+    activeColumn: activeMarketColumnKey,
+    groupScan: groupMarketScanResults,
+    renderOps: renderOverviewOpsStatus,
+  });
 function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
   if (!alerts.length) return "";
   const exitCount = alerts.filter((item) => item.status === "EXIT").length;
@@ -377,7 +409,6 @@ function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
     </section>
   `;
 }
-
 function renderHoldingExitAlerts() {
   if (typeof document === "undefined") return;
   const target = $("#holding-exit-alerts");
@@ -392,13 +423,11 @@ function renderHoldingExitAlerts() {
   target.replaceChildren(...Array.from(parsed.body.childNodes));
   target.classList.remove("hidden");
 }
-
 function refreshHoldingsDependentViews() {
   renderHoldings();
   if (state.holdingsScan) renderHoldingResults();
-  if (state.marketScan) renderMarketResults();
+  if (state.marketScan || state.marketIndex) renderMarketResults();
 }
-
 function upsertHolding(holding) {
   const normalizedCompany = normalizeCompany(holding);
   if (!normalizedCompany) return false;
@@ -425,7 +454,6 @@ function upsertHolding(holding) {
   refreshHoldingsDependentViews();
   return true;
 }
-
 function reduceHolding(stockCode, amount) {
   const holding = state.holdings.find((item) => item.stockCode === stockCode);
   if (!holding) return;
@@ -439,20 +467,17 @@ function reduceHolding(stockCode, amount) {
   saveHoldings();
   refreshHoldingsDependentViews();
 }
-
 function clearHolding(stockCode) {
   state.holdings = state.holdings.filter((item) => item.stockCode !== stockCode);
   if (state.editingHoldingCode === stockCode) state.editingHoldingCode = null;
   saveHoldings();
   refreshHoldingsDependentViews();
 }
-
 function holdingResultsVisible() {
   if (typeof document === "undefined") return false;
   const target = $("#holding-results");
   return Boolean(target && !target.classList.contains("hidden"));
 }
-
 function requestHoldingsScanRefresh() {
   if (typeof window === "undefined") return;
   window.clearTimeout(holdingsScanRefreshTimer);
@@ -470,7 +495,6 @@ function requestHoldingsScanRefresh() {
     refreshStoredHoldingAnalysis({ renderResults: holdingResultsVisible(), quiet: true });
   }, 250);
 }
-
 async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = false } = {}) {
   const target = typeof document !== "undefined" ? $("#holding-results") : null;
   if (!state.holdings.length) {
@@ -506,7 +530,6 @@ async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = fal
   if (renderResults) renderHoldingResults();
   return true;
 }
-
 async function apiJson(url, options = {}) {
   const response = await apiFetch(url, options);
   const text = await response.text();
@@ -515,18 +538,42 @@ async function apiJson(url, options = {}) {
   }
   return text ? JSON.parse(text) : {};
 }
-
+function acceptRuntimeConfig(payload) {
+  const version = payload?.marketScanApiVersion === "v2" ? "v2" : "v1";
+  MARKET_API_VERSION = version;
+  marketApiVersionFallbackApplied = version !== "v2";
+  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: version };
+  return version;
+}
+async function loadRuntimeConfig() {
+  try {
+    return acceptRuntimeConfig(await apiJson("/api/runtime-config", { method: "GET" }));
+  } catch {
+    return acceptRuntimeConfig({ marketScanApiVersion: "v1" });
+  }
+}
+function fallbackMarketApiToV1(message) {
+  if (marketApiVersionFallbackApplied) return false;
+  marketApiVersionFallbackApplied = true;
+  MARKET_API_VERSION = "v1";
+  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: "v1" };
+  MARKET_QUERY_CLIENT.clearGeneration();
+  state.marketQueryWarning = message || state.marketQueryWarning;
+  return true;
+}
 async function apiFetch(url, options = {}) {
   try {
     return await API_CLIENT.request(url, options);
   } catch {
+    if (options.signal?.aborted) throw options.signal.reason;
     throw new Error(apiErrorMessage({ status: 503, headers: { get: () => "" } }, ""));
   }
 }
-
 function apiErrorMessage(response, text = "") {
   const status = Number(response?.status) || 0;
-  const contentType = String(response?.headers?.get?.("content-type") || response?.headers?.get?.("Content-Type") || "").toLowerCase();
+  const contentType = String(
+    response?.headers?.get?.("content-type") || response?.headers?.get?.("Content-Type") || "",
+  ).toLowerCase();
   const fallback =
     status >= 500
       ? "伺服器暫時無法處理請求，請稍後再試。"
@@ -541,25 +588,28 @@ function apiErrorMessage(response, text = "") {
     try {
       const payload = JSON.parse(text);
       const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
-      return status >= 500 || detail.startsWith("Cloudflare Worker API error:") ? fallback : detail || fallback;
+      const requestId = safeRequestId(payload.requestId);
+      if (status >= 500 || detail.startsWith("Cloudflare Worker API error:")) {
+        return appendRequestId(fallback, requestId);
+      }
+      return detail || fallback;
     } catch {
       return fallback;
     }
   }
 
+  if (status >= 500) return fallback;
   const normalized = text.trim();
   if (!normalized || /<(!doctype|html|head|body|script|style)\b/i.test(normalized)) return fallback;
   return normalized.length <= 240 ? normalized : fallback;
 }
-
-function hasCompletedOnboarding(storage = localStorage, user = state.auth?.user || null) {
+function hasCompletedOnboarding(storage = APP_STORAGE, user = state.auth?.user || null) {
   return STORAGE_HELPERS.hasCompletedOnboarding(storage, user);
 }
 
-function markOnboardingDone(storage = localStorage, user = state.auth?.user || null) {
+function markOnboardingDone(storage = APP_STORAGE, user = state.auth?.user || null) {
   STORAGE_HELPERS.markOnboardingDone(storage, user);
 }
-
 
 function shouldPromptOnboarding() {
   return Boolean(state.auth?.authenticated && !hasCompletedOnboarding() && !state.holdings.length);
@@ -648,7 +698,8 @@ function renderAdminVisibility() {
 }
 
 async function loadAccountState() {
-  const localHoldings = loadHoldings();
+  const localHoldings = loadHoldingsFromStorage(APP_STORAGE, state.companies);
+  saveHoldingsLocalOnly(localHoldings);
   try {
     const me = await apiJson("/api/auth/me");
     const authUser = normalizeAuthUser(me.user);
@@ -702,7 +753,7 @@ async function authenticateFromForm(mode, source = "header") {
   state.auth.message = "";
   renderAccountPanel();
   try {
-    const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+    const localHoldings = loadHoldingsFromStorage(APP_STORAGE, state.companies);
     const result = await apiJson(mode === "register" ? "/api/auth/register" : "/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
@@ -766,7 +817,7 @@ async function logoutAccount() {
 
 async function importLocalHoldingsToAccount() {
   if (!state.auth?.authenticated) return;
-  const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+  const localHoldings = loadHoldingsFromStorage(APP_STORAGE, state.companies);
   const merged = normalizeHoldingRecords([...state.holdings, ...localHoldings], state.companies);
   state.holdings = merged;
   const ok = await syncHoldingsToServer(merged);
@@ -799,14 +850,18 @@ function renderAdminUsers() {
     setEmptyState(target, "目前沒有其他使用者");
     return;
   }
-  setSafeHtml(target, state.adminUsers
-    .map((user) => {
-      const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
-      const badge = user.isSuperUser ? `<span class="status-pill status-entry">super user</span>` : `<span class="status-pill neutral">一般使用者</span>`;
-      const deleteButton = user.canDelete
-        ? `<button class="small-danger-btn" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-username="${escapeHtml(user.username)}">刪除</button>`
-        : `<button class="ghost-btn" type="button" disabled>不可刪除</button>`;
-      return `
+  setSafeHtml(
+    target,
+    state.adminUsers
+      .map((user) => {
+        const createdAt = user.createdAt ? new Date(user.createdAt).toLocaleString() : "未知";
+        const badge = user.isSuperUser
+          ? `<span class="status-pill status-entry">super user</span>`
+          : `<span class="status-pill neutral">一般使用者</span>`;
+        const deleteButton = user.canDelete
+          ? `<button class="small-danger-btn" type="button" data-delete-user="${escapeHtml(user.id)}" data-delete-username="${escapeHtml(user.username)}">刪除</button>`
+          : `<button class="ghost-btn" type="button" disabled>不可刪除</button>`;
+        return `
         <article class="admin-user-card">
           <div>
             <div class="admin-user-title">
@@ -823,8 +878,9 @@ function renderAdminUsers() {
           ${deleteButton}
         </article>
       `;
-    })
-    .join(""));
+      })
+      .join(""),
+  );
 }
 
 function adminUsersErrorMessage(message) {
@@ -885,7 +941,9 @@ function renderSelectedCompany() {
 
   state.selectedCompany = company;
   target.className = "selected-company card selected-company-card";
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="card-head">
       <div>
         <h3 class="stock-title">${escapeHtml(company.stockCode)} ${escapeHtml(company.name)}</h3>
@@ -897,7 +955,8 @@ function renderSelectedCompany() {
       <button class="secondary-btn" type="button" id="analyze-selected-btn">單檔分析</button>
       <button class="primary-btn" type="button" id="add-selected-btn">加入持股</button>
     </div>
-  `);
+  `,
+  );
 }
 
 function renderHoldings() {
@@ -909,17 +968,20 @@ function renderHoldings() {
     return;
   }
 
-  setSafeHtml(target, state.holdings
-    .map((holding) => {
-      const stockCode = safeText(holding.stockCode, "未知代碼");
-      return renderHoldingCard({
-        holding: { ...holding, stockCode },
-        isEditing: state.editingHoldingCode === stockCode,
-        analysis: holdingScanResultByCode(stockCode),
-        missing: holdingScanMissingByCode(stockCode),
-      });
-    })
-    .join(""));
+  setSafeHtml(
+    target,
+    state.holdings
+      .map((holding) => {
+        const stockCode = safeText(holding.stockCode, "未知代碼");
+        return renderHoldingCard({
+          holding: { ...holding, stockCode },
+          isEditing: state.editingHoldingCode === stockCode,
+          analysis: holdingScanResultByCode(stockCode),
+          missing: holdingScanMissingByCode(stockCode),
+        });
+      })
+      .join(""),
+  );
 }
 
 function renderOnboardingDraft() {
@@ -935,9 +997,10 @@ function renderOnboardingDraft() {
   }
 
   list.className = "draft-list";
-  setSafeHtml(list, state.onboardingDraft
-    .map(
-      (holding) => {
+  setSafeHtml(
+    list,
+    state.onboardingDraft
+      .map((holding) => {
         const stockCode = safeText(holding.stockCode, "未知代碼");
         const name = safeCompanyName(holding);
         const shares = Number.isFinite(Number(holding.shares)) ? Math.max(0, Math.floor(Number(holding.shares))) : 0;
@@ -954,9 +1017,9 @@ function renderOnboardingDraft() {
           <button class="small-danger-btn" type="button" data-remove-draft="${escapeHtml(stockCode)}">移除</button>
         </article>
       `;
-      },
-    )
-    .join(""));
+      })
+      .join(""),
+  );
 }
 
 function renderSettings() {
@@ -996,7 +1059,9 @@ function renderStrategyStatusDetail() {
     return;
   }
   target.classList.remove("hidden");
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="strategy-detail-head">
       <h3>${escapeHtml(detail.label)}</h3>
       <p>${escapeHtml(detail.summary)}</p>
@@ -1016,7 +1081,8 @@ function renderStrategyStatusDetail() {
         )
         .join("")}
     </div>
-  `);
+  `,
+  );
   applyEvidenceBarWidths(target);
 }
 
@@ -1024,38 +1090,6 @@ function renderStrategyRulesGrid() {
   const target = $("#strategy-rules-grid");
   if (!target) return;
   setSafeHtml(target, renderStrategyRuleCards());
-}
-
-function renderOverviewStats(scan = state.marketScan, activeTab = state.activeMarketDisclosureTab) {
-  if (typeof document === "undefined") return;
-  const metricKeys = ["entry", "watch", "excluded"];
-  const values = Object.fromEntries(metricKeys.map((key) => [key, "--"]));
-  const note = scan?.generatedAt ? `${new Date(scan.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
-  if (scan) {
-    const grouped = groupMarketScanResults(scan);
-    const tabKey = activeMarketDisclosureKey(activeTab);
-    for (const key of metricKeys) {
-      values[key] = grouped?.[tabKey]?.[key]?.length ?? 0;
-    }
-  }
-  for (const key of metricKeys) {
-    const count = document.querySelector(`#overview-${key}-count`);
-    const noteEl = document.querySelector(`#overview-${key}-note`);
-    if (count) count.textContent = String(values[key]);
-    if (noteEl) noteEl.textContent = note;
-  }
-  renderOverviewOpsStatus(scan);
-}
-
-function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDisclosureTab) {
-  const tabKey = activeMarketDisclosureKey(activeTab);
-  $$("[data-market-column-nav]").forEach((button) => {
-    const columnKey = button.dataset.marketColumnNav;
-    const label = MARKET_COLUMN_LABELS[columnKey] || columnKey;
-    const count = grouped ? grouped?.[tabKey]?.[columnKey]?.length ?? 0 : null;
-    button.classList.toggle("active", columnKey === activeMarketColumnKey());
-    button.textContent = count === null ? label : `${label} (${count})`;
-  });
 }
 
 async function loadMarketResultDetails(resultId) {
@@ -1084,59 +1118,62 @@ async function loadMarketResultDetails(resultId) {
 
 function renderMarketResults() {
   const target = $("#market-results");
-  if (!state.marketScan) {
-    setEmptyState(target, "尚未掃描市場");
+  const isV2 = MARKET_API_VERSION === "v2";
+  const source = isV2 ? state.marketIndex : state.marketScan;
+  if (!source) {
+    setEmptyState(target, isV2 ? "等待市場索引" : "尚未掃描市場");
     updateMarketColumnNav();
     renderOverviewStats();
     return;
   }
-  $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
-  const grouped = groupMarketScanResults(state.marketScan);
-  clampMarketListPages(grouped);
+  $("#scan-time").textContent = `更新 ${new Date(source.generatedAt).toLocaleString()}`;
+  const grouped = isV2 ? null : groupMarketScanResults(source);
+  if (grouped) clampMarketListPages(grouped);
   const activeTab = activeMarketDisclosureKey();
   const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
-  const activeGroup = grouped[activeTab];
   const activeColumn = activeMarketColumnKey();
   const activeColumnTitle = MARKET_COLUMN_LABELS[activeColumn] || "掃描結果";
   updateMarketColumnNav(grouped, activeTab);
-  const filingSummary = state.marketScan.filingContext?.activeFinancialReport
-    ? `目前依 ${state.marketScan.filingContext.activeFinancialReport.label}（一般公司期限 ${state.marketScan.filingContext.activeFinancialReport.generalDeadline}${
-        state.marketScan.filingContext.activeFinancialReport.financialDeadline
-          ? `，金控期限 ${state.marketScan.filingContext.activeFinancialReport.financialDeadline}`
-          : ""
-      }）判斷當期已公告。`
-    : `目前非季報/年報申報窗口，主要依 ${state.marketScan.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
-  const freshnessSummary = state.marketScan.financialFreshness?.message
-    ? `財報快取：${state.marketScan.financialFreshness.message}`
-    : "";
-  setSafeHtml(target, `
-    <div class="data-source-note">
-      <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
-      <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
-    </div>
-    ${renderScanCacheStatus(state.marketScan)}
-    <div class="market-disclosure-tabs" aria-label="公告狀態分組">
-      ${MARKET_DISCLOSURE_TABS.map((tab) => {
-        const total = countMarketGroup(grouped[tab.key]);
-        return `
-          <button class="tab ${tab.key === activeTab ? "active" : ""}" type="button" data-market-disclosure-tab="${escapeHtml(tab.key)}">
-            ${escapeHtml(tab.title)} (${escapeHtml(total)})
-          </button>
-        `;
-      }).join("")}
-    </div>
-    <div class="data-source-note disclosure-note">
-      <strong>${escapeHtml(activeMeta.title)}</strong>
-      <span>${escapeHtml(filingSummary)} ${escapeHtml(freshnessSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span>
-    </div>
-    <div class="result-columns single-result-column">
-      ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
-    </div>
-  `);
+  const page = getMarketPage(activeTab, activeColumn);
+  const windowMatches =
+    state.marketWindow.disclosure === activeTab &&
+    state.marketWindow.category === activeColumn &&
+    state.marketWindow.uiPage === page;
+  const activeResults = isV2
+    ? windowMatches
+      ? state.marketWindow
+      : {
+          items: [],
+          total: source.disclosures[activeTab][activeColumn].count,
+          loading: true,
+          error: null,
+        }
+    : grouped[activeTab][activeColumn] || [];
+  const report = source.filingContext?.activeFinancialReport;
+  const filingSummary = isV2
+    ? `財報期別 ${source.disclosurePeriod || "最新"}`
+    : report
+      ? `目前依 ${report.label}（一般公司期限 ${report.generalDeadline}${
+          report.financialDeadline ? `，金控期限 ${report.financialDeadline}` : ""
+        }）判斷當期已公告。`
+      : `目前非季報/年報申報窗口，主要依 ${source.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
+  const freshnessSummary = source.financialFreshness?.message ? `財報快取：${source.financialFreshness.message}` : "";
+  const sourceName = isV2 ? "官方分頁快取" : source.dataSource || "mock";
+  const sourceNote = isV2 ? filingSummary : source.note || "目前為示範樣本，不代表真實全台股即時掃描。";
+  const tabTotal = (tab) => (isV2 ? source.disclosures[tab].count : countMarketGroup(grouped[tab]));
+  setSafeHtml(
+    target,
+    `<div class="data-source-note"><strong>資料來源：${escapeHtml(sourceName)}</strong><span>${escapeHtml(sourceNote)}</span></div>
+    ${renderScanCacheStatus(source)}
+    ${isV2 && state.marketQueryWarning ? `<p class="data-source-note market-scan-warning" role="status">${escapeHtml(state.marketQueryWarning)}</p>` : ""}
+    <div class="market-disclosure-tabs" aria-label="公告狀態分組">${MARKET_DISCLOSURE_TABS.map((tab) => `<button class="tab ${tab.key === activeTab ? "active" : ""}" type="button" data-market-disclosure-tab="${escapeHtml(tab.key)}">${escapeHtml(tab.title)} (${escapeHtml(tabTotal(tab.key))})</button>`).join("")}</div>
+    <div class="data-source-note disclosure-note"><strong>${escapeHtml(activeMeta.title)}</strong><span>${escapeHtml(filingSummary)} ${escapeHtml(freshnessSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span></div>
+    <div class="result-columns single-result-column">${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeResults)}</div>`,
+  );
+  if (!isV2) renderMarketScanWarning(target);
   applyEvidenceBarWidths(target);
-  renderOverviewStats(state.marketScan, activeTab);
+  renderOverviewStats(source, activeTab);
 }
-
 function renderDataAndScheduler() {
   const dataTarget = $("#data-source-status");
   const schedulerTarget = $("#scheduler-status");
@@ -1145,11 +1182,14 @@ function renderDataAndScheduler() {
       setEmptyState(dataTarget, "資料來源狀態暫時無法讀取");
     } else {
       const status = state.dataSourceStatus;
-      setSafeHtml(dataTarget, renderDataConsole({
-        status,
-        integrationStatus: state.integrationStatus,
-        backtestStatus: state.backtestStatus,
-      }));
+      setSafeHtml(
+        dataTarget,
+        renderDataConsole({
+          status,
+          integrationStatus: state.integrationStatus,
+          backtestStatus: state.backtestStatus,
+        }),
+      );
     }
   }
 
@@ -1158,10 +1198,13 @@ function renderDataAndScheduler() {
       setSafeHtml(schedulerTarget, "<strong>排程狀態</strong><span>排程狀態暫時無法讀取</span>");
     } else {
       const autoAction = state.schedulerAutoScan?.action || "--";
-      setSafeHtml(schedulerTarget, renderSchedulerStatus({
-        schedulerStatus: state.schedulerStatus,
-        autoAction,
-      }));
+      setSafeHtml(
+        schedulerTarget,
+        renderSchedulerStatus({
+          schedulerStatus: state.schedulerStatus,
+          autoAction,
+        }),
+      );
     }
   }
 }
@@ -1174,26 +1217,27 @@ function renderHoldingResults() {
   }
   $("#scan-time").textContent = `更新 ${new Date(state.holdingsScan.generatedAt).toLocaleString()}`;
   const missing = state.holdingsScan.missing || [];
-  setSafeHtml(target, `
+  setSafeHtml(
+    target,
+    `
     <div class="stack">
       ${(state.holdingsScan.results || []).map((result) => renderAnalysisCard(result, { allowExitAction: true, disclosureGroup: "holding" })).join("")}
       ${missing
-        .map(
-          (item) => {
-            const stockCode = safeText(item.stockCode, "未知代碼");
-            const name = safeText(item.name, "未知公司");
-            return `
+        .map((item) => {
+          const stockCode = safeText(item.stockCode, "未知代碼");
+          const name = safeText(item.name, "未知公司");
+          return `
           <article class="card">
             <h3 class="stock-title">${escapeHtml(stockCode)} ${escapeHtml(name)}</h3>
             <p class="form-error">${escapeHtml(item.reason || "找不到財報示範資料")}</p>
           </article>
         `;
-          },
-        )
+        })
         .join("")}
       ${!(state.holdingsScan.results || []).length && !missing.length ? `<div class="empty-state">沒有可掃描持股</div>` : ""}
     </div>
-  `);
+  `,
+  );
   applyEvidenceBarWidths(target);
 }
 
@@ -1228,7 +1272,10 @@ function showView(view) {
   if (view === "admin" && isSuperUser() && !state.adminUsers.length && !state.adminIsLoading) loadAdminUsers();
   if (view === "admin") renderAdminUsers();
   if (view === "data") renderDataAndScheduler();
-  updateMarketColumnNav(state.marketScan ? groupMarketScanResults(state.marketScan) : null, state.activeMarketDisclosureTab);
+  updateMarketColumnNav(
+    state.marketScan ? groupMarketScanResults(state.marketScan) : null,
+    state.activeMarketDisclosureTab,
+  );
   renderOverviewStats(state.marketScan, state.activeMarketDisclosureTab);
 }
 
@@ -1271,9 +1318,8 @@ async function loadDataStatus() {
     state.schedulerAutoScan = status.schedulerAutoScan;
     state.integrationStatus = status.integrationStatus;
     state.backtestStatus = status.backtestStatus;
-    if (state.schedulerAutoScan?.scan) {
-      state.marketScan = state.schedulerAutoScan.scan;
-      resetMarketListUi();
+    if (MARKET_API_VERSION !== "v2" && state.schedulerAutoScan?.scan) {
+      acceptMarketScan(state.schedulerAutoScan.scan, { resetUi: true });
       renderMarketResults();
     }
   } catch {
@@ -1314,7 +1360,9 @@ function localSearch(query) {
   const normalized = normalizeText(query).toLowerCase();
   if (!normalized) return [];
   return companySource(state.companies)
-    .filter((company) => `${company.stockCode} ${company.name} ${company.industryName}`.toLowerCase().includes(normalized))
+    .filter((company) =>
+      `${company.stockCode} ${company.name} ${company.industryName}`.toLowerCase().includes(normalized),
+    )
     .slice(0, 20);
 }
 
@@ -1338,16 +1386,19 @@ function renderSuggestions(items) {
     clearElement(box);
     return;
   }
-  setSafeHtml(box, companies
-    .map(
-      (company) => `
+  setSafeHtml(
+    box,
+    companies
+      .map(
+        (company) => `
       <button class="suggestion-item" type="button" data-select-code="${escapeHtml(company.stockCode)}">
         <span>${escapeHtml(company.stockCode)} ${escapeHtml(company.name)}</span>
         <span class="muted">${escapeHtml(company.market)}</span>
       </button>
     `,
-    )
-    .join(""));
+      )
+      .join(""),
+  );
   box.classList.add("open");
 }
 
@@ -1367,18 +1418,49 @@ async function analyzeSelectedCompany() {
   }
 }
 
+async function loadActiveMarketWindow() {
+  return MARKET_QUERY_COORDINATOR.loadWindow();
+}
+
+async function refreshMarketQuery({ revealResults = false, refreshMode = "auto" } = {}) {
+  const target = $("#market-results");
+  if (revealResults) {
+    showView("scan");
+    showTab("market");
+  }
+  try {
+    return await (refreshMode === "force" ? MARKET_REFRESH_CLIENT.refresh() : MARKET_QUERY_COORDINATOR.refresh());
+  } catch (error) {
+    if (error?.name === "AbortError") return state.marketIndex;
+    state.marketQueryWarning = error?.message || "市場索引暫時無法載入";
+    fallbackMarketApiToV1(state.marketQueryWarning);
+    if (state.marketIndex) {
+      renderMarketResults();
+      return state.marketIndex;
+    }
+    if (MARKET_API_VERSION === "v1") return refreshMarketScan({ revealResults, refreshMode: "auto" });
+    if (revealResults && target) setFormError(target, state.marketQueryWarning);
+    return null;
+  }
+}
+
 async function scanMarket() {
   return refreshMarketScan({ revealResults: true });
 }
-
-function renderMarketScanError(target, error) {
-  if (target) setFormError(target, error.message || "掃描失敗");
+function handleMarketScanFailure(error, { revealResults = false, target = null } = {}) {
+  if (state.marketScan) {
+    state.marketScanWarning = error?.message || "市場掃描暫時失敗，請稍後再試。";
+    if (typeof document !== "undefined") renderMarketResults();
+    return state.marketScan;
+  }
+  if (revealResults && target) setFormError(target, error.message || "掃描失敗");
+  return null;
 }
-
 async function refreshMarketScan({ revealResults = false, refreshMode = "auto" } = {}) {
+  if (MARKET_API_VERSION === "v2") return refreshMarketQuery({ revealResults, refreshMode });
   const target = $("#market-results");
   if (revealResults) {
-    setEmptyState(target, "掃描中");
+    if (!state.marketScan) setEmptyState(target, "掃描中");
     showView("scan");
     showTab("market");
   }
@@ -1396,8 +1478,7 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
       await marketScanRefreshPromise;
       renderMarketResults();
     } catch (error) {
-      if (revealResults) renderMarketScanError(target, error);
-      return null;
+      return handleMarketScanFailure(error, { revealResults, target });
     }
     return state.marketScan;
   }
@@ -1410,19 +1491,14 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
       ? { method: "POST", body: JSON.stringify({ settings: state.settings, refreshMode }) }
       : { method: "GET" },
   )
-    .then((scan) => {
-      state.marketScan = scan;
-      resetMarketListUi();
-      return scan;
-    })
+    .then((scan) => acceptMarketScan(scan, { resetUi: true }))
     .finally(() => {
       marketScanRefreshPromise = null;
     });
   try {
     await marketScanRefreshPromise;
   } catch (error) {
-    if (revealResults) renderMarketScanError(target, error);
-    return null;
+    return handleMarketScanFailure(error, { revealResults, target });
   }
   renderMarketResults();
   return state.marketScan;
@@ -1443,9 +1519,7 @@ async function scanHoldings() {
 async function exportReport(kind, reportFormat) {
   const endpoint = kind === "holdings" ? "/api/reports/holdings" : "/api/reports/market";
   const payload =
-    kind === "holdings"
-      ? { holdings: state.holdings, settings: state.settings }
-      : { settings: state.settings };
+    kind === "holdings" ? { holdings: state.holdings, settings: state.settings } : { settings: state.settings };
   const response = await apiFetch(`${endpoint}?report_format=${encodeURIComponent(reportFormat)}`, {
     method: "POST",
     body: JSON.stringify(payload),
@@ -1483,9 +1557,12 @@ function closeOnboarding(markDone = true) {
 function addHoldingFromInput(rawInput, sharesInput, costInput) {
   const parsed = parseStockInput(rawInput, state.companies);
   if (!parsed.ok) return parsed;
-  const shares = sharesInput === "" || sharesInput === undefined ? parsed.shares : Math.max(0, Math.floor(Number(sharesInput)));
+  const shares =
+    sharesInput === "" || sharesInput === undefined ? parsed.shares : Math.max(0, Math.floor(Number(sharesInput)));
   const averageCost =
-    costInput === "" || costInput === undefined || costInput === null ? parsed.averageCost : Math.max(0, Number(costInput));
+    costInput === "" || costInput === undefined || costInput === null
+      ? parsed.averageCost
+      : Math.max(0, Number(costInput));
   upsertHolding({
     stockCode: parsed.stockCode,
     name: parsed.name,
@@ -1560,6 +1637,7 @@ function bindEvents() {
         showView("scan");
         showTab("market");
         renderMarketResults();
+        if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
         closeMobileMenu();
         return;
       }
@@ -1602,7 +1680,8 @@ function bindEvents() {
     });
   }
   const authModalLoginButton = $("#auth-modal-login-btn");
-  if (authModalLoginButton) authModalLoginButton.addEventListener("click", () => authenticateFromForm("login", "modal"));
+  if (authModalLoginButton)
+    authModalLoginButton.addEventListener("click", () => authenticateFromForm("login", "modal"));
   const closeAuthModalButton = $("#close-auth-modal-btn");
   if (closeAuthModalButton) closeAuthModalButton.addEventListener("click", () => closeAuthGate({ clearMessage: true }));
   const deferAuthModalButton = $("#defer-auth-modal-btn");
@@ -1660,7 +1739,11 @@ function bindEvents() {
 
   $("#manual-add-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    const result = addHoldingFromInput($("#manual-stock-input").value, $("#manual-shares-input").value, $("#manual-cost-input").value);
+    const result = addHoldingFromInput(
+      $("#manual-stock-input").value,
+      $("#manual-shares-input").value,
+      $("#manual-cost-input").value,
+    );
     $("#holding-error").textContent = result.ok ? "" : result.error;
     if (result.ok) event.target.reset();
   });
@@ -1826,6 +1909,7 @@ function bindEvents() {
     if (tabButton) {
       state.activeMarketDisclosureTab = tabButton.dataset.marketDisclosureTab;
       renderMarketResults();
+      if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
       return;
     }
     const pageButton = event.target.closest("[data-market-page-column]");
@@ -1836,6 +1920,7 @@ function bindEvents() {
       if (state.marketListPages?.[tabKey] && columnKey in state.marketListPages[tabKey]) {
         state.marketListPages[tabKey][columnKey] = Math.max(0, getMarketPage(tabKey, columnKey) + direction);
         renderMarketResults();
+        if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
       }
       return;
     }
@@ -1861,11 +1946,11 @@ function bindEvents() {
     });
     showView("holdings");
   });
-
 }
 
 async function init() {
   bindEvents();
+  await loadRuntimeConfig();
   await Promise.all([loadSettings(), loadCompanies()]);
   await loadAccountState();
   await loadDataStatus();
@@ -1905,6 +1990,10 @@ if (typeof module !== "undefined") {
     apiFetch,
     apiJson,
     API_CLIENT,
+    acceptRuntimeConfig,
+    loadRuntimeConfig,
+    fallbackMarketApiToV1,
+    marketApiVersion: () => MARKET_API_VERSION,
     normalizeAuthUsername,
     normalizeAuthUser,
     isSuperUserIdentity,
@@ -1944,5 +2033,9 @@ if (typeof module !== "undefined") {
     escapeHtml,
     emptyStateHtml,
     setEmptyState,
+    saveHoldings,
+    acceptMarketScan,
+    handleMarketScanFailure,
+    refreshMarketScan,
   };
 }

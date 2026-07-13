@@ -73,6 +73,12 @@ jobs:
       - name: Validate committed Cloudflare seed cache
         run: |
           SEED_ZIP=$(python scripts/seed_utils.py data --print)
+          SEED_SHA="${SEED_ZIP%.zip}.sha256"
+          test -f "$SEED_SHA"
+          (
+            cd "$(dirname "$SEED_ZIP")"
+            sha256sum --check "$(basename "$SEED_SHA")"
+          )
           python scripts/validate_cloudflare_seed_inputs.py \
             --zip "$SEED_ZIP" \
             --summary-md .tmp/seed-quality.md \

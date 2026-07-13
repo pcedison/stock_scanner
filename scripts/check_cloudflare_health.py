@@ -69,15 +69,14 @@ def validate_health_payload(
     expected_manifest: dict[str, Any] | None = None,
     *,
     max_cache_age_hours: float | None = None,
+    max_refresh_delay_minutes: float | None = None,
     now: datetime | None = None,
     reject_offline_seed: bool = False,
 ) -> dict[str, Any]:
     problems: list[str] = []
-    if payload.get("status") != "ok":
-        problems.append(f"health status is {payload.get('status')!r}, expected 'ok'")
-
     cache_quality = payload.get("cacheQuality")
-    if not isinstance(cache_quality, dict) or cache_quality.get("ok") is not True:
+    cache_quality_ok = isinstance(cache_quality, dict) and cache_quality.get("ok") is True
+    if not cache_quality_ok:
         problems.append("cacheQuality.ok is not true")
 
     cache = payload.get("cache")
@@ -106,6 +105,49 @@ def validate_health_payload(
             f"latest cached {financial_freshness.get('latestCachedFinancialPeriod')}"
         )
 
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+
+    refresh_delay_minutes = None
+    cache_status = payload.get("cacheStatus")
+    has_cache_status = "cacheStatus" in payload
+    policy_stale = False
+    policy_degraded_allowed = False
+    if has_cache_status:
+        if not isinstance(cache_status, dict):
+            problems.append("cache refresh policy status is missing or invalid")
+        else:
+            reported_stale = cache_status.get("isStale") is True
+            policy_stale = reported_stale
+            if not isinstance(cache_status.get("isStale"), bool):
+                problems.append("cache refresh policy isStale is missing or invalid")
+            next_refresh_after = _parse_timestamp(cache_status.get("nextRefreshAfter"))
+            if next_refresh_after is None:
+                problems.append("cache refresh policy nextRefreshAfter is missing or invalid")
+            else:
+                policy_stale = policy_stale or current >= next_refresh_after
+            if policy_stale and next_refresh_after is not None:
+                refresh_delay_minutes = max(0.0, (current - next_refresh_after).total_seconds() / 60)
+                policy_degraded_allowed = (
+                    max_refresh_delay_minutes is not None
+                    and refresh_delay_minutes <= max_refresh_delay_minutes
+                    and cache_quality_ok
+                )
+                if not policy_degraded_allowed:
+                    limit = "strict" if max_refresh_delay_minutes is None else f"{max_refresh_delay_minutes:g}m"
+                    problems.append(
+                        "cache refresh policy is stale: "
+                        f"next refresh {next_refresh_after.isoformat()} "
+                        f"({refresh_delay_minutes:.1f}m delayed, limit {limit})"
+                    )
+
+    status = payload.get("status")
+    expected_status = "degraded" if policy_stale or not cache_quality_ok else "ok"
+    if status != expected_status:
+        problems.append(f"health status is {status!r}, expected {expected_status!r}")
+
     cache_age_hours = None
     checked_at = None
     if max_cache_age_hours is not None:
@@ -113,10 +155,6 @@ def validate_health_payload(
         if checked_at is None:
             problems.append("cache sourceLastCheckedAt/generatedAt is missing or invalid")
         else:
-            current = now or datetime.now(UTC)
-            if current.tzinfo is None:
-                current = current.replace(tzinfo=UTC)
-            current = current.astimezone(UTC)
             cache_age_hours = max(0.0, (current - checked_at).total_seconds() / 3600)
             if cache_age_hours > max_cache_age_hours:
                 problems.append(
@@ -135,6 +173,7 @@ def validate_health_payload(
         "cacheQuality": cache_quality,
         "sourceLastCheckedAt": cache.get("sourceLastCheckedAt") or cache.get("generatedAt"),
         "cacheAgeHours": cache_age_hours,
+        "refreshDelayMinutes": refresh_delay_minutes,
         "financialFreshness": financial_freshness,
     }
 
@@ -147,6 +186,11 @@ def main(argv: list[str] | None = None) -> int:
         "--max-cache-age-hours",
         type=float,
         help="Fail when cache.sourceLastCheckedAt or generatedAt is older than this many hours",
+    )
+    parser.add_argument(
+        "--max-refresh-delay-minutes",
+        type=float,
+        help="Allow this many minutes after cacheStatus.nextRefreshAfter before failing",
     )
     parser.add_argument(
         "--reject-offline-seed",
@@ -162,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             _load_json_url(args.url, args.timeout),
             expected_manifest,
             max_cache_age_hours=args.max_cache_age_hours,
+            max_refresh_delay_minutes=args.max_refresh_delay_minutes,
             reject_offline_seed=args.reject_offline_seed,
         )
     except RuntimeError as exc:

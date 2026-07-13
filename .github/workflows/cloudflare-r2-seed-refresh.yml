@@ -2,7 +2,7 @@ name: Refresh Cloudflare R2 Seed
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   refresh:
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    environment: production
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -28,7 +30,6 @@ jobs:
       FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
       CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
-      # D1 database_id from cloudflare/wrangler.toml (not secret, it's committed)
       CF_D1_DATABASE_ID: c29c7b4a-4a2d-4711-badd-1aaad43ce3b6
       CF_WORKER_HEALTH_URL: ${{ vars.CF_WORKER_HEALTH_URL }}
 
@@ -37,28 +38,32 @@ jobs:
         uses: actions/checkout@v7
         with:
           lfs: true
-
-      # Lightweight pre-check: query D1 via REST API and check health URL.
-      # This runs before npm/pip so empty runs still skip the heavy setup.
       - name: Early exit - check pending jobs without heavy dependencies
         id: early-check
         run: |
           mkdir -p .tmp
           force_args=()
           api_args=()
+          job_check_args=()
           health_args=()
           if [ "$FORCE_REFRESH" = "true" ]; then
             force_args=(--force)
           else
-            if api_result=$(curl -sf --max-time 10 -X POST \
+            set +e
+            curl -sf --max-time 10 -X POST \
               "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${CF_D1_DATABASE_ID}/query" \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' 2>/dev/null); then
-              printf '%s' "$api_result" > .tmp/early-d1.json
+              --data '{"sql":"SELECT COUNT(*) AS cnt FROM refresh_jobs WHERE job_type = '"'"'market_scan'"'"' AND status IN ('"'"'queued'"'"','"'"'running'"'"')"}' \
+              --output .tmp/early-d1.json 2>/dev/null
+            api_status=$?
+            set -e
+            if [ "$api_status" -eq 0 ]; then
               api_args=(--cloudflare-api-json-file .tmp/early-d1.json)
+            else
+              job_check_error="D1 pending-job query unavailable"
+              job_check_args=(--job-check-error "$job_check_error")
             fi
-
             if [ -n "$CF_WORKER_HEALTH_URL" ]; then
               if health=$(curl -sf --max-time 15 "$CF_WORKER_HEALTH_URL" 2>/dev/null); then
                 printf '%s' "$health" > .tmp/early-health.json
@@ -72,8 +77,10 @@ jobs:
           python scripts/r2_refresh_decision.py early-check \
             "${force_args[@]}" \
             "${api_args[@]}" \
+            "${job_check_args[@]}" \
             "${health_args[@]}" \
             --max-cache-age-hours 36 \
+            --refresh-ahead-minutes 60 \
             --github-output "$GITHUB_OUTPUT" \
             --github-step-summary "$GITHUB_STEP_SUMMARY"
 
@@ -100,10 +107,9 @@ jobs:
           npm ci
           pip install -r requirements.txt -c constraints.txt
 
-      - name: Apply D1 migrations
+      - name: Recover orphaned market refresh jobs
         if: steps.early-check.outputs.run_refresh == 'true'
-        run: npx wrangler d1 migrations apply "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml
-
+        run: npx wrangler d1 execute "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml --command "UPDATE refresh_jobs SET status = 'queued', dispatch_status = 'pending', owner_run_id = NULL, started_at = NULL, finished_at = NULL, updated_at = datetime('now'), error = NULL, dispatch_error_code = NULL WHERE job_type = 'market_scan' AND status = 'running';"
       - name: Check pending market refresh jobs
         id: refresh-check
         if: steps.early-check.outputs.run_refresh == 'true'
@@ -125,11 +131,12 @@ jobs:
 
           pending_count="$(python scripts/r2_refresh_decision.py pending-count --json-file .tmp/refresh-job-count.json --fields pending_count)"
 
-          stale_refresh=false
+          stale_refresh="${{ steps.early-check.outputs.stale_refresh }}"
           if [ -n "$CF_WORKER_HEALTH_URL" ]; then
             if python scripts/check_cloudflare_health.py \
               --url "$CF_WORKER_HEALTH_URL" \
               --max-cache-age-hours 36 \
+              --max-refresh-delay-minutes 15 \
               --reject-offline-seed \
               > .tmp/production-health.json 2> .tmp/production-health.err; then
               echo "Production seed freshness is healthy." >> "$GITHUB_STEP_SUMMARY"
@@ -165,15 +172,13 @@ jobs:
           npx wrangler d1 execute "$CF_D1_DATABASE" \
             --remote \
             --config cloudflare/wrangler.toml \
-            --command "UPDATE refresh_jobs SET status = 'running', owner_run_id = '${GITHUB_RUN_ID}', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
+            --command "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', owner_run_id = '${GITHUB_RUN_ID}', dispatch_error_code = NULL, started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
 
       - name: Rebuild seed from official sources
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
-          SEED_ZIP=$(python scripts/seed_utils.py data --print)
-          if [ -n "$SEED_ZIP" ]; then
-            unzip -o "$SEED_ZIP" -d data
-          fi
+          npx wrangler r2 object get "$CF_R2_BUCKET/official/monthly_revenue_history.json" --remote --file .tmp/r2-monthly-revenue-history.json </dev/null || rm -f .tmp/r2-monthly-revenue-history.json
+          python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data --r2-history .tmp/r2-monthly-revenue-history.json
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py
@@ -185,39 +190,31 @@ jobs:
             --max-age-days 3
           cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload rebuilt seed cache to R2
+      - name: Prepare R2 publication backup
+        id: r2-backup
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
           python scripts/cloudflare_seed_upload_plan.py \
             --seed-dir cloudflare/seed \
             --data-dir data \
-            --output-json .tmp/r2-upload-plan.json \
-            --output-tsv .tmp/r2-upload-plan.tsv
-          # 單一物件遇到 Cloudflare API 暫時性錯誤（如 502 Bad Gateway）時，
-          # 以指數退避重試，避免一次抖動就讓整批 seed 上傳失敗。
-          put_with_retry() {
-            object_key="$1"
-            file_path="$2"
-            attempt=1
-            max_attempts=5
-            delay=5
-            while true; do
-              if npx wrangler r2 object put "$CF_R2_BUCKET/$object_key" --remote --file "$file_path" </dev/null; then
-                return 0
-              fi
-              if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "R2 上傳 $object_key 失敗：已重試 $max_attempts 次仍未成功" >&2
-                return 1
-              fi
-              echo "R2 上傳 $object_key 第 $attempt 次失敗，${delay}s 後重試..." >&2
-              sleep "$delay"
-              attempt=$((attempt + 1))
-              delay=$((delay * 2))
-            done
-          }
-          while IFS=$'\t' read -r object_key file_path; do
-            put_with_retry "$object_key" "$file_path"
-          done < .tmp/r2-upload-plan.tsv
+            --output-json .tmp/r2-upload-plan.json
+          python scripts/r2_publication_backup.py backup \
+            --plan-json .tmp/r2-upload-plan.json --bucket "$CF_R2_BUCKET" \
+            --backup-dir .tmp/r2-backup --manifest .tmp/r2-backup/manifest.json
+
+      - name: Preserve R2 publication backup
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: r2-publication-backup-${{ github.run_id }}
+          path: .tmp/r2-backup
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish rebuilt seed cache to R2
+        id: r2-publish
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: python scripts/r2_publication_backup.py publish --plan-json .tmp/r2-upload-plan.json --bucket "$CF_R2_BUCKET"
 
       - name: Verify refreshed production seed
         if: steps.refresh-check.outputs.run_refresh == 'true'
@@ -230,12 +227,18 @@ jobs:
             --url "$CF_WORKER_HEALTH_URL" \
             --manifest cloudflare/seed/manifest.json \
             --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 15 \
             --reject-offline-seed
           python scripts/run_remote_smoke.py \
             --health-url "$CF_WORKER_HEALTH_URL" \
             --manifest cloudflare/seed/manifest.json \
             --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 15 \
             --reject-offline-seed
+
+      - name: Restore previous R2 publication after failure
+        if: failure() && steps.refresh-check.outputs.run_refresh == 'true' && steps.r2-backup.outcome == 'success' && steps.r2-publish.outcome != 'skipped'
+        run: python scripts/r2_publication_backup.py restore --bucket "$CF_R2_BUCKET" --backup-dir .tmp/r2-backup --manifest .tmp/r2-backup/manifest.json
 
       - name: Mark refresh jobs as completed
         if: steps.refresh-check.outputs.run_refresh == 'true'

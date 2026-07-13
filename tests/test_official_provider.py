@@ -298,10 +298,34 @@ def test_official_provider_uses_official_history_for_yoy_annuals_and_inventory(t
                 "updatedAt": "2026-05-13T00:00:00+00:00",
                 "quarters": {
                     "9999": {
-                        "2021Q4": {"stockCode": "9999", "period": "2021Q4", "fiscalYear": 2021, "quarter": 4, "netIncome": 1000.0},
-                        "2022Q4": {"stockCode": "9999", "period": "2022Q4", "fiscalYear": 2022, "quarter": 4, "netIncome": 1200.0},
-                        "2023Q4": {"stockCode": "9999", "period": "2023Q4", "fiscalYear": 2023, "quarter": 4, "netIncome": 1500.0},
-                        "2024Q4": {"stockCode": "9999", "period": "2024Q4", "fiscalYear": 2024, "quarter": 4, "netIncome": 1800.0},
+                        "2021Q4": {
+                            "stockCode": "9999",
+                            "period": "2021Q4",
+                            "fiscalYear": 2021,
+                            "quarter": 4,
+                            "netIncome": 1000.0,
+                        },
+                        "2022Q4": {
+                            "stockCode": "9999",
+                            "period": "2022Q4",
+                            "fiscalYear": 2022,
+                            "quarter": 4,
+                            "netIncome": 1200.0,
+                        },
+                        "2023Q4": {
+                            "stockCode": "9999",
+                            "period": "2023Q4",
+                            "fiscalYear": 2023,
+                            "quarter": 4,
+                            "netIncome": 1500.0,
+                        },
+                        "2024Q4": {
+                            "stockCode": "9999",
+                            "period": "2024Q4",
+                            "fiscalYear": 2024,
+                            "quarter": 4,
+                            "netIncome": 1800.0,
+                        },
                         "2025Q1": {
                             "stockCode": "9999",
                             "period": "2025Q1",
@@ -311,7 +335,13 @@ def test_official_provider_uses_official_history_for_yoy_annuals_and_inventory(t
                             "netIncome": 10000.0,
                             "grossMargin": 35.0,
                         },
-                        "2025Q4": {"stockCode": "9999", "period": "2025Q4", "fiscalYear": 2025, "quarter": 4, "netIncome": 2400.0},
+                        "2025Q4": {
+                            "stockCode": "9999",
+                            "period": "2025Q4",
+                            "fiscalYear": 2025,
+                            "quarter": 4,
+                            "netIncome": 2400.0,
+                        },
                     }
                 },
             },
@@ -424,12 +454,163 @@ class CountingAdapter(FakeOfficialAdapter):
         return super().fetch_company_profiles()
 
 
+class ToggleEmptyProfilesAdapter(FakeOfficialAdapter):
+    def __init__(self):
+        self.return_empty = False
+
+    def fetch_company_profiles(self):
+        if self.return_empty:
+            return []
+        return super().fetch_company_profiles()
+
+
+class ToggleIncompleteProfilesAdapter(FakeOfficialAdapter):
+    def __init__(self):
+        self.mode = "complete"
+
+    def fetch_company_profiles(self):
+        profiles = super().fetch_company_profiles()
+        profiles.append(
+            OfficialCompanyProfileRow(
+                stockCode="6666",
+                companyName="TPEX company",
+                companyShortName="TPEX",
+                market="TPEX",
+                industryName="Technology",
+                industryCode="24",
+                reportDate="1150512",
+            )
+        )
+        if self.mode == "twse_only":
+            return [profile for profile in profiles if profile.market == "TWSE"]
+        if self.mode == "invalid":
+            return [
+                OfficialCompanyProfileRow(
+                    stockCode="not-a-code",
+                    companyName="Invalid",
+                    companyShortName="Invalid",
+                    market="TWSE",
+                    industryName="Unknown",
+                    industryCode="00",
+                    reportDate="1150512",
+                )
+            ]
+        return profiles
+
+
 def test_refresh_companies_skips_when_cache_is_fresh(tmp_path):
     adapter = CountingAdapter()
     provider = _provider(tmp_path, adapter=adapter)
     provider.refresh_companies()
     provider.refresh_companies()  # cache still fresh -> outer guard returns early
     assert adapter.profile_calls == 1
+
+
+def test_refresh_companies_keeps_last_known_good_on_empty_response(tmp_path):
+    adapter = ToggleEmptyProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh_companies()
+
+    adapter.return_empty = True
+    provider.refresh_companies(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == ["2888", "9999"]
+    status = provider.status()
+    assert status["lastError"] == "official company profile refresh returned no rows"
+    assert status["sourceStatus"]["companyProfiles"] == 0
+
+
+def test_refresh_companies_cold_empty_response_is_observable(tmp_path):
+    adapter = ToggleEmptyProfilesAdapter()
+    adapter.return_empty = True
+    provider = _provider(tmp_path, adapter=adapter)
+
+    assert provider.list_companies() == []
+    status = provider.status()
+    assert status["companies"] == 0
+    assert status["lastError"] == "official company profile refresh returned no rows"
+    assert status["sourceStatus"]["companyProfiles"] == 0
+
+
+def test_refresh_companies_keeps_complete_lkg_when_a_core_market_disappears(tmp_path):
+    adapter = ToggleIncompleteProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh_companies()
+
+    adapter.mode = "twse_only"
+    provider.refresh_companies(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == ["2888", "6666", "9999"]
+    status = provider.status()
+    assert "missing previously cached core markets: TPEX" in status["lastError"]
+    assert status["sourceStatus"]["companyProfiles"] == 2
+    assert status["sourceStatus"]["companyProfilesNormalized"] == 2
+    assert status["sourceStatus"]["companyProfilesByMarket"] == {"TPEX": 0, "TWSE": 2}
+    assert status["sourceStatus"]["companyProfilesAccepted"] is False
+
+
+def test_refresh_companies_keeps_lkg_when_nonempty_profiles_normalize_to_zero(tmp_path):
+    adapter = ToggleIncompleteProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh_companies()
+
+    adapter.mode = "invalid"
+    provider.refresh_companies(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == ["2888", "6666", "9999"]
+    status = provider.status()
+    assert "no valid rows after normalization" in status["lastError"]
+    assert status["sourceStatus"]["companyProfiles"] == 1
+    assert status["sourceStatus"]["companyProfilesNormalized"] == 0
+    assert status["sourceStatus"]["companyProfilesAccepted"] is False
+
+
+def test_refresh_companies_cold_nonempty_invalid_response_is_observable(tmp_path):
+    adapter = ToggleIncompleteProfilesAdapter()
+    adapter.mode = "invalid"
+    provider = _provider(tmp_path, adapter=adapter)
+
+    assert provider.list_companies() == []
+    status = provider.status()
+    assert "no valid rows after normalization" in status["lastError"]
+    assert status["sourceStatus"]["companyProfiles"] == 1
+    assert status["sourceStatus"]["companyProfilesNormalized"] == 0
+
+
+def test_full_refresh_keeps_last_known_good_on_empty_profiles(tmp_path):
+    adapter = ToggleEmptyProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh()
+
+    adapter.return_empty = True
+    provider.refresh(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == ["2888", "9999"]
+    assert [
+        snapshot.company.stockCode for snapshot in provider.list_snapshots(ScannerSettings(use_mock_data=False))
+    ] == ["9999"]
+    status = provider.status()
+    assert status["lastError"] == "official company profile refresh returned no rows"
+    assert status["sourceStatus"]["companyProfiles"] == 0
+
+
+def test_full_refresh_keeps_last_known_good_when_a_core_market_disappears(tmp_path):
+    adapter = ToggleIncompleteProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh()
+    expected_companies = [company.stockCode for company in provider.list_companies()]
+    expected_snapshots = [
+        snapshot.company.stockCode for snapshot in provider.list_snapshots(ScannerSettings(use_mock_data=False))
+    ]
+
+    adapter.mode = "twse_only"
+    provider.refresh(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == expected_companies
+    assert [
+        snapshot.company.stockCode for snapshot in provider.list_snapshots(ScannerSettings(use_mock_data=False))
+    ] == expected_snapshots
+    assert "missing previously cached core markets: TPEX" in provider.status()["lastError"]
 
 
 def test_refresh_companies_inner_guard_short_circuits(tmp_path, monkeypatch):
@@ -501,7 +682,13 @@ def test_refresh_falls_back_to_history_latest_quarter(tmp_path):
                 "updatedAt": "2026-05-13T00:00:00+00:00",
                 "quarters": {
                     "9999": {
-                        "2025Q4": {"stockCode": "9999", "period": "2025Q4", "fiscalYear": 2025, "quarter": 4, "netIncome": 2400.0},
+                        "2025Q4": {
+                            "stockCode": "9999",
+                            "period": "2025Q4",
+                            "fiscalYear": 2025,
+                            "quarter": 4,
+                            "netIncome": 2400.0,
+                        },
                     }
                 },
             },
