@@ -671,10 +671,14 @@ Execution evidence (2026-07-13): commit `4bf8c89`; the focused atomic enqueue ga
 - Modify: `scripts/check_cloudflare_cors.py`
 - Modify: `frontend/api_client.js`
 - Modify: `frontend/market_query.js`
+- Create: `frontend/market_refresh.js`
 - Modify: `frontend/app.js`
+- Modify: `frontend/index.html`
+- Modify: `scripts/check_code_size_budgets.py`
 - Modify: `tests/test_cloudflare_worker.py`
 - Modify: `tests/test_cloudflare_cors_check.py`
 - Modify: `tests/test_api_worker_contracts.py`
+- Modify: `tests/test_frontend_hygiene.py`
 - Modify: `tests/test_frontend_parser.py`
 - Modify: `tests/e2e/smoke.spec.ts`
 
@@ -687,7 +691,7 @@ Execution evidence (2026-07-13): commit `4bf8c89`; the focused atomic enqueue ga
 - Frontend constraint: add refresh/polling behavior in a dedicated module; do not raise the current `app.js` or `market_query.js` budgets or remove more formatting whitespace to make it fit.
 - Idempotency constraint: after any successful command response, poll only its returned `jobId`; do not POST again while that job is queued or running. Different client keys coalesce only while the same cache job is active and are not permanent replay aliases.
 
-- [ ] **Step 1: Write command/status/CORS tests**
+- [x] **Step 1: Write command/status/CORS tests**
 
 Cover CSRF rejection; valid 202 payload; no `entry/watch/excluded`; `Location`; same-key reuse; invalid idempotency key; status 404; error redaction; no-store; legacy compatibility; OPTIONS accepting `Idempotency-Key`; frontend force refresh polling without clearing last-good rows; and the explicit contract that a coalesced loser key may create a new job if it is submitted again only after the shared active job has become terminal.
 
@@ -701,7 +705,7 @@ def test_refresh_command_returns_202_without_market_payload(worker, csrf_request
     assert response.headers.get("Location") == body["statusUrl"]
 ```
 
-- [ ] **Step 2: Run RED command/status tests**
+- [x] **Step 2: Run RED command/status tests**
 
 Run:
 
@@ -712,7 +716,7 @@ npm.cmd run test:e2e -- --grep "refresh command|refresh polling"
 
 Expected: new paths and CORS header are absent.
 
-- [ ] **Step 3: Implement safe command and status responses**
+- [x] **Step 3: Implement safe command and status responses**
 
 Command response contract:
 
@@ -734,11 +738,11 @@ Deprecation: true
 Link: </api/scan/market/refresh>; rel="successor-version"
 ```
 
-- [ ] **Step 4: Integrate frontend command polling**
+- [x] **Step 4: Integrate frontend command polling**
 
 Only v2 mode uses the command endpoint. Generate one client key per user action and reuse it only until a command response is received. After a successful response, do not POST again: poll the returned `jobId` with bounded delays `[1000, 2000, 4000, 8000, 15000]`. Stop on `success`, `failed`, tab abort, or 60 seconds. A queued/running result keeps current pages visible. Success reloads the pointer and clears page cache only if generation changes.
 
-- [ ] **Step 5: Run GREEN command/status verification**
+- [x] **Step 5: Run GREEN command/status verification**
 
 Run:
 
@@ -748,20 +752,23 @@ npm.cmd run lint
 npm.cmd run format:check
 npm.cmd run test:e2e
 python scripts\check_frontend_hygiene.py
+python scripts\check_code_size_budgets.py
 npx.cmd wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir (Join-Path $env:TEMP 'stock-worker-plan-b-task6')
 git diff --check
 ```
 
 Expected: all commands exit `0`; new POST is 202/no payload, polling preserves last-good UI, legacy POST still passes.
 
-- [ ] **Step 6: Review and commit Task 6**
+- [x] **Step 6: Review and commit Task 6**
 
 After security/API review and a fresh Step 5:
 
 ```powershell
-git add cloudflare\worker_refresh_jobs.py cloudflare\worker.py cloudflare\worker_observability.py scripts\check_cloudflare_cors.py frontend\api_client.js frontend\market_query.js frontend\app.js tests\test_cloudflare_worker.py tests\test_cloudflare_cors_check.py tests\test_api_worker_contracts.py tests\test_frontend_parser.py tests\e2e\smoke.spec.ts
+git add cloudflare\worker_refresh_jobs.py cloudflare\worker.py cloudflare\worker_observability.py scripts\check_cloudflare_cors.py scripts\check_code_size_budgets.py frontend\api_client.js frontend\market_query.js frontend\market_refresh.js frontend\app.js frontend\index.html tests\test_cloudflare_worker.py tests\test_cloudflare_cors_check.py tests\test_api_worker_contracts.py tests\test_frontend_hygiene.py tests\test_frontend_parser.py tests\e2e\smoke.spec.ts
 git commit -m "feat: separate market refresh commands"
 ```
+
+Execution evidence (2026-07-13): commit `4ee7c08`; the RED selector failed `12` tests with `6` passing and the desktop/mobile refresh E2E failed `2/2` before implementation. The expanded GREEN selector passed `41/41`; the full Python gate passed `960` with `1` skipped from `961 collected`; the full Playwright gate passed `35` with `1` skipped, and the focused refresh command gate passed `2/2` on Chromium desktop/mobile. ESLint, Prettier, Ruff, Node syntax, frontend hygiene, code-size budgets, `git diff --check`, and the Wrangler `4.103.0` bundle dry-run exited `0`. A real foreground Wrangler `4.110.0` Python Worker with an isolated local D1 and migrations `0001` through `0003` returned exact command HTTP `202` with matching `Location` and `no-store`, status HTTP `200` with `no-store`, the same job for a repeated idempotency key, and HTTP `404` for an uppercase/nonconforming job ID. Independent specification/security review reported Critical `0`, Important `1`, Minor `1`, Ready for local commit `Yes`, and Ready for deployment `No`. The Important release blocker is that CSRF/CORS is not authorization: the public command needs a server-side persisted global cooldown/rate/freshness or authorization gate, with terminal-cycle abuse tests, before this endpoint or Task 8 can be deployed. The minor note is narrow frontend line-budget headroom. No push or deployment was performed.
 
 ---
 
@@ -851,10 +858,12 @@ git commit -m "feat: track refresh dispatch state"
 - Create: `cloudflare/worker_refresh_control.py`
 - Create: `tests/test_cloudflare_refresh_control.py`
 - Modify: `cloudflare/worker.py`
+- Modify: `cloudflare/worker_refresh_jobs.py`
 - Modify: `cloudflare/wrangler.toml`
 - Modify: `scripts/check_cloudflare_worker_secrets.py`
 - Modify: `scripts/run_wrangler_dev_smoke.py`
 - Modify: `tests/test_wrangler_dev_smoke.py`
+- Modify: `tests/test_cloudflare_worker.py`
 - Modify: `.github/workflows/cloudflare-deploy.yml`
 - Modify: `scripts/check_code_size_budgets.py`
 
@@ -864,10 +873,11 @@ git commit -m "feat: track refresh dispatch state"
 - Consumes: Task 5 atomic enqueue and Task 7 dispatch state.
 - Consumes secret: `GITHUB_ACTIONS_DISPATCH_TOKEN` only when `GITHUB_DISPATCH_ENABLED=true`.
 - Consumes vars: `GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_FILE`, `GITHUB_WORKFLOW_REF`, `GITHUB_DISPATCH_ENABLED`.
+- Release blocker: the public refresh command remains unauthenticated; CSRF/CORS must never be treated as authorization. Before any Task 6 endpoint or scheduled dispatcher deployment, add a persisted server-side global cooldown/rate/freshness gate (or stronger authorization) that applies across cache generations and terminal jobs.
 
 - [ ] **Step 1: Write due/dispatch/state-machine tests**
 
-Cover fresh/no-op, ahead-window enqueue, dispatch disabled, pending conditional claim, GitHub 2xx success, 4xx failed, network/5xx unknown, no automatic retry after ambiguous response, safe error codes, and no secret/header/body in logs.
+Cover fresh/no-op, ahead-window enqueue, dispatch disabled, pending conditional claim, GitHub 2xx success, 4xx failed, network/5xx unknown, no automatic retry after ambiguous response, safe error codes, and no secret/header/body in logs. Add abuse regressions proving that distinct anonymous/manual keys submitted after each terminal transition cannot create or dispatch another expensive rebuild inside the protected global window, that changing cache generation does not bypass the window, and that the fixed CSRF header alone grants no override. The 15-minute GitHub fallback may consume only jobs admitted by this authoritative gate.
 
 ```python
 async def test_ambiguous_dispatch_keeps_job_queued_for_schedule_fallback(fake_control):
@@ -896,6 +906,7 @@ Scheduled flow:
 read public/manifest.json
 derive cache status with existing policy
 return fresh unless stale or within 60-minute ahead window
+enforce the persisted cross-generation public-command cooldown before admitting paid work
 atomic enqueue/reuse
 conditionally update pending -> dispatching and attempts + 1
 if dispatch disabled: restore pending and return disabled
@@ -915,6 +926,8 @@ Send only:
 
 Do not retry the GitHub request because a timeout may occur after GitHub accepted it.
 
+The abuse gate is a production release invariant, not an in-memory browser debounce. It must query persisted refresh history independently of client keys and cache generation. At minimum, successful/queued/running public work is globally bounded by the active cache policy interval; failed work receives a bounded retry cooldown. A rejected command returns a safe `429` with `Retry-After`. Any operator override must use real server-side authorization or a secret-gated control path and must not be enabled by the public CSRF value.
+
 - [ ] **Step 4: Configure cron and secret boundaries**
 
 Keep the committed production cron empty so deploying additive code cannot enqueue or mutate production state:
@@ -924,7 +937,7 @@ Keep the committed production cron empty so deploying additive code cannot enque
 crons = []
 ```
 
-Task 10's release-config renderer may produce `crons = ["2,17,32,47 * * * *"]` only with an explicit `--enable-production-cron` argument. That authorized cron runs five minutes before the existing GitHub fallback schedule. Deploy checks require `GITHUB_ACTIONS_DISPATCH_TOKEN` only when dispatch is enabled. Local smoke forces dispatch disabled and uses Wrangler `--test-scheduled`; it never reads a real token.
+Task 10's release-config renderer may produce `crons = ["2,17,32,47 * * * *"]` only with an explicit `--enable-production-cron` argument. That authorized cron runs five minutes before the existing GitHub fallback schedule. Deploy checks require `GITHUB_ACTIONS_DISPATCH_TOKEN` only when dispatch is enabled. Local smoke forces dispatch disabled and uses Wrangler `--test-scheduled`; it never reads a real token. Extend the local smoke to apply all migrations to an isolated persistence directory and exercise the real Python Worker command/status routes: POST `202` with exact payload, `Location`, and `no-store`; GET returned status `200` and `no-store`; repeated key returns the same job; malformed/uppercase job ID returns `404`.
 
 - [ ] **Step 5: Run GREEN scheduled verification**
 
@@ -948,7 +961,7 @@ Expected: all commands exit `0`; mock dispatch occurs once; local runtime never 
 After security/Cloudflare review and fresh Step 5:
 
 ```powershell
-git add cloudflare\worker_refresh_control.py cloudflare\worker.py cloudflare\wrangler.toml scripts\check_cloudflare_worker_secrets.py scripts\run_wrangler_dev_smoke.py scripts\check_code_size_budgets.py .github\workflows\cloudflare-deploy.yml tests\test_cloudflare_refresh_control.py tests\test_wrangler_dev_smoke.py
+git add cloudflare\worker_refresh_control.py cloudflare\worker.py cloudflare\worker_refresh_jobs.py cloudflare\wrangler.toml scripts\check_cloudflare_worker_secrets.py scripts\run_wrangler_dev_smoke.py scripts\check_code_size_budgets.py .github\workflows\cloudflare-deploy.yml tests\test_cloudflare_refresh_control.py tests\test_cloudflare_worker.py tests\test_wrangler_dev_smoke.py
 git commit -m "feat: dispatch due refresh jobs"
 ```
 
