@@ -561,7 +561,7 @@ Execution evidence (2026-07-13): commit `d0392cc`; focused frontend gate `50 pas
 - Produces: `enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now) -> dict`.
 - Adds nullable `idempotency_key` and unique indexes for key and active `(job_type, cache_key)`.
 
-- [ ] **Step 1: Write migration and concurrent enqueue tests**
+- [x] **Step 1: Write migration and concurrent enqueue tests**
 
 Cover duplicate cleanup before index creation, nullable legacy rows, same client key reuse, different client keys sharing one active cache job, new job after success, invalid key rejection, and 10 concurrent enqueue attempts yielding one active row.
 
@@ -577,7 +577,7 @@ async def test_concurrent_enqueue_keeps_one_active_job(fake_api, manifest):
     assert fake_api.db.active_job_count("market_scan") == 1
 ```
 
-- [ ] **Step 2: Run RED D1 tests**
+- [x] **Step 2: Run RED D1 tests**
 
 Run:
 
@@ -587,7 +587,7 @@ python -m pytest tests\test_cloudflare_migrations.py tests\test_cloudflare_worke
 
 Expected: migration and atomic enqueue interfaces do not exist; concurrency test creates duplicates.
 
-- [ ] **Step 3: Add migration and key derivation**
+- [x] **Step 3: Add migration and key derivation**
 
 Migration `0003_refresh_jobs_idempotency.sql` must mark all but the newest active row per `(job_type, cache_key)` as failed/superseded before creating indexes:
 
@@ -621,7 +621,7 @@ WHERE status IN ('queued', 'running');
 
 The test must execute this SQL against local SQLite semantics, not only search strings.
 
-- [ ] **Step 4: Implement insert-or-ignore and read-back**
+- [x] **Step 4: Implement insert-or-ignore and read-back**
 
 Use one deterministic hashed key and no request-path cleanup delete:
 
@@ -633,7 +633,7 @@ VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
 
 Then read by `idempotency_key`; if absent, read the active `(job_type, cache_key)`. Never return an ID that was not read back from D1.
 
-- [ ] **Step 5: Run GREEN D1 and local migration verification**
+- [x] **Step 5: Run GREEN D1 and local migration verification**
 
 Run:
 
@@ -648,7 +648,7 @@ git diff --check
 
 Expected: one active unique index, one idempotency unique index, all focused tests pass.
 
-- [ ] **Step 6: Review and commit Task 5**
+- [x] **Step 6: Review and commit Task 5**
 
 After a concurrency-focused review and fresh Step 5:
 
@@ -656,6 +656,8 @@ After a concurrency-focused review and fresh Step 5:
 git add cloudflare\migrations\0003_refresh_jobs_idempotency.sql cloudflare\schema.sql cloudflare\worker_refresh_jobs.py cloudflare\worker.py scripts\check_code_size_budgets.py tests\test_cloudflare_migrations.py tests\test_cloudflare_worker.py
 git commit -m "fix: enqueue refresh jobs atomically"
 ```
+
+Execution evidence (2026-07-13): commit `4bf8c89`; the focused atomic enqueue gate passed `28/28`, the related refresh/cache/scan gate passed `34/34`, migration tests passed `5/5`, Worker tests passed `131/131`, and the full Python gate passed `934` with `1` skipped from `935 collected`. A fresh Wrangler `4.103.0` local D1 applied migrations `0001` through `0003`, exposed both unique partial indexes, and a second apply reported `No migrations to apply`; the Worker bundle dry-run also exited `0` and included the new module and migration. Ruff, code-size budgets, and `git diff --check` exited `0`. Independent concurrency review reported Critical `0`, Important `0`, Minor `0`, Ready `Yes`; a real multi-connection SQLite 10-way probe returned one job ID, one active row, and only a 64-character hashed key. Task 5 intentionally guarantees coalescing while a `(job_type, cache_key)` job is active, not a permanent alias for every losing client key. Task 6 must poll only the returned job ID after a successful command response, and Task 10 must document and canary-check this bounded semantic plus the migration-before-Worker compatibility window. No push or deployment was performed.
 
 ---
 
@@ -683,10 +685,11 @@ git commit -m "fix: enqueue refresh jobs atomically"
 - Consumes: `Idempotency-Key` with `1..80` ASCII `[A-Za-z0-9._:-]` characters.
 - Keeps: legacy POST response, adding only deprecation/successor headers.
 - Frontend constraint: add refresh/polling behavior in a dedicated module; do not raise the current `app.js` or `market_query.js` budgets or remove more formatting whitespace to make it fit.
+- Idempotency constraint: after any successful command response, poll only its returned `jobId`; do not POST again while that job is queued or running. Different client keys coalesce only while the same cache job is active and are not permanent replay aliases.
 
 - [ ] **Step 1: Write command/status/CORS tests**
 
-Cover CSRF rejection; valid 202 payload; no `entry/watch/excluded`; `Location`; same-key reuse; invalid idempotency key; status 404; error redaction; no-store; legacy compatibility; OPTIONS accepting `Idempotency-Key`; and frontend force refresh polling without clearing last-good rows.
+Cover CSRF rejection; valid 202 payload; no `entry/watch/excluded`; `Location`; same-key reuse; invalid idempotency key; status 404; error redaction; no-store; legacy compatibility; OPTIONS accepting `Idempotency-Key`; frontend force refresh polling without clearing last-good rows; and the explicit contract that a coalesced loser key may create a new job if it is submitted again only after the shared active job has become terminal.
 
 ```python
 def test_refresh_command_returns_202_without_market_payload(worker, csrf_request):
@@ -733,7 +736,7 @@ Link: </api/scan/market/refresh>; rel="successor-version"
 
 - [ ] **Step 4: Integrate frontend command polling**
 
-Only v2 mode uses the command endpoint. Generate one client key per user action, reuse it for any explicit retry, and poll status with bounded delays `[1000, 2000, 4000, 8000, 15000]`. Stop on `success`, `failed`, tab abort, or 60 seconds. A queued/running result keeps current pages visible. Success reloads the pointer and clears page cache only if generation changes.
+Only v2 mode uses the command endpoint. Generate one client key per user action and reuse it only until a command response is received. After a successful response, do not POST again: poll the returned `jobId` with bounded delays `[1000, 2000, 4000, 8000, 15000]`. Stop on `success`, `failed`, tab abort, or 60 seconds. A queued/running result keeps current pages visible. Success reloads the pointer and clears page cache only if generation changes.
 
 - [ ] **Step 5: Run GREEN command/status verification**
 
@@ -1262,6 +1265,8 @@ Document this exact release order:
 7. observe one full cache window: financial `2h`, monthly `3h`, routine `12h`;
 8. rollback by rendering, schema-validating, dry-running, and deploying the full production-v1-rollback config with `--enable-production-cron --confirm-production-v1-rollback`; this atomically restores v1 and both cache controls false without deleting v2 artifacts;
 9. retain current and previous immutable generations until the observation gate passes.
+
+Before each Worker rollout that depends on a new D1 migration, apply and verify the migration first, then deploy the matching Worker immediately in the same controlled release window. Monitor legacy Worker `5xx` responses during that short compatibility interval. The staging canary must also submit different client keys concurrently for one cache key and prove there is never more than one `queued/running` row; document this as active-work coalescing, not a permanent per-client-key replay guarantee.
 
 The authorized cron-enable preparation is explicit and produces a full config:
 
