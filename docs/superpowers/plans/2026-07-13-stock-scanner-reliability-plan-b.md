@@ -1115,7 +1115,7 @@ Execution evidence (2026-07-13): commit `6d27626`; the Task 9 RED gate first fai
 - Produces: committed real v2 artifact while retaining legacy files.
 - Documents: additive rollout and exact rollback sequence.
 
-- [ ] **Step 1: Write staging and canary RED tests**
+- [x] **Step 1: Write staging and canary RED tests**
 
 Cover complete staging D1/R2/vars, no production dispatch secret in staging, empty staging cron, full v1/v2 count/identity parity across every page, hash mismatch, oversized index/page, mixed generation, private endpoint cache hit, v2 failure with v1 flag recovery, pointer-last generation switch, and refusal to render a live config from sentinel or production resource IDs. Production profile tests must prove that D1/R2 bindings and all unrelated settings are byte-for-byte equivalent after parsing, while only the explicitly authorized release switches change.
 
@@ -1169,7 +1169,7 @@ def test_production_v2_and_rollback_profiles_change_only_release_switches():
     assert rollback["cache"]["enabled"] is False
 ```
 
-- [ ] **Step 2: Run RED staging/canary tests**
+- [x] **Step 2: Run RED staging/canary tests**
 
 Run:
 
@@ -1179,7 +1179,7 @@ python -m pytest tests\test_market_scan_v2_canary.py tests\test_render_wrangler_
 
 Expected: standalone staging template, release-config renderer, and canary script are absent.
 
-- [ ] **Step 3: Add full standalone release configs with fail-closed sentinels**
+- [x] **Step 3: Add full standalone release configs with fail-closed sentinels**
 
 Commit `cloudflare/wrangler.staging.template.toml` as a full config in the same directory as `worker.py`, so `main="worker.py"` and `migrations_dir="migrations"` resolve correctly. It includes explicit sentinel tokens:
 
@@ -1248,7 +1248,7 @@ The same script reads the complete committed production config and supports thre
 
 Each mode refuses a missing acknowledgement, a different output filename, or any binding mutation. No generated config is committed.
 
-- [ ] **Step 4: Implement the canary CLI and rebuild the real artifact**
+- [x] **Step 4: Implement the canary CLI and rebuild the real artifact**
 
 Canary CLI inputs:
 
@@ -1276,7 +1276,7 @@ python scripts\package_cloudflare_seed_cache.py
 python scripts\validate_cloudflare_seed_inputs.py --zip data\official_cache_seed_2026-05-14.zip --max-age-days 3
 ```
 
-- [ ] **Step 5: Document rollout and rollback**
+- [x] **Step 5: Document rollout and rollback**
 
 Document this exact release order:
 
@@ -1312,7 +1312,7 @@ npx.cmd wrangler deploy --config cloudflare\wrangler.production-v1-rollback.gene
 
 Only after each generated config passes parser/schema checks, Wrangler `>=4.69`, dry-run, exact binding-equivalence tests, and the corresponding release approval may the same command be repeated without `--dry-run`.
 
-- [ ] **Step 6: Run GREEN staging/artifact verification**
+- [x] **Step 6: Run GREEN staging/artifact verification**
 
 Run:
 
@@ -1334,7 +1334,7 @@ git diff --check
 
 Expected: local tests and dry-runs exit `0`; no external resource is created and no production endpoint is mutated.
 
-- [ ] **Step 7: Review and commit Task 10**
+- [x] **Step 7: Review and commit Task 10**
 
 After artifact/security/deployment review and a fresh Step 6:
 
@@ -1342,6 +1342,8 @@ After artifact/security/deployment review and a fresh Step 6:
 git add scripts\check_market_scan_v2_canary.py tests\test_market_scan_v2_canary.py cloudflare\wrangler.staging.template.toml scripts\render_wrangler_release_config.py tests\test_render_wrangler_release_config.py cloudflare\wrangler.toml .gitignore scripts\check_deployment_preflight.py tests\test_deployment_preflight.py scripts\run_remote_smoke.py tests\test_remote_smoke.py docs\current_architecture.md docs\cloudflare_deployment.md docs\seed_artifact_policy.md data\official_cache_seed_2026-05-14.zip data\official_cache_seed_2026-05-14.sha256
 git commit -m "feat: prepare v2 staging rollout"
 ```
+
+Execution evidence (2026-07-13): commit `6162539`; the RED gate first failed because `tests/test_market_scan_v2_canary.py` and the renderer/canary files did not exist. The final implementation added a full staging template, a fail-closed release config renderer, a no-credential v1/v2 canary, production release-default preflight checks, runtime-config remote smoke coverage, rollout/rollback docs, and regenerated the committed bootstrap seed zip with market v2 pointer/pages. The attempted online seed rebuild was intentionally blocked by the existing zero-entry fallback quality gate; no unsafe bypass was made. Instead, the unchanged deterministic legacy seed scan was backfilled into immutable v2 artifacts via the existing market generation contract, then packaged and validated. Final seed validation reported `marketGenerationId=9fc186e52f915c93355e169e`, `marketPageCount=21`, `marketIndexBytes=5865`, `marketMaxPageBytes=155264`, and sha256 sidecar `13A6D391145B1B368620195192C7ACC7F507CECCBC0FE08B5ABE4EA6831B7A0A`. Focused Task 10 tests passed `107/107`; deployment preflight, operational readiness, seed validation, Ruff, and `git diff --check` all exited `0` (`git diff --check` only emitted Windows LF/CRLF warnings). Staging, production-cron, production-v2, and production-v1-rollback generated configs all rendered and passed Wrangler `4.103.0` dry-run. No external resource was created, no push/PR was made, and no production endpoint/config was mutated.
 
 ---
 
@@ -1376,16 +1378,18 @@ curl.exe -sS -o NUL -w "runtime=%{http_code} bytes=%{size_download} time=%{time_
 
 Record final commit, artifact generation/SHA, exact command results, independent review findings, branch/PR state, and the explicit statement `not deployed` in the Plan B execution ledger.
 
+Final local gate evidence (2026-07-13): after Task 10 implementation commit `6162539`, the full Python test suite exited `0` with one existing skip, `npm.cmd run lint` exited `0`, `npm.cmd run format:check` exited `0`, frontend hygiene exited `0`, code-size budgets exited `0`, operational readiness exited `0`, deployment preflight exited `0`, production `cloudflare/wrangler.toml` dry-run exited `0` with `MARKET_SCAN_API_VERSION="v1"`, `EDGE_CACHE_ENABLED="false"`, `GITHUB_DISPATCH_ENABLED="false"`, staging generated config dry-run exited `0` with v2/cache enabled and dispatch disabled, `scripts/run_wrangler_dev_smoke.py` exited `0` with `runtime=cloudflare-python-worker` and refresh status `queued`, and Playwright E2E passed `35` with one existing skip. Branch state: local branch `codex/reliability-hardening`; not pushed, no PR, not deployed.
+
 ## Self-Review Checklist
 
-- [ ] Every B1 requirement maps to Tasks 1–4 and Task 10.
-- [ ] Every B2 requirement maps to Tasks 5–6.
-- [ ] Every B3 requirement maps to Tasks 7–8.
-- [ ] Every B4 requirement maps to Tasks 9–10.
-- [ ] Legacy success/report contracts remain available through the rollout window.
-- [ ] All new code responsibilities live in focused modules under existing size budgets.
-- [ ] Every mutation path is idempotent or explicitly non-retried.
-- [ ] Every public artifact has schema, size, hash, identity, and privacy validation.
-- [ ] Every cacheable route is bounded and every private/error route is no-store.
-- [ ] Staging cannot inherit production D1, R2, cron, or dispatch credentials.
-- [ ] No production mutation is included in local implementation steps.
+- [x] Every B1 requirement maps to Tasks 1–4 and Task 10.
+- [x] Every B2 requirement maps to Tasks 5–6.
+- [x] Every B3 requirement maps to Tasks 7–8.
+- [x] Every B4 requirement maps to Tasks 9–10.
+- [x] Legacy success/report contracts remain available through the rollout window.
+- [x] All new code responsibilities live in focused modules under existing size budgets.
+- [x] Every mutation path is idempotent or explicitly non-retried.
+- [x] Every public artifact has schema, size, hash, identity, and privacy validation.
+- [x] Every cacheable route is bounded and every private/error route is no-store.
+- [x] Staging cannot inherit production D1, R2, cron, or dispatch credentials.
+- [x] No production mutation is included in local implementation steps.
