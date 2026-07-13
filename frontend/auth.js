@@ -8,7 +8,9 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : null, function createAuthHelpers() {
   function normalizeText(value) {
-    return String(value || "").trim().replace(/\s+/g, " ");
+    return String(value || "")
+      .trim()
+      .replace(/\s+/g, " ");
   }
 
   function normalizeAuthUsername(username) {
