@@ -1016,3 +1016,52 @@ curl.exe -sS -X OPTIONS -H "Origin: https://stock-scanner-beta.pages.dev" -H "Ac
 ```
 
 Expected: local gate commands exit 0; current production reads return health 200, market 200, and CORS 204. Record the Plan A final commit, review result, and exact command outputs in the SDD progress ledger before writing the Plan B implementation plan.
+
+## Execution Ledger — 2026-07-13
+
+Plan A is complete and verified locally on branch `codex/reliability-hardening`. The final verified commit is `4c0d293`; no Plan A commit has been pushed, merged, or deployed from this worktree.
+
+Urgent zero-scan hardening commits:
+
+- `1c78ffc fix: restore nonzero financial scans`
+- `10296ab fix: harden financial scan seed publication`
+- `b6f8cd5 style: normalize frontend formatting`
+- `9290321 fix: reject incomplete market coverage`
+- `4c0d293 fix: enforce seed markets unconditionally`
+
+Final seed evidence:
+
+- SHA-256: `804E75F098E0B57E62AF4DFDC5E55430C554B264BD3678D2E8429467F590F302`; sidecar matches.
+- Scan: entry `2`, watch `1713`, excluded `37`, universe `1752`.
+- Companies: total `1980`, TWSE `1089`, TPEX `891`.
+- Revenue continuity: `2026-05` → `2026-06`, `1751` companies.
+- Latest usable financial period: `2026Q1`.
+- Strict ZIP validation passed, including actual payload↔manifest counts, market coverage, SHA, and public-path privacy checks.
+
+Final local gate evidence at `4c0d293`:
+
+- `python -m pytest -q`: exit `0`; `735 tests collected` and all passed.
+- `npm run lint`: exit `0`.
+- `npm run format:check`: exit `0`.
+- `python scripts/check_frontend_hygiene.py`: exit `0`; zero dangerous `innerHTML` assignments.
+- `python scripts/check_operational_readiness.py`: exit `0`.
+- `python scripts/check_deployment_preflight.py`: exit `0`.
+- `python -m ruff check .`: exit `0`.
+- Wrangler `deploy --dry-run`: exit `0`; upload `75.14 KiB`, gzip `17.58 KiB`.
+- `python scripts/run_wrangler_dev_smoke.py`: exit `0`; local runtime `cloudflare-python-worker`, expected local status `degraded` because the smoke has no production R2 seed.
+- `npm run test:e2e`: exit `0`; `23 passed`, `1 skipped`. Windows emitted a non-fatal connection-reset message while terminating the local test server after Playwright completed.
+
+Independent final review of `9290321..4c0d293`:
+
+- Critical `0`, Important `0`, Minor `0`.
+- Spec compliance: Yes.
+- Ready: Yes.
+- Reviewer reproduced an all-`OTHER` 1700-company seed and confirmed the build gate now rejects it before publication.
+
+Read-only production smoke at the completion boundary:
+
+- Worker health: HTTP `200`, `1928` bytes.
+- Legacy market query: HTTP `200`, `2881825` bytes.
+- CORS preflight: HTTP `204`.
+- Currently deployed legacy scan remains entry/watch/excluded `0/1715/37`, universe `1752`, generated at `2026-07-12T21:55:04.997001+00:00`.
+- Production still reports freshness period `2026Q1` and active filing period `2026Q2`; the local fixed seed and frontend behavior are not live until a separately authorized production release.
