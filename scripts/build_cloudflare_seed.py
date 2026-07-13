@@ -59,6 +59,8 @@ def _data_sources_status_payload() -> dict:
 
 
 MIN_SEED_COMPANY_SIZE = int(os.getenv("MIN_SEED_COMPANY_SIZE", "1000"))
+MIN_SEED_TWSE_COMPANIES = int(os.getenv("MIN_SEED_TWSE_COMPANIES", "1000"))
+MIN_SEED_TPEX_COMPANIES = int(os.getenv("MIN_SEED_TPEX_COMPANIES", "700"))
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
 MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
 MAX_X2_MISSING_RATIO = min(1.0, max(0.0, float(os.getenv("MAX_X2_MISSING_RATIO", "0.10"))))
@@ -379,6 +381,7 @@ def seed_diagnostics(scan_payload: dict, companies: list, analysis_by_code: dict
     return {
         "universeSize": universe_size,
         "companies": len(companies),
+        "companiesByMarket": company_market_counts(companies),
         "analysis": len(analysis_by_code),
         "entry": len(scan_payload.get("entry", [])),
         "watch": len(scan_payload.get("watch", [])),
@@ -400,6 +403,17 @@ def assert_seed_quality(
             "Refusing to publish an undersized company seed: "
             + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
         )
+    companies_by_market = diagnostics["companiesByMarket"]
+    if sum(companies_by_market.values()) > 0:
+        for market, minimum in (
+            ("TWSE", MIN_SEED_TWSE_COMPANIES),
+            ("TPEX", MIN_SEED_TPEX_COMPANIES),
+        ):
+            if companies_by_market[market] < minimum:
+                raise RuntimeError(
+                    f"Refusing to publish undersized {market} company market coverage: "
+                    + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+                )
     if diagnostics["universeSize"] < MIN_SEED_UNIVERSE_SIZE:
         raise RuntimeError(
             "Refusing to publish an undersized market scan seed: "
@@ -484,8 +498,13 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
 
     manifest = json.loads((OUT_DIR / "manifest.json").read_text(encoding="utf-8"))
     scan_payload = json.loads((OUT_DIR / "market_scan_latest.json").read_text(encoding="utf-8"))
+    companies_payload = json.loads((OUT_DIR / "companies.json").read_text(encoding="utf-8"))
+    companies = companies_payload.get("items") if isinstance(companies_payload, dict) else None
+    if not isinstance(companies, list):
+        raise RuntimeError("Offline seed companies.json must contain an items list")
     write_market_scan_summary(scan_payload)
     manifest = add_market_scan_summary_to_manifest(manifest)
+    manifest["companiesByMarket"] = company_market_counts(companies)
     counts = manifest.get("counts", {})
     assert_seed_quality(
         {
@@ -494,7 +513,7 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
             "watch": [None] * int(counts.get("watch") or 0),
             "excluded": [None] * int(counts.get("excluded") or 0),
         },
-        [None] * int(counts.get("companies") or 0),
+        companies,
         {str(index): None for index in range(int(counts.get("analysis") or 0))},
         "cloudflare_seed_cache",
     )
@@ -528,6 +547,15 @@ def merge_seed_companies(companies: list[Company], snapshots: list[FundamentalSn
     by_code = {snapshot.company.stockCode: snapshot.company for snapshot in snapshots}
     by_code.update({company.stockCode: company for company in companies})
     return [by_code[stock_code] for stock_code in sorted(by_code)]
+
+
+def company_market_counts(companies: list) -> dict[str, int]:
+    counts = {"TWSE": 0, "TPEX": 0}
+    for company in companies:
+        market = company.get("market") if isinstance(company, dict) else getattr(company, "market", None)
+        if market in counts:
+            counts[market] += 1
+    return counts
 
 
 def main() -> None:
@@ -611,6 +639,7 @@ def main() -> None:
         "nextRefreshAfter": next_refresh.isoformat(),
         "latestRevenuePeriod": scan_payload.get("filingContext", {}).get("monthlyRevenuePeriod"),
         "latestFinancialPeriod": latest_financial_period(scan_payload),
+        "companiesByMarket": company_market_counts(companies),
         "financialFreshness": scan_payload.get("financialFreshness"),
         "cachePolicy": policy,
         "files": [
@@ -637,6 +666,10 @@ def main() -> None:
         },
         "qualityGates": {
             "minimumCompanySize": MIN_SEED_COMPANY_SIZE,
+            "minimumCompaniesByMarket": {
+                "TWSE": MIN_SEED_TWSE_COMPANIES,
+                "TPEX": MIN_SEED_TPEX_COMPANIES,
+            },
             "minimumUniverseSize": MIN_SEED_UNIVERSE_SIZE,
             "minimumAnalysisSize": MIN_SEED_ANALYSIS_SIZE,
             "maximumX2MissingRatio": MAX_X2_MISSING_RATIO,

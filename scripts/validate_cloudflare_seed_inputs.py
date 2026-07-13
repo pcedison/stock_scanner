@@ -33,6 +33,8 @@ REQUIRED_ENTRIES = {
 MIN_HISTORY_COMPANIES = 1000
 MIN_HISTORY_ROWS = 5000
 MIN_SEED_COMPANIES = 1000
+MIN_SEED_TWSE_COMPANIES = 1000
+MIN_SEED_TPEX_COMPANIES = 700
 MIN_SEED_ANALYSIS = 1000
 MIN_CONSECUTIVE_MONTHLY_COMPANIES = 1000
 MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded")
@@ -87,9 +89,11 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         _load_json_from_zip(archive, "official_history_backfill_progress.json")
         manifest = _load_json_from_zip(archive, "cloudflare_seed/manifest.json")
         market_scan = _load_json_from_zip(archive, "cloudflare_seed/market_scan_latest.json")
+        companies_payload = _load_json_from_zip(archive, "cloudflare_seed/companies.json")
         loaded_public_payloads = {
             "cloudflare_seed/manifest.json": manifest,
             "cloudflare_seed/market_scan_latest.json": market_scan,
+            "cloudflare_seed/companies.json": companies_payload,
         }
         public_json_entries = sorted(
             name for name in names if name.startswith("cloudflare_seed/") and name.endswith(".json")
@@ -147,6 +151,16 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
 
     if not isinstance(manifest, dict):
         raise ValueError("cloudflare_seed/manifest.json must be a JSON object")
+    if not isinstance(companies_payload, dict) or not isinstance(companies_payload.get("items"), list):
+        raise ValueError("cloudflare_seed/companies.json must contain an items list")
+    company_items = companies_payload["items"]
+    companies_by_market = {"TWSE": 0, "TPEX": 0}
+    for index, company in enumerate(company_items):
+        if not isinstance(company, dict):
+            raise ValueError(f"cloudflare_seed/companies.json items[{index}] must be a JSON object")
+        market = company.get("market")
+        if market in companies_by_market:
+            companies_by_market[market] += 1
     if not isinstance(market_scan, dict):
         raise ValueError("cloudflare_seed/market_scan_latest.json must be a JSON object")
     actual_category_counts: dict[str, int] = {}
@@ -171,6 +185,26 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
     if not isinstance(counts, dict):
         raise ValueError("cloudflare_seed/manifest.json must contain a counts object")
     seed_companies = _manifest_count(counts, "companies", "manifest counts")
+    if seed_companies != len(company_items):
+        raise ValueError(
+            f"Cloudflare manifest counts.companies {seed_companies} "
+            f"does not match companies.json items {len(company_items)}"
+        )
+    manifest_companies_by_market = manifest.get("companiesByMarket")
+    if manifest_companies_by_market is not None:
+        if not isinstance(manifest_companies_by_market, dict):
+            raise ValueError("cloudflare_seed/manifest.json companiesByMarket must be a JSON object")
+        for market, actual_count in companies_by_market.items():
+            manifest_count = _manifest_count(
+                manifest_companies_by_market,
+                market,
+                "manifest companiesByMarket",
+            )
+            if manifest_count != actual_count:
+                raise ValueError(
+                    "Cloudflare manifest companiesByMarket does not match companies.json: "
+                    f"{market} {manifest_count} != {actual_count}"
+                )
     seed_analysis = _manifest_count(counts, "analysis", "manifest counts")
     seed_holding_analysis = _manifest_count(counts, "holdingAnalysis", "manifest counts")
     manifest_category_counts = {
@@ -206,6 +240,15 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
             )
     if seed_companies < MIN_SEED_COMPANIES:
         raise ValueError(f"Cloudflare seed has only {seed_companies} companies; expected at least {MIN_SEED_COMPANIES}")
+    for market, minimum in (
+        ("TWSE", MIN_SEED_TWSE_COMPANIES),
+        ("TPEX", MIN_SEED_TPEX_COMPANIES),
+    ):
+        if companies_by_market[market] < minimum:
+            raise ValueError(
+                f"Cloudflare seed {market} company coverage {companies_by_market[market]} "
+                f"is below required minimum {minimum}"
+            )
     if seed_analysis < MIN_SEED_ANALYSIS:
         raise ValueError(
             f"Cloudflare seed has only {seed_analysis} analysis rows; expected at least {MIN_SEED_ANALYSIS}"
@@ -228,6 +271,7 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         "previousRevenueHistoryMonth": monthly_coverage["previousMonth"],
         "consecutiveRevenueHistoryCompanies": monthly_coverage["consecutiveCompanies"],
         "seedCompanies": seed_companies,
+        "seedCompaniesByMarket": companies_by_market,
         "seedAnalysis": seed_analysis,
         "seedHoldingAnalysis": seed_holding_analysis,
         "seedUniverse": seed_universe,

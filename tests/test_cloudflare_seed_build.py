@@ -19,6 +19,16 @@ class FakeProvider:
         return {"companies": 0, "monthlySnapshots": 1000, "lastError": "profile endpoint returned no companies"}
 
 
+def _market_companies(twse: int = 1000, tpex: int = 700) -> list[Company]:
+    return [
+        Company(stockCode=f"{100000 + index:06d}", name="TWSE", market="TWSE", industryName="Other")
+        for index in range(twse)
+    ] + [
+        Company(stockCode=f"{200000 + index:06d}", name="TPEX", market="TPEX", industryName="Other")
+        for index in range(tpex)
+    ]
+
+
 def test_merge_seed_companies_unions_snapshot_companies_without_dropping_profiles():
     profile_company = Company(
         stockCode="9999",
@@ -174,6 +184,24 @@ def test_seed_quality_rejects_empty_companies_when_analysis_is_present(monkeypat
         seed_build.assert_seed_quality(scan_payload, [], analysis_by_code, fallback_source=None)
 
 
+def test_seed_quality_rejects_missing_market_company_coverage(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    monkeypatch.setattr(seed_build, "MIN_SEED_COMPANY_SIZE", 3)
+    monkeypatch.setattr(seed_build, "MIN_SEED_TWSE_COMPANIES", 2, raising=False)
+    monkeypatch.setattr(seed_build, "MIN_SEED_TPEX_COMPANIES", 1, raising=False)
+    scan_payload = {
+        "universeSize": 1000,
+        "entry": [],
+        "watch": [{} for _ in range(1000)],
+        "excluded": [],
+    }
+    analysis_by_code = {str(index): {} for index in range(1000)}
+    companies = [SimpleNamespace(market="TWSE") for _ in range(3)]
+
+    with pytest.raises(RuntimeError, match="TPEX company market coverage"):
+        seed_build.assert_seed_quality(scan_payload, companies, analysis_by_code, fallback_source=None)
+
+
 def test_period_key_parses_quarters_and_tolerates_garbage():
     assert seed_build.period_key("2024Q4") == (2024, 4)
     assert seed_build.period_key("garbage") == (0, 0)
@@ -327,7 +355,7 @@ def test_seed_diagnostics_reports_counts(monkeypatch):
     monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
     diagnostics = seed_build.seed_diagnostics(
         {"universeSize": 5, "entry": [1], "watch": [2, 3], "excluded": []},
-        [None] * 10,
+        _market_companies(6, 4),
         {"a": {}},
         "cloudflare_seed_cache",
     )
@@ -335,6 +363,25 @@ def test_seed_diagnostics_reports_counts(monkeypatch):
     assert diagnostics["universeSize"] == 5
     assert diagnostics["watch"] == 2
     assert diagnostics["fallbackSource"] == "cloudflare_seed_cache"
+    assert diagnostics["companiesByMarket"] == {"TPEX": 4, "TWSE": 6}
+
+
+def test_seed_quality_rejects_single_market_company_seed(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    scan_payload = {
+        "universeSize": 1700,
+        "entry": [{}],
+        "watch": [{} for _ in range(1699)],
+        "excluded": [],
+    }
+
+    with pytest.raises(RuntimeError, match="company market coverage"):
+        seed_build.assert_seed_quality(
+            scan_payload,
+            _market_companies(twse=1700, tpex=0),
+            {str(index): {} for index in range(1700)},
+            fallback_source=None,
+        )
 
 
 def test_seed_quality_rejects_systemic_x2_missing_data(monkeypatch):

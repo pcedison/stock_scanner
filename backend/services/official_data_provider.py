@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from math import ceil
 from threading import RLock
 from time import monotonic
 from typing import Literal, cast
@@ -19,6 +21,9 @@ from backend.models.settings import ScannerSettings
 from backend.services.data_provider import normalize_query
 
 _EMPTY_COMPANY_PROFILES_ERROR = "official company profile refresh returned no rows"
+_INCOMPLETE_COMPANY_PROFILES_ERROR = "official company profile refresh incomplete"
+_CORE_PROFILE_MARKETS = ("TWSE", "TPEX")
+_MIN_LAST_GOOD_MARKET_RATIO = 0.8
 
 _FINANCIAL_KEYWORDS = frozenset({"金融", "銀行", "保險", "金控", "證券", "票券", "期貨", "投信", "投顧"})
 
@@ -94,7 +99,51 @@ class OfficialDataProvider:
     def _record_empty_company_profiles(self) -> None:
         self._profiles_expires_at = monotonic() + self.ttl_seconds
         self._last_error = _EMPTY_COMPANY_PROFILES_ERROR
-        self._source_status = {**self._source_status, "companyProfiles": 0}
+        self._source_status = {
+            **self._source_status,
+            "companyProfiles": 0,
+            "companyProfilesNormalized": 0,
+            "companyProfilesByMarket": dict.fromkeys(_CORE_PROFILE_MARKETS, 0),
+            "companyProfilesAccepted": False,
+        }
+
+    @staticmethod
+    def _company_market_counts(companies: list[Company]) -> dict[str, int]:
+        counts = Counter(company.market for company in companies)
+        return {market: counts.get(market, 0) for market in _CORE_PROFILE_MARKETS}
+
+    def _profile_refresh_problem(self, companies: list[Company]) -> str | None:
+        if not companies:
+            return "no valid rows after normalization"
+        previous = self._company_market_counts(self._companies)
+        current = self._company_market_counts(companies)
+        missing_markets = [market for market in _CORE_PROFILE_MARKETS if previous[market] > 0 and current[market] == 0]
+        if missing_markets:
+            return f"missing previously cached core markets: {', '.join(missing_markets)}"
+        for market in _CORE_PROFILE_MARKETS:
+            previous_count = previous[market]
+            if previous_count <= 0:
+                continue
+            minimum = max(1, ceil(previous_count * _MIN_LAST_GOOD_MARKET_RATIO))
+            if current[market] < minimum:
+                return f"{market} coverage {current[market]}/{previous_count} below {minimum}"
+        return None
+
+    def _record_incomplete_company_profiles(
+        self,
+        raw_count: int,
+        companies: list[Company],
+        problem: str,
+    ) -> None:
+        self._profiles_expires_at = monotonic() + self.ttl_seconds
+        self._last_error = f"{_INCOMPLETE_COMPANY_PROFILES_ERROR}: {problem}"
+        self._source_status = {
+            **self._source_status,
+            "companyProfiles": raw_count,
+            "companyProfilesNormalized": len(companies),
+            "companyProfilesByMarket": self._company_market_counts(companies),
+            "companyProfilesAccepted": False,
+        }
 
     def _company_from_profile(
         self,
@@ -132,10 +181,19 @@ class OfficialDataProvider:
                 self._record_empty_company_profiles()
                 return
             companies = [company for profile in profiles if (company := self._company_from_profile(profile))]
+            if problem := self._profile_refresh_problem(companies):
+                self._record_incomplete_company_profiles(len(profiles), companies, problem)
+                return
             self._companies = sorted(companies, key=lambda company: company.stockCode)
             self._profiles_expires_at = monotonic() + self.ttl_seconds
             self._last_error = None
-            self._source_status = {**self._source_status, "companyProfiles": len(profiles)}
+            self._source_status = {
+                **self._source_status,
+                "companyProfiles": len(companies),
+                "companyProfilesNormalized": len(companies),
+                "companyProfilesByMarket": self._company_market_counts(companies),
+                "companyProfilesAccepted": True,
+            }
 
     def refresh(self, force: bool = False) -> None:
         if not force and not self._needs_snapshots_refresh():
@@ -147,6 +205,12 @@ class OfficialDataProvider:
             profiles = self.adapter.fetch_company_profiles()
             if not profiles:
                 self._record_empty_company_profiles()
+                if self._snapshots:
+                    self._snapshots_expires_at = self._profiles_expires_at
+                return
+            profile_companies = [company for profile in profiles if (company := self._company_from_profile(profile))]
+            if problem := self._profile_refresh_problem(profile_companies):
+                self._record_incomplete_company_profiles(len(profiles), profile_companies, problem)
                 if self._snapshots:
                     self._snapshots_expires_at = self._profiles_expires_at
                 return
@@ -199,8 +263,10 @@ class OfficialDataProvider:
                     latest_quarter = imported_quarterly.period
 
                 history_quarter = self.history_store.quarter(company.stockCode, latest_quarter)
-                if history_quarter is None and not (income and income.fiscalYear and income.quarter) and not (
-                    imported_quarterly and imported_quarterly.period
+                if (
+                    history_quarter is None
+                    and not (income and income.fiscalYear and income.quarter)
+                    and not (imported_quarterly and imported_quarterly.period)
                 ):
                     history_quarter = self.history_store.latest_quarter(company.stockCode)
                     if history_quarter:
@@ -258,11 +324,15 @@ class OfficialDataProvider:
                             ),
                             "trailingThreeMonthAverageYoY": _first_present(
                                 imported_monthly.trailingThreeMonthAverageYoY if imported_monthly else None,
-                                self.monthly_revenue_history.trailing_three_month_avg_yoy(company.stockCode, snapshot_month),
+                                self.monthly_revenue_history.trailing_three_month_avg_yoy(
+                                    company.stockCode, snapshot_month
+                                ),
                             ),
                             "janFebCombinedRevenueYoY": _first_present(
                                 imported_monthly.janFebCombinedRevenueYoY if imported_monthly else None,
-                                self.monthly_revenue_history.jan_feb_combined_yoy(company.stockCode, snapshot_year) if snapshot_year else None,
+                                self.monthly_revenue_history.jan_feb_combined_yoy(company.stockCode, snapshot_year)
+                                if snapshot_year
+                                else None,
                             ),
                             "isSpringFestivalMonth": imported_monthly.isSpringFestivalMonth
                             if imported_monthly and imported_monthly.isSpringFestivalMonth is not None
@@ -349,7 +419,10 @@ class OfficialDataProvider:
             self._snapshots_expires_at = now + self.ttl_seconds
             self._last_error = None
             self._source_status = {
-                "companyProfiles": len(profiles),
+                "companyProfiles": len(companies),
+                "companyProfilesNormalized": len(companies),
+                "companyProfilesByMarket": self._company_market_counts(companies),
+                "companyProfilesAccepted": True,
                 "monthlyRevenueRows": len(revenue_rows),
                 **fundamentals.status,
                 "fundamentalsImport": imported.status,

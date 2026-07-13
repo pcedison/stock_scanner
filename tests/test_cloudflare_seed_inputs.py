@@ -16,8 +16,27 @@ from scripts.validate_cloudflare_seed_inputs import (
     validate_seed_zip,
 )
 
+TEST_SEED_COMPANIES = 1700
 
-def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5) -> None:
+
+def _company_items(count: int = TEST_SEED_COMPANIES) -> list[dict[str, str]]:
+    return [
+        {
+            "stockCode": f"{100000 + index:06d}",
+            "name": "TWSE company" if index < 1000 else "TPEX company",
+            "market": "TWSE" if index < 1000 else "TPEX",
+            "industryName": "Other",
+        }
+        for index in range(count)
+    ]
+
+
+def _write_seed_zip(
+    path: Path,
+    companies: int = 1000,
+    rows_per_company: int = 5,
+    seed_companies: int = TEST_SEED_COMPANIES,
+) -> None:
     quarters = {}
     for index in range(companies):
         stock_code = f"{index + 1000:04d}"
@@ -49,7 +68,7 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
                     "latestRevenuePeriod": "2026-04",
                     "latestFinancialPeriod": "2026Q1",
                     "counts": {
-                        "companies": companies,
+                        "companies": seed_companies,
                         "entry": 10,
                         "watch": companies - 20,
                         "excluded": 10,
@@ -61,7 +80,7 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
                 }
             ),
         )
-        archive.writestr("cloudflare_seed/companies.json", json.dumps({"items": []}))
+        archive.writestr("cloudflare_seed/companies.json", json.dumps({"items": _company_items(seed_companies)}))
         archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
         archive.writestr(
             "cloudflare_seed/market_scan_latest.json",
@@ -89,7 +108,7 @@ def test_validate_seed_zip_accepts_populated_history(tmp_path):
     assert summary["companies"] == 1000
     assert summary["quarterlyRows"] == 5000
     assert summary["latestPeriod"] == "2024Q4"
-    assert summary["seedCompanies"] == 1000
+    assert summary["seedCompanies"] == TEST_SEED_COMPANIES
     assert summary["seedAnalysis"] == 1000
     assert summary["seedHoldingAnalysis"] == 1000
     assert summary["seedShards"] == 1
@@ -193,14 +212,19 @@ def test_seed_quality_summary_includes_failed_reasons(tmp_path):
     assert "missing 2026Q1: 2" in markdown
 
 
-def _seed_members(companies: int = 1000, rows: int = 5, manifest: object | None = None) -> dict[str, str]:
+def _seed_members(
+    companies: int = 1000,
+    rows: int = 5,
+    manifest: object | None = None,
+    seed_company_count: int = TEST_SEED_COMPANIES,
+) -> dict[str, str]:
     quarters = {
         f"{index + 1000:04d}": {f"202{i}Q4": {"period": f"202{i}Q4"} for i in range(rows)} for index in range(companies)
     }
     default_manifest = {
         "generatedAt": "2026-05-17T00:00:00+00:00",
         "counts": {
-            "companies": companies,
+            "companies": TEST_SEED_COMPANIES,
             "entry": 10,
             "watch": companies - 20,
             "excluded": 10,
@@ -233,7 +257,7 @@ def _seed_members(companies: int = 1000, rows: int = 5, manifest: object | None 
             }
         ),
         "cloudflare_seed/manifest.json": json.dumps(selected_manifest),
-        "cloudflare_seed/companies.json": "{}",
+        "cloudflare_seed/companies.json": json.dumps({"items": _company_items(seed_company_count)}),
         "cloudflare_seed/data_sources_status.json": "{}",
         "cloudflare_seed/market_scan_latest.json": json.dumps(
             {
@@ -312,22 +336,22 @@ def test_validate_seed_zip_rejects_corrupt_and_malformed_payloads(tmp_path):
             "companies",
         ),
         (
-            {"companies": 1000, "analysis": 5, "holdingAnalysis": 1000, "entry": 400, "watch": 400, "excluded": 400},
+            {"companies": 1700, "analysis": 5, "holdingAnalysis": 1000, "entry": 400, "watch": 400, "excluded": 400},
             "analysis rows",
         ),
         (
-            {"companies": 1000, "analysis": 1000, "holdingAnalysis": 5, "entry": 400, "watch": 400, "excluded": 400},
+            {"companies": 1700, "analysis": 1000, "holdingAnalysis": 5, "entry": 400, "watch": 400, "excluded": 400},
             "holding analysis",
         ),
         (
-            {"companies": 1000, "analysis": 1000, "holdingAnalysis": 1000, "entry": 1, "watch": 1, "excluded": 1},
+            {"companies": 1700, "analysis": 1000, "holdingAnalysis": 1000, "entry": 1, "watch": 1, "excluded": 1},
             "universe",
         ),
     ],
 )
 def test_validate_seed_zip_enforces_seed_count_thresholds(tmp_path, counts, match):
     manifest = {"generatedAt": "2026-05-17T00:00:00+00:00", "counts": counts}
-    members = _seed_members(manifest=manifest)
+    members = _seed_members(manifest=manifest, seed_company_count=counts["companies"])
     with pytest.raises(ValueError, match=match):
         validate_seed_zip(_zip_from(tmp_path, members))
 
@@ -401,7 +425,7 @@ def test_main_writes_summary_outputs_and_reports_failure(tmp_path, capsys):
     )
     assert rc == 0
     assert md.exists() and "Cloudflare seed quality" in md.read_text(encoding="utf-8")
-    assert json.loads(js.read_text(encoding="utf-8"))["seed"]["seedCompanies"] == 1000
+    assert json.loads(js.read_text(encoding="utf-8"))["seed"]["seedCompanies"] == TEST_SEED_COMPANIES
 
     empty = _zip_from(tmp_path, {"official_fundamentals_history.json": "{}"}, name="empty.zip")
     assert main(["--zip", str(empty)]) == 1
@@ -485,6 +509,41 @@ def test_validate_seed_zip_rejects_optional_manifest_universe_mismatch(tmp_path)
     members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
 
     with pytest.raises(ValueError, match="manifest universeSize 999 does not match market scan 1000"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_rejects_manifest_company_count_mismatch_with_items(tmp_path):
+    members = _seed_members()
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    manifest["counts"]["companies"] = 1699
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+
+    with pytest.raises(ValueError, match="counts.companies 1699 does not match companies.json items 1700"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_rejects_single_market_even_when_total_is_large(tmp_path):
+    members = _seed_members()
+    companies = json.loads(members["cloudflare_seed/companies.json"])
+    for item in companies["items"]:
+        item["market"] = "TWSE"
+    members["cloudflare_seed/companies.json"] = json.dumps(companies)
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    manifest["counts"]["companies"] = 1700
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+
+    with pytest.raises(ValueError, match="TPEX company coverage 0 is below required minimum 700"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_rejects_manifest_company_market_count_mismatch(tmp_path):
+    members = _seed_members()
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    manifest["counts"]["companies"] = 1700
+    manifest["companiesByMarket"] = {"TWSE": 999, "TPEX": 701}
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+
+    with pytest.raises(ValueError, match="companiesByMarket does not match companies.json"):
         validate_seed_zip(_zip_from(tmp_path, members))
 
 
