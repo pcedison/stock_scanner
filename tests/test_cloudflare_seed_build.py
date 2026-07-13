@@ -1,10 +1,12 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 import scripts.build_cloudflare_seed as seed_build
 from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 from backend.models.analysis import AnalysisResult, RuleResult
+from backend.models.company import Company
 
 
 class ObjectResult:
@@ -15,6 +17,35 @@ class ObjectResult:
 class FakeProvider:
     def status(self, refresh=False):
         return {"companies": 0, "monthlySnapshots": 1000, "lastError": "profile endpoint returned no companies"}
+
+
+def test_merge_seed_companies_unions_snapshot_companies_without_dropping_profiles():
+    profile_company = Company(
+        stockCode="9999",
+        name="Profile name",
+        market="TWSE",
+        industryName="Other",
+    )
+    snapshot_duplicate = Company(
+        stockCode="9999",
+        name="Snapshot name",
+        market="TWSE",
+        industryName="Other",
+    )
+    snapshot_only = Company(
+        stockCode="1111",
+        name="Snapshot only",
+        market="TPEX",
+        industryName="Technology",
+    )
+
+    merged = seed_build.merge_seed_companies(
+        [profile_company],
+        [SimpleNamespace(company=snapshot_duplicate), SimpleNamespace(company=snapshot_only)],
+    )
+
+    assert [company.stockCode for company in merged] == ["1111", "9999"]
+    assert merged[1].name == "Profile name"
 
 
 def test_compact_market_scan_payload_strips_heavy_evidence():
@@ -51,7 +82,7 @@ def test_compact_market_scan_payload_strips_heavy_evidence():
                         "severity": "WARNING",
                         "message": "drop",
                         "evidence": [{"label": "heavy"}],
-                    }
+                    },
                 ],
             }
         ],
@@ -392,8 +423,7 @@ def test_seed_quality_rejects_zero_entry_history_fallback(monkeypatch):
         "universeSize": 1000,
         "entry": [],
         "watch": [
-            {"status": "WATCH", "reasons": [{"code": "X2", "passed": True, "severity": "INFO"}]}
-            for _ in range(1000)
+            {"status": "WATCH", "reasons": [{"code": "X2", "passed": True, "severity": "INFO"}]} for _ in range(1000)
         ],
         "excluded": [],
     }

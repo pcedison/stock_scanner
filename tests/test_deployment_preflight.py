@@ -115,6 +115,13 @@ def test_seed_zip_selection_uses_date_resolver_instead_of_mtime():
     assert validate_seed_zip_selection(Path(".github/workflows")) == []
 
 
+def test_ci_validates_committed_seed_checksum_sidecar():
+    text = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert 'SEED_SHA="${SEED_ZIP%.zip}.sha256"' in text
+    assert 'sha256sum --check "$(basename "$SEED_SHA")"' in text
+
+
 def test_validate_workflow_yaml_rejects_invalid_workflow(tmp_path):
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()

@@ -373,10 +373,101 @@ def test_status_reloads_cache_when_file_signature_changes(tmp_path):
     service = ScanCacheService(tmp_path / "scan_cache.json", tmp_path / "refresh_state.json")
     service.status()  # primes the in-memory signature (file absent)
     (tmp_path / "scan_cache.json").write_text(
-        json.dumps({"version": 1, "items": {"abc": {"payload": {}}}}), encoding="utf-8"
+        json.dumps(
+            {
+                "version": 1,
+                "items": {
+                    "abc": {
+                        "payload": {
+                            "entry": [{"stockCode": "2330"}],
+                            "watch": [],
+                            "excluded": [],
+                            "universeSize": 1,
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
     )
     service.status()  # signature changed -> reloads from disk
     assert "abc" in service._memory_cache
+
+
+def test_status_ignores_invalid_disk_cache_before_first_cache_read(tmp_path):
+    cache_path = tmp_path / "scan_cache.json"
+    settings = ScannerSettings(use_mock_data=False)
+    key = scan_cache_key(settings)
+    stored_at = datetime.now(UTC).isoformat()
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": {
+                    key: {
+                        "storedAt": stored_at,
+                        "payload": {"entry": [], "watch": [], "excluded": [], "universeSize": 0},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ScanCacheService(cache_path, tmp_path / "refresh_state.json")
+
+    status = service.status(settings)
+
+    assert status["cacheKeys"] == 0
+    assert status["selectedStoredAt"] is None
+    assert status["selectedIsStale"] is None
+    assert key not in service._memory_cache
+
+
+def test_status_ignores_unselected_invalid_item_after_cache_read(tmp_path):
+    cache_path = tmp_path / "scan_cache.json"
+    settings = ScannerSettings(use_mock_data=False)
+    valid_context = {"period": "2026Q1"}
+    invalid_context = {"period": "2026Q2"}
+    valid_key = scan_cache_key(settings, valid_context)
+    invalid_key = scan_cache_key(settings, invalid_context)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": {
+                    valid_key: {
+                        "storedAt": datetime.now(UTC).isoformat(),
+                        "payload": {
+                            "entry": [{"stockCode": "2330"}],
+                            "watch": [],
+                            "excluded": [],
+                            "universeSize": 1,
+                        },
+                    },
+                    invalid_key: {
+                        "storedAt": datetime.now(UTC).isoformat(),
+                        "payload": {"entry": [], "watch": [], "excluded": [], "universeSize": 0},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ScanCacheService(cache_path, tmp_path / "refresh_state.json")
+    cached = service.get_or_refresh(
+        settings,
+        lambda: {},
+        refresh_mode="cache_only",
+        context=valid_context,
+    )
+
+    status = service.status(settings, invalid_context)
+
+    assert cached["cacheStatus"]["cacheHit"] is True
+    assert status["cacheKeys"] == 1
+    assert status["selectedStoredAt"] is None
+    assert status["selectedIsStale"] is None
+    assert invalid_key not in service._memory_cache
 
 
 def test_read_json_returns_fallback_for_missing_and_unreadable(tmp_path):

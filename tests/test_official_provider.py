@@ -424,12 +424,65 @@ class CountingAdapter(FakeOfficialAdapter):
         return super().fetch_company_profiles()
 
 
+class ToggleEmptyProfilesAdapter(FakeOfficialAdapter):
+    def __init__(self):
+        self.return_empty = False
+
+    def fetch_company_profiles(self):
+        if self.return_empty:
+            return []
+        return super().fetch_company_profiles()
+
+
 def test_refresh_companies_skips_when_cache_is_fresh(tmp_path):
     adapter = CountingAdapter()
     provider = _provider(tmp_path, adapter=adapter)
     provider.refresh_companies()
     provider.refresh_companies()  # cache still fresh -> outer guard returns early
     assert adapter.profile_calls == 1
+
+
+def test_refresh_companies_keeps_last_known_good_on_empty_response(tmp_path):
+    adapter = ToggleEmptyProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh_companies()
+
+    adapter.return_empty = True
+    provider.refresh_companies(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == ["2888", "9999"]
+    status = provider.status()
+    assert status["lastError"] == "official company profile refresh returned no rows"
+    assert status["sourceStatus"]["companyProfiles"] == 0
+
+
+def test_refresh_companies_cold_empty_response_is_observable(tmp_path):
+    adapter = ToggleEmptyProfilesAdapter()
+    adapter.return_empty = True
+    provider = _provider(tmp_path, adapter=adapter)
+
+    assert provider.list_companies() == []
+    status = provider.status()
+    assert status["companies"] == 0
+    assert status["lastError"] == "official company profile refresh returned no rows"
+    assert status["sourceStatus"]["companyProfiles"] == 0
+
+
+def test_full_refresh_keeps_last_known_good_on_empty_profiles(tmp_path):
+    adapter = ToggleEmptyProfilesAdapter()
+    provider = _provider(tmp_path, adapter=adapter)
+    provider.refresh()
+
+    adapter.return_empty = True
+    provider.refresh(force=True)
+
+    assert [company.stockCode for company in provider.list_companies()] == ["2888", "9999"]
+    assert [snapshot.company.stockCode for snapshot in provider.list_snapshots(ScannerSettings(use_mock_data=False))] == [
+        "9999"
+    ]
+    status = provider.status()
+    assert status["lastError"] == "official company profile refresh returned no rows"
+    assert status["sourceStatus"]["companyProfiles"] == 0
 
 
 def test_refresh_companies_inner_guard_short_circuits(tmp_path, monkeypatch):

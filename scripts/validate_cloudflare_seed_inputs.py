@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 import zipfile
 from collections import Counter
@@ -34,6 +35,8 @@ MIN_HISTORY_ROWS = 5000
 MIN_SEED_COMPANIES = 1000
 MIN_SEED_ANALYSIS = 1000
 MIN_CONSECUTIVE_MONTHLY_COMPANIES = 1000
+MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded")
+LOCAL_USER_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]+Users[\\/]+|/(?:Users|home)/)", re.IGNORECASE)
 
 
 def _load_json_from_zip(archive: zipfile.ZipFile, name: str) -> Any:
@@ -44,6 +47,29 @@ def _load_json_from_zip(archive: zipfile.ZipFile, name: str) -> Any:
         raise ValueError(f"Missing required seed entry: {name}") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"Seed entry is not valid JSON: {name}") from exc
+
+
+def _reject_local_user_paths(payload: Any, entry_name: str, location: str = "$") -> None:
+    if isinstance(payload, str):
+        if LOCAL_USER_PATH_RE.search(payload):
+            raise ValueError(f"Public seed entry {entry_name} contains a local user path at {location}")
+        return
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if isinstance(key, str) and LOCAL_USER_PATH_RE.search(key):
+                raise ValueError(f"Public seed entry {entry_name} contains a local user path in an object key")
+            _reject_local_user_paths(value, entry_name, f"{location}.{key}")
+        return
+    if isinstance(payload, list):
+        for index, value in enumerate(payload):
+            _reject_local_user_paths(value, entry_name, f"{location}[{index}]")
+
+
+def _manifest_count(payload: dict[str, Any], key: str, label: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label}.{key} must be a non-negative integer")
+    return value
 
 
 def validate_seed_zip(path: Path) -> dict[str, Any]:
@@ -60,6 +86,19 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         monthly_history = _load_json_from_zip(archive, "monthly_revenue_history.json")
         _load_json_from_zip(archive, "official_history_backfill_progress.json")
         manifest = _load_json_from_zip(archive, "cloudflare_seed/manifest.json")
+        market_scan = _load_json_from_zip(archive, "cloudflare_seed/market_scan_latest.json")
+        loaded_public_payloads = {
+            "cloudflare_seed/manifest.json": manifest,
+            "cloudflare_seed/market_scan_latest.json": market_scan,
+        }
+        public_json_entries = sorted(
+            name for name in names if name.startswith("cloudflare_seed/") and name.endswith(".json")
+        )
+        for name in public_json_entries:
+            payload = loaded_public_payloads.get(name)
+            if payload is None:
+                payload = _load_json_from_zip(archive, name)
+            _reject_local_user_paths(payload, name)
         analysis_shards = sorted(
             name for name in names if name.startswith("cloudflare_seed/analysis_shards/") and name.endswith(".json")
         )
@@ -108,23 +147,77 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
 
     if not isinstance(manifest, dict):
         raise ValueError("cloudflare_seed/manifest.json must be a JSON object")
+    if not isinstance(market_scan, dict):
+        raise ValueError("cloudflare_seed/market_scan_latest.json must be a JSON object")
+    actual_category_counts: dict[str, int] = {}
+    for category in MARKET_SCAN_CATEGORIES:
+        rows = market_scan.get(category)
+        if not isinstance(rows, list):
+            raise ValueError(f"cloudflare_seed/market_scan_latest.json {category} must be a JSON list")
+        actual_category_counts[category] = len(rows)
+    actual_universe = sum(actual_category_counts.values())
+    if actual_universe <= 0:
+        raise ValueError("Cloudflare market scan has no rows")
+    reported_universe = market_scan.get("universeSize")
+    if reported_universe is not None:
+        if isinstance(reported_universe, bool) or not isinstance(reported_universe, int):
+            raise ValueError("Cloudflare market scan universeSize must be an integer")
+        if reported_universe != actual_universe:
+            raise ValueError(
+                f"Cloudflare market scan universeSize {reported_universe} does not match actual total {actual_universe}"
+            )
+
     counts = manifest.get("counts")
     if not isinstance(counts, dict):
         raise ValueError("cloudflare_seed/manifest.json must contain a counts object")
-    seed_companies = int(counts.get("companies") or 0)
-    seed_analysis = int(counts.get("analysis") or 0)
-    seed_holding_analysis = int(counts.get("holdingAnalysis") or 0)
-    seed_universe = sum(int(counts.get(key) or 0) for key in ("entry", "watch", "excluded"))
+    seed_companies = _manifest_count(counts, "companies", "manifest counts")
+    seed_analysis = _manifest_count(counts, "analysis", "manifest counts")
+    seed_holding_analysis = _manifest_count(counts, "holdingAnalysis", "manifest counts")
+    manifest_category_counts = {
+        category: _manifest_count(counts, category, "manifest counts") for category in MARKET_SCAN_CATEGORIES
+    }
+    for category, actual_count in actual_category_counts.items():
+        manifest_count = manifest_category_counts[category]
+        if manifest_count != actual_count:
+            raise ValueError(
+                f"Cloudflare manifest counts.{category} {manifest_count} does not match market scan {actual_count}"
+            )
+    seed_universe = sum(manifest_category_counts.values())
+
+    optional_category_counts = manifest.get("categoryCounts")
+    if optional_category_counts is not None:
+        if not isinstance(optional_category_counts, dict):
+            raise ValueError("cloudflare_seed/manifest.json categoryCounts must be a JSON object")
+        for category, actual_count in actual_category_counts.items():
+            manifest_count = _manifest_count(optional_category_counts, category, "manifest categoryCounts")
+            if manifest_count != actual_count:
+                raise ValueError(
+                    f"Cloudflare manifest categoryCounts.{category} {manifest_count} "
+                    f"does not match market scan {actual_count}"
+                )
+
+    manifest_universe = manifest.get("universeSize")
+    if manifest_universe is not None:
+        if isinstance(manifest_universe, bool) or not isinstance(manifest_universe, int):
+            raise ValueError("Cloudflare manifest universeSize must be an integer")
+        if manifest_universe != actual_universe:
+            raise ValueError(
+                f"Cloudflare manifest universeSize {manifest_universe} does not match market scan {actual_universe}"
+            )
     if seed_companies < MIN_SEED_COMPANIES:
         raise ValueError(f"Cloudflare seed has only {seed_companies} companies; expected at least {MIN_SEED_COMPANIES}")
     if seed_analysis < MIN_SEED_ANALYSIS:
-        raise ValueError(f"Cloudflare seed has only {seed_analysis} analysis rows; expected at least {MIN_SEED_ANALYSIS}")
+        raise ValueError(
+            f"Cloudflare seed has only {seed_analysis} analysis rows; expected at least {MIN_SEED_ANALYSIS}"
+        )
     if seed_holding_analysis < MIN_SEED_ANALYSIS:
         raise ValueError(
             f"Cloudflare seed has only {seed_holding_analysis} holding analysis rows; expected at least {MIN_SEED_ANALYSIS}"
         )
     if seed_universe < MIN_SEED_ANALYSIS:
-        raise ValueError(f"Cloudflare seed universe has only {seed_universe} rows; expected at least {MIN_SEED_ANALYSIS}")
+        raise ValueError(
+            f"Cloudflare seed universe has only {seed_universe} rows; expected at least {MIN_SEED_ANALYSIS}"
+        )
 
     return {
         "zip": str(path),
@@ -254,7 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.summary_json:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)
         args.summary_json.write_text(
-            json.dumps({"seed": summary, "failedCompanies": failed_summary}, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(
+                {"seed": summary, "failedCompanies": failed_summary}, ensure_ascii=False, indent=2, sort_keys=True
+            ),
             encoding="utf-8",
         )
 

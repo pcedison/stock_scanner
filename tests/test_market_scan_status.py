@@ -21,10 +21,10 @@ class FakeStatusProvider:
             "lastError": "internal stack trace",
             "sourceStatus": {
                 "incomeRows": 3,
-                "fundamentalsImport": {"rows": 2, "path": "data/fundamentals.csv"},
+                "fundamentalsImport": {"rows": 2, "path": "C:\\Users\\private-user\\data\\fundamentals.csv"},
                 "officialFundamentalsHistory": {
                     "rows": 5,
-                    "path": "data/history.json",
+                    "path": "C:\\Users\\private-user\\data\\history.json",
                     "latestFinancialPeriod": "2025Q4",
                     "periodCoverage": {"2025Q4": 5},
                     "expectedPeriodCoverage": 0,
@@ -64,6 +64,10 @@ def test_data_sources_status_redacts_provider_error_details():
     assert cache["hasError"] is True
     assert "error" not in cache
     assert "private filesystem path" not in str(payload)
+    assert payload["fundamentalsImportPath"] == "fundamentals.csv"
+    assert payload["officialHistoryPath"] == "history.json"
+    assert cache["path"] == "history.json"
+    assert "private-user" not in str(payload)
 
 
 def test_data_sources_status_redacts_scan_cache_job_error_details():

@@ -18,6 +18,8 @@ from backend.models.financial import FundamentalSnapshot
 from backend.models.settings import ScannerSettings
 from backend.services.data_provider import normalize_query
 
+_EMPTY_COMPANY_PROFILES_ERROR = "official company profile refresh returned no rows"
+
 _FINANCIAL_KEYWORDS = frozenset({"金融", "銀行", "保險", "金控", "證券", "票券", "期貨", "投信", "投顧"})
 
 
@@ -89,6 +91,11 @@ class OfficialDataProvider:
     def _needs_snapshots_refresh(self) -> bool:
         return monotonic() >= self._snapshots_expires_at or not self._snapshots
 
+    def _record_empty_company_profiles(self) -> None:
+        self._profiles_expires_at = monotonic() + self.ttl_seconds
+        self._last_error = _EMPTY_COMPANY_PROFILES_ERROR
+        self._source_status = {**self._source_status, "companyProfiles": 0}
+
     def _company_from_profile(
         self,
         profile: OfficialCompanyProfileRow,
@@ -121,6 +128,9 @@ class OfficialDataProvider:
             if not force and not self._needs_profiles_refresh():
                 return
             profiles = self.adapter.fetch_company_profiles()
+            if not profiles:
+                self._record_empty_company_profiles()
+                return
             companies = [company for profile in profiles if (company := self._company_from_profile(profile))]
             self._companies = sorted(companies, key=lambda company: company.stockCode)
             self._profiles_expires_at = monotonic() + self.ttl_seconds
@@ -135,6 +145,11 @@ class OfficialDataProvider:
                 return
 
             profiles = self.adapter.fetch_company_profiles()
+            if not profiles:
+                self._record_empty_company_profiles()
+                if self._snapshots:
+                    self._snapshots_expires_at = self._profiles_expires_at
+                return
             # Profiles fetched as part of full refresh — update profile TTL immediately
             # so a concurrent list_companies() call doesn't trigger a redundant profile fetch.
             self._profiles_expires_at = monotonic() + self.ttl_seconds

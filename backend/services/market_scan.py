@@ -48,6 +48,13 @@ _THIRD_PARTY_PLATFORMS = {
 _PUBLIC_STATUS_ERROR_KEYS = frozenset({"error", "exception", "traceback", "lastError"})
 
 
+def _public_path(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace("\\", "/")
+    return text.rsplit("/", 1)[-1] if text else None
+
+
 def _expected_financial_period(context: dict[str, Any]) -> str | None:
     for field in ("freshnessFinancialReport", "activeFinancialReport"):
         active = context.get(field)
@@ -87,10 +94,11 @@ def _public_status(value: Any) -> Any:
         redacted: dict[str, Any] = {}
         has_error = False
         for key, item in value.items():
-            if str(key) in _PUBLIC_STATUS_ERROR_KEYS:
+            key_text = str(key)
+            if key_text in _PUBLIC_STATUS_ERROR_KEYS:
                 has_error = True
                 continue
-            redacted[str(key)] = _public_status(item)
+            redacted[key_text] = _public_path(item) if key_text.casefold().endswith("path") else _public_status(item)
         if has_error:
             redacted["hasError"] = True
         return redacted

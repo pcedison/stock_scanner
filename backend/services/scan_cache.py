@@ -153,8 +153,14 @@ class ScanCacheService:
             signature = self._file_signature(self.scan_cache_path)
             if signature != self._memory_cache_signature:
                 cache = self._read_json(self.scan_cache_path, {"version": 1, "items": {}})
-                self._memory_cache = copy.deepcopy(cache.get("items", {}))
+                disk_items = cache.get("items", {})
+                self._memory_cache = copy.deepcopy(disk_items) if isinstance(disk_items, dict) else {}
                 self._memory_cache_signature = signature
+            self._memory_cache = {
+                cache_key: validated
+                for cache_key, item in self._memory_cache.items()
+                if (validated := _validated_cache_item(item)) is not None
+            }
             items = copy.deepcopy(self._memory_cache)
             state = self._read_json(self.refresh_state_path, {"version": 1, "jobs": []})
         jobs = state.get("jobs", [])

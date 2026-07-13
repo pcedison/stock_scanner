@@ -113,7 +113,9 @@ def compact_scan_result(result: dict) -> dict:
                 continue
             if str(reason.get("code") or "") not in SUMMARY_REASON_CODES:
                 continue
-            cast(list, compact["reasons"]).append({key: reason.get(key) for key in SUMMARY_REASON_KEYS if key in reason})
+            cast(list, compact["reasons"]).append(
+                {key: reason.get(key) for key in SUMMARY_REASON_KEYS if key in reason}
+            )
     compact["detailsAvailable"] = True
     compact["hasFullDetails"] = False
     return compact
@@ -147,16 +149,11 @@ def write_market_scan_summary(scan_payload: dict) -> None:
     write_json(OUT_DIR / MARKET_SCAN_SUMMARY_FILE, compact_market_scan_payload(scan_payload))
 
 
-
 def rebuild_scan_from_analysis(scan_payload: dict, results: list[dict]) -> dict:
     rebuilt = dict(scan_payload)
     rebuilt["entry"] = [item for item in results if item.get("status") == "ENTRY"]
     rebuilt["excluded"] = [item for item in results if item.get("status") == "EXCLUDED"]
-    rebuilt["watch"] = [
-        item
-        for item in results
-        if item.get("status") not in {"ENTRY", "EXCLUDED"}
-    ]
+    rebuilt["watch"] = [item for item in results if item.get("status") not in {"ENTRY", "EXCLUDED"}]
     rebuilt["universeSize"] = len(rebuilt["entry"]) + len(rebuilt["watch"]) + len(rebuilt["excluded"])
     return rebuilt
 
@@ -279,7 +276,11 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
             industry_name = existing.industryName
             is_financial = existing.isFinancial
         else:
-            market = cast(Literal["TWSE", "TPEX", "OTHER"], record.get("market")) if record.get("market") in {"TWSE", "TPEX"} else "OTHER"
+            market = (
+                cast(Literal["TWSE", "TPEX", "OTHER"], record.get("market"))
+                if record.get("market") in {"TWSE", "TPEX"}
+                else "OTHER"
+            )
             company_name = str(record.get("companyName") or stock_code)
             industry_name = "Unknown industry"
             is_financial = _is_financial_company(stock_code, industry_name, company_name)
@@ -390,7 +391,9 @@ def seed_diagnostics(scan_payload: dict, companies: list, analysis_by_code: dict
     }
 
 
-def assert_seed_quality(scan_payload: dict, companies: list, analysis_by_code: dict, fallback_source: str | None) -> None:
+def assert_seed_quality(
+    scan_payload: dict, companies: list, analysis_by_code: dict, fallback_source: str | None
+) -> None:
     diagnostics = seed_diagnostics(scan_payload, companies, analysis_by_code, fallback_source)
     if diagnostics["companies"] < MIN_SEED_COMPANY_SIZE:
         raise RuntimeError(
@@ -461,7 +464,11 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
     clear_seed_output()
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
-        missing = sorted(f"{OFFLINE_SEED_PREFIX}{name}" for name in OFFLINE_SEED_REQUIRED_FILES if f"{OFFLINE_SEED_PREFIX}{name}" not in names)
+        missing = sorted(
+            f"{OFFLINE_SEED_PREFIX}{name}"
+            for name in OFFLINE_SEED_REQUIRED_FILES
+            if f"{OFFLINE_SEED_PREFIX}{name}" not in names
+        )
         if missing:
             raise RuntimeError(f"Offline seed cache is missing required entries: {', '.join(missing)}")
 
@@ -516,6 +523,13 @@ def _build_analysis_for_snapshots(
         holding_analysis_shards.setdefault(analysis_shard_key(result.stockCode), {})[result.stockCode] = holding_encoded
 
 
+def merge_seed_companies(companies: list[Company], snapshots: list[FundamentalSnapshot]) -> list[Company]:
+    """Keep profile-only companies while filling any profile refresh gaps from snapshots."""
+    by_code = {snapshot.company.stockCode: snapshot.company for snapshot in snapshots}
+    by_code.update({company.stockCode: company for company in companies})
+    return [by_code[stock_code] for stock_code in sorted(by_code)]
+
+
 def main() -> None:
     seed_mode = os.getenv("CLOUDFLARE_SEED_MODE", "offline_first").strip().lower()
     if seed_mode in {"offline", "offline_first"}:
@@ -541,7 +555,8 @@ def main() -> None:
     policy = refresh_policy()
     generated_at = datetime.fromisoformat(scan_payload["generatedAt"])
     next_refresh = generated_at + timedelta(seconds=policy["minIntervalSeconds"])
-    companies = official_provider.list_companies()
+    snapshots = official_provider.list_snapshots(settings)
+    companies = merge_seed_companies(official_provider.list_companies(), snapshots)
     analysis_by_code: dict = {}
     analysis_shards: dict[str, dict[str, dict]] = {}
     holding_analysis_by_code: dict = {}
@@ -550,7 +565,7 @@ def main() -> None:
     fallback_source = None
 
     _build_analysis_for_snapshots(
-        official_provider.list_snapshots(settings),
+        snapshots,
         settings,
         analysis_by_code,
         analysis_shards,
