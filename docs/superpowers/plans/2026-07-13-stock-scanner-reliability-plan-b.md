@@ -999,7 +999,7 @@ Execution evidence (2026-07-13): commit `f9cc2fc`; the Task 8 RED gate first fai
 - Keeps: all POST, auth/private, refresh status, and error responses `Cache-Control: no-store`.
 - Keeps: legacy 2.88 MB market GET `no-store` while it is the rollback path.
 
-- [ ] **Step 1: Write cache and runtime-flag RED tests**
+- [x] **Step 1: Write cache and runtime-flag RED tests**
 
 Cover config defaults to v1; invalid env value becomes v1; config TTL at most 60 seconds; v2 index/results use edge-only cache headers; no `s-maxage`; legacy market GET no-store; private/status/error no-store; query canonicalization; config failure frontend defaults v1; v2 contract failure preserves last-good and switches to v1 once without dual background downloads.
 
@@ -1013,7 +1013,7 @@ def test_v2_cache_headers_use_cloudflare_control_without_s_maxage(worker):
     assert "s-maxage" not in edge
 ```
 
-- [ ] **Step 2: Run RED cache/flag tests**
+- [x] **Step 2: Run RED cache/flag tests**
 
 Run:
 
@@ -1023,7 +1023,7 @@ python -m pytest tests\test_cloudflare_worker.py tests\test_frontend_parser.py t
 
 Expected: runtime config and route-specific edge-cache headers do not exist.
 
-- [ ] **Step 3: Implement explicit response cache policies**
+- [x] **Step 3: Implement explicit response cache policies**
 
 Add separate helpers instead of extending every `json_response()` call:
 
@@ -1052,11 +1052,11 @@ enabled = false
 
 Add a configuration contract test that checks the active Wrangler version is at least `4.69.0`, parses `[cache].enabled`, and runs the dry-run bundle. This follows the current [Workers Caching configuration](https://developers.cloudflare.com/workers/cache/configuration/) contract rather than relying on a legacy Cache API assumption.
 
-- [ ] **Step 4: Integrate runtime flag and one-way fallback**
+- [x] **Step 4: Integrate runtime flag and one-way fallback**
 
 Frontend loads runtime config before market data. v1 calls legacy only. v2 calls index/results and new refresh command. If v2 schema/generation validation fails, set the session mode to v1, keep current UI/LKG, and issue at most one legacy request. Do not silently switch production config; this is a per-session safety fallback.
 
-- [ ] **Step 5: Run GREEN cache/flag verification**
+- [x] **Step 5: Run GREEN cache/flag verification**
 
 Run:
 
@@ -1073,7 +1073,7 @@ git diff --check
 
 Expected: all commands exit `0`; production config still selects v1 and disables edge caching.
 
-- [ ] **Step 6: Review and commit Task 9**
+- [x] **Step 6: Review and commit Task 9**
 
 After cache/security/frontend review and fresh Step 5:
 
@@ -1081,6 +1081,8 @@ After cache/security/frontend review and fresh Step 5:
 git add cloudflare\worker_support.py cloudflare\worker.py cloudflare\wrangler.toml frontend\api_client.js frontend\market_query.js frontend\app.js scripts\run_remote_smoke.py scripts\check_code_size_budgets.py tests\test_cloudflare_worker.py tests\test_frontend_parser.py tests\test_remote_smoke.py
 git commit -m "feat: gate v2 reads and edge caching"
 ```
+
+Execution evidence (2026-07-13): commit `6d27626`; the Task 9 RED gate first failed as expected because legacy `/api/scan/market` still emitted `s-maxage`, `/api/runtime-config` did not exist, and v2 market index/results did not yet expose bounded edge-cache headers. The final implementation added `/api/runtime-config`, defaulted production runtime selection to v1, kept `[cache].enabled = false`, kept legacy market GET `no-store`, and made v2 index/results edge-cache headers opt-in behind `EDGE_CACHE_ENABLED`. Frontend startup now loads runtime config before market data, defaults to v1 on config failure, and applies a one-way in-session fallback from v2 to v1 on v2 load/schema failure. Focused cache/runtime tests passed `4/4`; the full Python gate exited `0` with one existing skip; Playwright E2E passed `35` with one existing skip; frontend hygiene, code-size budgets, ESLint, Prettier, deployment preflight, operational readiness, Wrangler `4.103.0` dry-run, and `git diff --check` all exited `0` (`git diff --check` only emitted Windows LF/CRLF warnings). A true local Wrangler Python Worker smoke returned `runtime=cloudflare-python-worker`, refresh status `queued`, and HTTP-compatible degraded cache quality without failing the smoke. No push, PR, production deploy, production v2 enablement, or production edge-cache enablement was performed.
 
 ---
 
