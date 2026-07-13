@@ -445,7 +445,7 @@ Execution evidence (2026-07-13): commit `879faf3`; focused gate `264 passed`; fu
 - Produces: `loadIndex()`, `loadWindow(disclosure, category, uiPage)`, `findLoadedResult(stockCode)`, and `clearGeneration()`.
 - Persists: validated index only at `tw_stock_scanner.market_index.v2`.
 
-- [ ] **Step 1: Write frontend helper and E2E RED tests**
+- [x] **Step 1: Write frontend helper and E2E RED tests**
 
 Cover first load fetching only index plus active page, lazy tab/category loads, promise de-duplication, UI page start `96` loading API cursors `0` and `100`, index counts with only 100 loaded rows, generation cache invalidation, offline LKG shell, storage quota/JSON failure, page failure preserving rows and expansion, export not fetching pages, and v1 flag calling legacy only.
 
@@ -458,7 +458,7 @@ test("UI page crossing API boundary loads both physical pages", async () => {
 });
 ```
 
-- [ ] **Step 2: Run RED frontend tests**
+- [x] **Step 2: Run RED frontend tests**
 
 Run:
 
@@ -469,7 +469,7 @@ npm.cmd run test:e2e -- --grep "paged market|market index|last-known-good shell|
 
 Expected: helper source and v2 UI behaviors are missing.
 
-- [ ] **Step 3: Implement the dedicated frontend query client**
+- [x] **Step 3: Implement the dedicated frontend query client**
 
 Use these cache keys and window math:
 
@@ -493,7 +493,7 @@ function pageCacheKey(generationId, disclosure, category, cursor) {
 
 Validate `schemaVersion`, 24-hex generation ID, counts, `pageSize=100`, and bounded string/array fields before accepting network or stored indexes. Store no `items` anywhere outside the in-memory page map. Concurrent calls for the same key share one promise and remove it after settle.
 
-- [ ] **Step 4: Integrate v2 state without expanding saturated files**
+- [x] **Step 4: Integrate v2 state without expanding saturated files**
 
 Add `state.marketIndex`, `state.marketWindow`, and `state.marketQueryWarning`; keep legacy `state.marketScan` only for v1. Move all new page-fetch logic into `market_query.js`. Renderer input becomes:
 
@@ -513,7 +513,7 @@ Overview/tab counts come from index counts. `findMarketResultById()` checks the 
 <meta name="stock-scanner-market-api-version" content="v1" />
 ```
 
-- [ ] **Step 5: Run GREEN frontend verification**
+- [x] **Step 5: Run GREEN frontend verification**
 
 Run:
 
@@ -529,7 +529,7 @@ git diff --check
 
 Expected: pytest/lint/format/hygiene exit `0`; Playwright desktop/mobile pass; v1 remains the active default.
 
-- [ ] **Step 6: Review and commit Task 4**
+- [x] **Step 6: Review and commit Task 4**
 
 After independent functional/UI review and a fresh Step 5:
 
@@ -537,6 +537,8 @@ After independent functional/UI review and a fresh Step 5:
 git add frontend\market_query.js frontend\index.html frontend\app.js frontend\market_scan.js frontend\market_render.js frontend\storage.js scripts\check_code_size_budgets.py tests\test_frontend_parser.py tests\test_frontend_hygiene.py tests\e2e\smoke.spec.ts
 git commit -m "feat: lazy load market result pages"
 ```
+
+Execution evidence (2026-07-13): commit `d0392cc`; focused frontend gate `50 passed`; full Python gate `913 passed, 1 skipped` from `914 collected`; Playwright desktop/mobile gate `33 passed, 1 skipped` from `34 total`. ESLint, Prettier, Node syntax, frontend hygiene, code-size budgets, and `git diff --check` all exited `0`. The v2 client validates bounded index/page contracts, loads only required physical pages, de-duplicates requests, pins generations, preserves an in-memory last-known-good window, and persists only the validated index. Storage access is fail-soft for SecurityError/quota/invalid or oversized values, while authenticated holding sync remains active. Six dependent frontend scripts share cache version `20260713-market-v2-pages`; the default remains v1. Independent specification review reported Critical `0`, Important `0`, Minor `0`, Ready `Yes`; independent quality review reported Critical `0`, Important `0`, Minor `1`, Ready `Yes`, with the sole non-blocking note that frontend line-count headroom remains narrow. Task 6 must add refresh behavior through a dedicated module rather than raising budgets or further compressing saturated files. No push or deployment was performed.
 
 ---
 
@@ -680,6 +682,7 @@ git commit -m "fix: enqueue refresh jobs atomically"
 - Produces: `GET /api/scan/market/refresh/{jobId}` returning a safe no-store status payload.
 - Consumes: `Idempotency-Key` with `1..80` ASCII `[A-Za-z0-9._:-]` characters.
 - Keeps: legacy POST response, adding only deprecation/successor headers.
+- Frontend constraint: add refresh/polling behavior in a dedicated module; do not raise the current `app.js` or `market_query.js` budgets or remove more formatting whitespace to make it fit.
 
 - [ ] **Step 1: Write command/status/CORS tests**
 
