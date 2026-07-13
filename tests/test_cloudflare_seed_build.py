@@ -384,6 +384,24 @@ def test_seed_quality_rejects_single_market_company_seed(monkeypatch):
         )
 
 
+def test_seed_quality_rejects_all_unrecognized_company_markets(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    scan_payload = {
+        "universeSize": 1700,
+        "entry": [{}],
+        "watch": [{} for _ in range(1699)],
+        "excluded": [],
+    }
+
+    with pytest.raises(RuntimeError, match="TWSE company market coverage"):
+        seed_build.assert_seed_quality(
+            scan_payload,
+            [SimpleNamespace(market="OTHER") for _ in range(1700)],
+            {str(index): {} for index in range(1700)},
+            fallback_source="official_fundamentals_history",
+        )
+
+
 def test_seed_quality_rejects_systemic_x2_missing_data(monkeypatch):
     monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
     missing_x2 = {
@@ -400,7 +418,7 @@ def test_seed_quality_rejects_systemic_x2_missing_data(monkeypatch):
     with pytest.raises(RuntimeError, match="X2 monthly-history coverage"):
         seed_build.assert_seed_quality(
             scan_payload,
-            [None] * 1000,
+            _market_companies(),
             {str(index): {} for index in range(1000)},
             fallback_source=None,
         )
@@ -433,7 +451,7 @@ def test_seed_quality_rejects_systemic_x2_missing_from_analysis_models(monkeypat
     with pytest.raises(RuntimeError, match="X2 monthly-history coverage"):
         seed_build.assert_seed_quality(
             scan_payload,
-            [None] * 1000,
+            _market_companies(),
             {str(index): {} for index in range(1000)},
             fallback_source=None,
         )
@@ -455,11 +473,11 @@ def test_seed_quality_allows_bounded_x2_missing_data(monkeypatch):
 
     seed_build.assert_seed_quality(
         scan_payload,
-        [None] * 1000,
+        _market_companies(),
         {str(index): {} for index in range(1000)},
         fallback_source=None,
     )
-    diagnostics = seed_build.seed_diagnostics(scan_payload, [None] * 1000, {}, None)
+    diagnostics = seed_build.seed_diagnostics(scan_payload, _market_companies(), {}, None)
     assert diagnostics["x2Missing"] == 50
     assert diagnostics["x2MissingRatio"] == 0.05
 
@@ -478,7 +496,7 @@ def test_seed_quality_rejects_zero_entry_history_fallback(monkeypatch):
     with pytest.raises(RuntimeError, match="zero-entry fallback seed"):
         seed_build.assert_seed_quality(
             scan_payload,
-            [None] * 1000,
+            _market_companies(),
             {str(index): {} for index in range(1000)},
             fallback_source="official_fundamentals_history",
         )
@@ -503,14 +521,14 @@ def test_assert_seed_quality_rejects_small_universe_and_analysis(monkeypatch):
     with pytest.raises(RuntimeError, match="market scan seed"):
         seed_build.assert_seed_quality(
             {"universeSize": 5, "entry": [], "watch": [], "excluded": []},
-            [None] * 1000,
+            _market_companies(),
             {str(index): {} for index in range(1000)},
             fallback_source=None,
         )
     with pytest.raises(RuntimeError, match="analysis seed"):
         seed_build.assert_seed_quality(
             {"universeSize": 1000, "entry": [], "watch": [{} for _ in range(1000)], "excluded": []},
-            [None] * 1000,
+            _market_companies(),
             {"only": {}},
             fallback_source=None,
         )
@@ -533,7 +551,7 @@ def test_assert_seed_quality_rejects_stale_financial_freshness(monkeypatch):
                     "latestCachedFinancialPeriod": "2025Q4",
                 },
             },
-            [None] * 1000,
+            _market_companies(),
             {str(index): {} for index in range(1000)},
             fallback_source=None,
         )

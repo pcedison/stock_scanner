@@ -404,16 +404,15 @@ def assert_seed_quality(
             + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
         )
     companies_by_market = diagnostics["companiesByMarket"]
-    if sum(companies_by_market.values()) > 0:
-        for market, minimum in (
-            ("TWSE", MIN_SEED_TWSE_COMPANIES),
-            ("TPEX", MIN_SEED_TPEX_COMPANIES),
-        ):
-            if companies_by_market[market] < minimum:
-                raise RuntimeError(
-                    f"Refusing to publish undersized {market} company market coverage: "
-                    + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
-                )
+    for market, minimum in (
+        ("TWSE", MIN_SEED_TWSE_COMPANIES),
+        ("TPEX", MIN_SEED_TPEX_COMPANIES),
+    ):
+        if companies_by_market[market] < minimum:
+            raise RuntimeError(
+                f"Refusing to publish undersized {market} company market coverage: "
+                + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+            )
     if diagnostics["universeSize"] < MIN_SEED_UNIVERSE_SIZE:
         raise RuntimeError(
             "Refusing to publish an undersized market scan seed: "
