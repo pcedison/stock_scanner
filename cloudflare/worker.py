@@ -21,9 +21,10 @@ try:
     import worker_market_query
     import worker_market_resilience as market_resilience
     import worker_observability as observability
+    import worker_refresh_control
     import worker_refresh_jobs
 except ModuleNotFoundError:
-    from cloudflare import worker_health, worker_market_query, worker_refresh_jobs
+    from cloudflare import worker_health, worker_market_query, worker_refresh_control, worker_refresh_jobs
     from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
 
@@ -44,6 +45,11 @@ async def on_fetch(request, env):
         headers = {**SECURITY_HEADERS, **cors_headers_for_env(env, request)}
         observability.add_response_headers(response, headers, request_id)
         return response
+
+
+async def on_scheduled(controller, env, ctx):
+    scheduled_time = getattr(controller, "scheduledTime", None)
+    return await worker_refresh_control.run_scheduled_refresh(Api(env), scheduled_time)
 
 
 def d1_param(value):

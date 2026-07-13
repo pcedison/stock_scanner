@@ -2,8 +2,10 @@ from __future__ import annotations
 
 try:
     import worker_observability as observability
+    from worker_support import RateLimitError
 except ModuleNotFoundError:
     from cloudflare import worker_observability as observability
+    from cloudflare.worker_support import RateLimitError
 
 MARKET_SCAN_PATH = "/api/scan/market"
 REFRESH_DEPENDENCY_STAGES = frozenset({"d1_read", "d1_write"})
@@ -32,6 +34,16 @@ async def ensure_market_refresh(
     started = observability.start_timer()
     try:
         return await ensure_refresh_job(manifest, force=force)
+    except RateLimitError as exc:
+        if not has_last_good:
+            raise
+        return {
+            "status": "rate_limited",
+            "reason": reason,
+            "retryable": True,
+            "retryAfterSeconds": exc.retry_after_seconds,
+            "requestId": request_id,
+        }
     except dependency_failure_type as exc:
         if not has_last_good or exc.stage not in REFRESH_DEPENDENCY_STAGES:
             raise
@@ -57,6 +69,10 @@ async def ensure_market_refresh(
 def add_unavailable_cache_metadata(cache_status: dict, refresh_status: dict) -> dict:
     if refresh_status.get("status") == "unavailable":
         cache_status["retryable"] = refresh_status["retryable"]
+        cache_status["requestId"] = refresh_status["requestId"]
+    if refresh_status.get("status") == "rate_limited":
+        cache_status["retryable"] = True
+        cache_status["retryAfterSeconds"] = refresh_status["retryAfterSeconds"]
         cache_status["requestId"] = refresh_status["requestId"]
     return cache_status
 

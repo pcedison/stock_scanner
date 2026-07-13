@@ -22,6 +22,12 @@ persist = true
 APP_ENV = "production"
 APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"
 GITHUB_REPOSITORY = "pcedison/stock_scanner"
+GITHUB_DISPATCH_ENABLED = "false"
+GITHUB_REFRESH_WORKFLOW_FILE = "cloudflare-r2-seed-refresh.yml"
+GITHUB_REFRESH_WORKFLOW_REF = "main"
+
+[triggers]
+crons = []
 
 [[d1_databases]]
 binding = "DB"

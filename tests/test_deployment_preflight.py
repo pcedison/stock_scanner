@@ -1,12 +1,13 @@
 import re
 import sqlite3
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
 from scripts import check_deployment_preflight as deployment_preflight
-from scripts.check_cloudflare_worker_secrets import missing_secret_names, parse_secret_names
+from scripts.check_cloudflare_worker_secrets import dispatch_enabled, missing_secret_names, parse_secret_names
 from scripts.check_deployment_preflight import (
     validate_deploy_workflow,
     validate_seed_zip_selection,
@@ -116,6 +117,25 @@ def test_cloudflare_worker_secret_parser_detects_missing_bindings():
     assert parse_secret_names(output) == {"SUPER_USER_USERNAME"}
     assert missing_secret_names({"SUPER_USER_USERNAME"}, ["SUPER_USER_USERNAME"]) == []
     assert missing_secret_names(set(), ["SUPER_USER_USERNAME"]) == ["SUPER_USER_USERNAME"]
+
+
+def test_dispatch_secret_requirement_follows_wrangler_flag(tmp_path):
+    wrangler = tmp_path / "wrangler.toml"
+    wrangler.write_text('[vars]\nGITHUB_DISPATCH_ENABLED = "false"\n', encoding="utf-8")
+    assert dispatch_enabled(wrangler) is False
+    assert missing_secret_names({"SUPER_USER_USERNAME"}, ["SUPER_USER_USERNAME"]) == []
+
+    wrangler.write_text('[vars]\nGITHUB_DISPATCH_ENABLED = "true"\n', encoding="utf-8")
+    assert dispatch_enabled(wrangler) is True
+    required = ["SUPER_USER_USERNAME", "GITHUB_ACTIONS_DISPATCH_TOKEN"]
+    assert missing_secret_names({"SUPER_USER_USERNAME"}, required) == ["GITHUB_ACTIONS_DISPATCH_TOKEN"]
+
+
+def test_production_wrangler_keeps_dispatch_and_cron_disabled_until_release_config():
+    config = tomllib.loads(Path("cloudflare/wrangler.toml").read_text(encoding="utf-8"))
+
+    assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "false"
+    assert config["triggers"]["crons"] == []
 
 
 def test_validate_workflow_yaml_accepts_current_workflows():

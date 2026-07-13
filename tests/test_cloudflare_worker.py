@@ -1044,6 +1044,9 @@ class RoutingFakeD1:
     def _attempt(self, identifier):
         return next((a for a in self.auth_attempts if a["identifier"] == identifier), None)
 
+    def _refresh_time(self, job):
+        return str(job.get("finished_at") or job.get("updated_at") or job["queued_at"]).replace(" ", "T")
+
     def first_sql(self, sql, params):
         if "FROM sessions" in sql and "JOIN users" in sql:
             token, now = params
@@ -1104,9 +1107,30 @@ class RoutingFakeD1:
                 ),
                 None,
             )
+        if "FROM refresh_jobs" in sql and "status IN ('success', 'failed')" in sql:
+            if self.hide_refresh_job_reads:
+                return None
+            job_type, cutoff = params
+            cutoff = str(cutoff).replace(" ", "T")
+            return next(
+                (
+                    dict(job)
+                    for job in sorted(
+                        self.refresh_jobs,
+                        key=self._refresh_time,
+                        reverse=True,
+                    )
+                    if job["job_type"] == job_type
+                    and job["status"] in {"success", "failed"}
+                    and self._refresh_time(job) >= cutoff
+                ),
+                None,
+            )
         if "FROM refresh_jobs" in sql and "status IN ('queued', 'running')" in sql:
+            if self.hide_refresh_job_reads:
+                return None
             job_type = params[0]
-            cutoff = params[1]
+            cutoff = params[1] if len(params) > 1 else ""
             return next(
                 (j for j in sorted(self.refresh_jobs, key=lambda r: r["queued_at"], reverse=True)
                  if j["job_type"] == job_type and j["status"] in {"queued", "running"} and j["queued_at"] > cutoff),
@@ -1179,16 +1203,18 @@ class RoutingFakeD1:
         elif "DELETE FROM refresh_jobs WHERE queued_at" in sql:
             self.refresh_jobs = [j for j in self.refresh_jobs if j["queued_at"] >= params[0]]
         elif "INSERT OR IGNORE INTO refresh_jobs" in sql:
-            job_id, job_type, cache_key, idempotency_key, reason, queued_at, updated_at = params
+            job_id, job_type, cache_key, idempotency_key, reason, queued_at, updated_at = params[:7]
+            terminal_cutoff = str(params[-1] if len(params) > 7 else "").replace(" ", "T")
             async with self._refresh_insert_lock:
                 await asyncio.sleep(0)
                 self.refresh_insert_attempts += 1
                 conflict = any(
                     (idempotency_key is not None and job.get("idempotency_key") == idempotency_key)
+                    or (job["job_type"] == job_type and job["status"] in {"queued", "running"})
                     or (
                         job["job_type"] == job_type
-                        and job["cache_key"] == cache_key
-                        and job["status"] in {"queued", "running"}
+                        and job["status"] in {"success", "failed"}
+                        and self._refresh_time(job) >= terminal_cutoff
                     )
                     for job in self.refresh_jobs
                 )
@@ -2278,22 +2304,23 @@ def test_refresh_job_different_client_keys_share_active_cache_job(monkeypatch):
     assert db.active_job_count("market_scan") == 1
 
 
-def test_refresh_job_after_success_creates_new_job_for_new_request(monkeypatch):
+def test_refresh_job_after_success_blocks_new_request_inside_cooldown(monkeypatch):
     refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
     now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
 
-    first = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-first", now))
+    asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-first", now))
     db.refresh_jobs[0]["status"] = "success"
-    second = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-next", now))
 
-    assert first["jobId"] != second["jobId"]
-    assert len(db.refresh_jobs) == 2
-    assert db.active_job_count("market_scan") == 1
+    with pytest.raises(refresh_jobs.RefreshCooldownError, match="cooling down"):
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-next", now))
+
+    assert len(db.refresh_jobs) == 1
+    assert db.active_job_count("market_scan") == 0
 
 
-def test_refresh_job_terminal_transition_retries_insert_and_reads_back_new_id(monkeypatch):
+def test_refresh_job_terminal_transition_blocks_immediate_second_insert(monkeypatch):
     refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
@@ -2301,12 +2328,43 @@ def test_refresh_job_terminal_transition_retries_insert_and_reads_back_new_id(mo
 
     first = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-first", now))
     db.complete_active_after_idempotency_miss = True
-    second = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-racing", now))
 
-    assert first["jobId"] != second["jobId"]
-    assert second["jobId"] == db.refresh_jobs[-1]["id"]
-    assert db.refresh_insert_attempts == 3
-    assert db.active_job_count("market_scan") == 1
+    with pytest.raises(refresh_jobs.RefreshCooldownError, match="cooling down"):
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-racing", now))
+
+    assert first["jobId"] == db.refresh_jobs[0]["id"]
+    assert len(db.refresh_jobs) == 1
+    assert db.active_job_count("market_scan") == 0
+
+
+def test_refresh_job_terminal_race_after_atomic_insert_returns_cooldown(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    async def racing_insert(_sql, *_params):
+        db.refresh_jobs.append(
+            {
+                "id": "race-terminal",
+                "job_type": "market_scan",
+                "cache_key": "previous-generation",
+                "idempotency_key": "previous-key",
+                "status": "success",
+                "reason": "routine_refresh",
+                "queued_at": "2026-07-13T12:00:00+00:00",
+                "finished_at": "2026-07-13T12:00:30+00:00",
+                "updated_at": "2026-07-13T12:00:30+00:00",
+            }
+        )
+        return {"meta": {"changes": 0}}
+
+    api.db_run = racing_insert
+
+    with pytest.raises(refresh_jobs.RefreshCooldownError, match="cooling down"):
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "racing-client", now))
+
+    assert len(db.refresh_jobs) == 1
 
 
 def test_refresh_job_missing_read_back_raises_invariant_without_returning_candidate(monkeypatch):
@@ -2464,6 +2522,101 @@ def test_refresh_command_requires_csrf_in_production_and_rejects_invalid_key(mon
     assert db.refresh_jobs == []
 
 
+def test_refresh_command_rejects_fresh_manifest_without_writing_d1(monkeypatch):
+    manifest = {"generatedAt": "2026-07-13T12:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:05:00+00:00")
+
+    response = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market/refresh",
+                headers={"idempotency-key": "fresh-public-command"},
+            )
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 429
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["retry-after"].isdigit()
+    assert 1 <= int(response.headers["retry-after"]) <= 10800
+    assert payload["detail"] == "Market refresh is cooling down; try again later."
+    assert db.refresh_jobs == []
+
+
+def test_refresh_command_terminal_job_cooldown_survives_new_cache_generation(monkeypatch):
+    manifest = {
+        "generatedAt": "2026-07-12T00:00:00+00:00",
+        "counts": {"companies": 1001, "analysis": 1001},
+    }
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:05:00+00:00")
+    db.refresh_jobs.append(
+        {
+            "id": "recent-success",
+            "job_type": "market_scan",
+            "cache_key": "previous-generation",
+            "idempotency_key": "previous-key",
+            "status": "success",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-13 11:30:00",
+            "finished_at": "2026-07-13 11:40:00",
+            "updated_at": "2026-07-13 11:40:00",
+        }
+    )
+
+    response = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market/refresh",
+                headers={"idempotency-key": "new-cache-generation"},
+            )
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 429
+    assert payload["detail"] == "Market refresh is cooling down; try again later."
+    assert len(db.refresh_jobs) == 1
+    assert db.refresh_jobs[0]["id"] == "recent-success"
+
+
+def test_refresh_command_different_cache_generation_reuses_global_active_job(monkeypatch):
+    manifest = {"generatedAt": "2026-07-12T00:00:00+00:00", "counts": {"companies": 1002, "analysis": 1002}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:05:00+00:00")
+    db.refresh_jobs.append(
+        {
+            "id": "a" * 32,
+            "job_type": "market_scan",
+            "cache_key": "previous-generation",
+            "idempotency_key": "previous-idempotency",
+            "status": "queued",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-13T12:00:00+00:00",
+            "updated_at": "2026-07-13T12:00:00+00:00",
+        }
+    )
+
+    response = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market/refresh",
+                headers={"idempotency-key": "new-generation-client"},
+            )
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 202
+    assert payload["jobId"] == "a" * 32
+    assert len(db.refresh_jobs) == 1
+
+
 def test_refresh_command_idempotent_enqueue_failure_is_safe_503_and_legacy_keeps_lkg(monkeypatch):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     scan = {"entry": [{"stockCode": "2330", "summary": "last good"}], "watch": [], "excluded": []}
@@ -2531,6 +2684,9 @@ def test_refresh_command_only_classifies_known_transient_idempotent_writes_retry
     class FailingStatement:
         def bind(self, *_params):
             return self
+
+        async def first(self):
+            return None
 
         async def run(self):
             raise RuntimeError(message)
@@ -2669,7 +2825,7 @@ def test_refresh_status_unknown_main_status_is_safe_and_unknown_dispatch_fields_
     assert "secret" not in safe.body
 
 
-def test_refresh_command_coalesced_loser_key_can_create_after_terminal(monkeypatch):
+def test_refresh_command_coalesced_loser_key_is_cooldown_limited_after_terminal(monkeypatch):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
     pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
@@ -2688,8 +2844,8 @@ def test_refresh_command_coalesced_loser_key_can_create_after_terminal(monkeypat
     db.refresh_jobs[0]["status"] = "success"
     retried_loser = command("loser-key")
 
-    assert retried_loser["jobId"] != winner["jobId"]
-    assert len(db.refresh_jobs) == 2
+    assert retried_loser["detail"] == "Market refresh is cooling down; try again later."
+    assert len(db.refresh_jobs) == 1
 
 
 def test_legacy_market_post_keeps_payload_and_adds_refresh_successor_headers(monkeypatch):

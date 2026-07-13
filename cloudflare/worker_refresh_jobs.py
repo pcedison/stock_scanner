@@ -3,7 +3,12 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+try:
+    from worker_support import RateLimitError, parse_time
+except ModuleNotFoundError:
+    from cloudflare.worker_support import RateLimitError, parse_time
 
 FALLBACK_BUCKET_SECONDS = 600
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,80}\Z", re.ASCII)
@@ -16,7 +21,17 @@ JOB_REASONS = frozenset({"financial_report_window", "monthly_revenue_window", "r
 INSERT_JOB_SQL = """
 INSERT OR IGNORE INTO refresh_jobs
 (id, job_type, cache_key, idempotency_key, status, reason, queued_at, updated_at)
-VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+SELECT ?, ?, ?, ?, 'queued', ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1 FROM refresh_jobs
+    WHERE job_type = ? AND status IN ('queued', 'running')
+)
+AND NOT EXISTS (
+    SELECT 1 FROM refresh_jobs
+    WHERE job_type = ?
+      AND status IN ('success', 'failed')
+      AND julianday(COALESCE(NULLIF(finished_at, ''), NULLIF(updated_at, ''), queued_at)) >= julianday(?)
+)
 """
 READ_IDEMPOTENCY_SQL = """
 SELECT id, status, reason, queued_at, owner_run_id
@@ -27,8 +42,17 @@ LIMIT 1
 READ_ACTIVE_SQL = """
 SELECT id, status, reason, queued_at, owner_run_id
 FROM refresh_jobs
-WHERE job_type = ? AND cache_key = ? AND status IN ('queued', 'running')
+WHERE job_type = ? AND status IN ('queued', 'running')
 ORDER BY queued_at DESC, id DESC
+LIMIT 1
+"""
+READ_RECENT_TERMINAL_SQL = """
+SELECT id, status, reason, queued_at, finished_at, updated_at, owner_run_id
+FROM refresh_jobs
+WHERE job_type = ?
+  AND status IN ('success', 'failed')
+  AND julianday(COALESCE(NULLIF(finished_at, ''), NULLIF(updated_at, ''), queued_at)) >= julianday(?)
+ORDER BY julianday(COALESCE(NULLIF(finished_at, ''), NULLIF(updated_at, ''), queued_at)) DESC, id DESC
 LIMIT 1
 """
 READ_STATUS_SQL = """
@@ -40,6 +64,12 @@ LIMIT 1
 
 class RefreshJobReadBackError(RuntimeError):
     pass
+
+
+class RefreshCooldownError(RateLimitError):
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+        Exception.__init__(self, "Market refresh is cooling down; try again later.")
 
 
 def normalize_idempotency_key(value: str | None) -> str | None:
@@ -147,7 +177,21 @@ async def _read_back_job(api, idempotency_key, cache_key):
     row = await api.db_first(READ_IDEMPOTENCY_SQL, idempotency_key)
     if row:
         return row
-    return await api.db_first(READ_ACTIVE_SQL, JOB_TYPE, cache_key)
+    return await api.db_first(READ_ACTIVE_SQL, JOB_TYPE)
+
+
+def _retry_after_until(target, now) -> int:
+    if target is None:
+        return 60
+    return max(1, int((target - _utc_datetime(now)).total_seconds()))
+
+
+def _terminal_retry_after(row, policy, now) -> int:
+    finished_at = parse_time(row.get("finished_at") or row.get("updated_at") or row.get("queued_at"))
+    if finished_at is None:
+        return max(60, int(policy["minIntervalSeconds"]))
+    allowed_at = finished_at + timedelta(seconds=int(policy["minIntervalSeconds"]))
+    return _retry_after_until(allowed_at, now)
 
 
 async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now) -> dict:
@@ -159,8 +203,26 @@ async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now) ->
 
     cache_key = status["cacheKey"]
     idempotency_key = derive_refresh_idempotency_key(JOB_TYPE, cache_key, normalized_client_key, now)
+    row = await api.db_first(READ_IDEMPOTENCY_SQL, idempotency_key)
+    if row:
+        return _job_payload(api, row)
+    active = await api.db_first(READ_ACTIVE_SQL, JOB_TYPE)
+    if active:
+        return _job_payload(api, active)
+    if force and not status["isStale"]:
+        next_refresh = parse_time(status.get("nextRefreshAfter"))
+        raise RefreshCooldownError(_retry_after_until(next_refresh, now))
+    recent_terminal = await api.db_first(
+        READ_RECENT_TERMINAL_SQL,
+        JOB_TYPE,
+        (_utc_datetime(now) - timedelta(seconds=int(policy["minIntervalSeconds"]))).isoformat(),
+    )
+    if recent_terminal:
+        raise RefreshCooldownError(_terminal_retry_after(recent_terminal, policy, now))
+
     queued_at = _utc_datetime(now).isoformat()
     candidate_id = secrets.token_hex(16)
+    terminal_cutoff = (_utc_datetime(now) - timedelta(seconds=int(policy["minIntervalSeconds"]))).isoformat()
 
     for _attempt in range(2):
         await api.db_run(
@@ -172,10 +234,16 @@ async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now) ->
             policy["reason"],
             queued_at,
             queued_at,
+            JOB_TYPE,
+            JOB_TYPE,
+            terminal_cutoff,
         )
         row = await _read_back_job(api, idempotency_key, cache_key)
         if row:
             return _job_payload(api, row)
+        recent_terminal = await api.db_first(READ_RECENT_TERMINAL_SQL, JOB_TYPE, terminal_cutoff)
+        if recent_terminal:
+            raise RefreshCooldownError(_terminal_retry_after(recent_terminal, policy, now))
 
     raise RefreshJobReadBackError("Refresh job read-back invariant failed")
 
@@ -186,5 +254,6 @@ __all__ = (
     "normalize_idempotency_key",
     "refresh_command_payload",
     "refresh_job_status",
+    "RefreshCooldownError",
     "RefreshJobReadBackError",
 )
