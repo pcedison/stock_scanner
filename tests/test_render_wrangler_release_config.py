@@ -105,4 +105,3 @@ def test_production_profiles_are_fail_closed_without_release_acknowledgements():
         render_production_profile("production-v2", enable_production_cron=True)
     with pytest.raises(ValueError, match="confirm-production-v1-rollback"):
         render_production_profile("production-v1-rollback", enable_production_cron=True)
-

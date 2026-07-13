@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -162,7 +163,7 @@ def test_canary_rejects_private_response_without_no_store(monkeypatch):
 
 
 def test_public_client_never_sends_credentials(monkeypatch):
-    captured = {}
+    captured: dict[str, Any] = {}
 
     class Response:
         status = 200
@@ -187,4 +188,23 @@ def test_public_client_never_sends_credentials(monkeypatch):
     client.get("/api/scan/market/results", {"category": "entry", "cursor": 0})
 
     assert "Cookie" not in captured["headers"]
-    assert parse_qs(urlparse(captured["url"]).query)["category"] == ["entry"]
+    captured_url = captured["url"]
+    assert isinstance(captured_url, str)
+    assert parse_qs(urlparse(captured_url).query)["category"] == ["entry"]
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ("http://worker.example", "file:///tmp/worker", "https://user:password@worker.example"),
+)
+def test_public_client_rejects_non_https_or_credentialed_base_urls(base_url):
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        canary.PublicClient(base_url, 5)
+
+
+def test_public_client_rejects_cross_origin_paths(monkeypatch):
+    monkeypatch.setattr(canary, "urlopen", lambda *_args, **_kwargs: pytest.fail("urlopen must not run"))
+    client = canary.PublicClient("https://worker.example", 5)
+
+    with pytest.raises(RuntimeError, match="same-origin HTTPS"):
+        client.get("https://attacker.example/data")

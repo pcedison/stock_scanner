@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 DISCLOSURES = ("announced", "pending")
@@ -29,20 +29,32 @@ class FetchResult:
 
 class PublicClient:
     def __init__(self, base_url: str, timeout_seconds: int):
+        try:
+            parsed = urlsplit(base_url)
+        except ValueError as exc:
+            raise RuntimeError("canary base URL must be a valid HTTPS URL") from exc
+        if parsed.scheme.lower() != "https" or not parsed.netloc or parsed.username or parsed.password:
+            raise RuntimeError("canary base URL must be a credential-free HTTPS URL")
         self.base_url = base_url.rstrip("/") + "/"
+        self.origin = (parsed.scheme.lower(), parsed.netloc.lower())
         self.timeout_seconds = timeout_seconds
 
     def get(self, path: str, query: dict[str, Any] | None = None) -> FetchResult:
         suffix = path.lstrip("/")
         if query:
             suffix = f"{suffix}?{urlencode(query)}"
+        target = urljoin(self.base_url, suffix)
+        parsed_target = urlsplit(target)
+        if (parsed_target.scheme.lower(), parsed_target.netloc.lower()) != self.origin:
+            raise RuntimeError("canary requests must remain on the same-origin HTTPS endpoint")
         request = Request(
-            urljoin(self.base_url, suffix),
+            target,
             headers={"Accept": "application/json", "User-Agent": "stock-scanner-v2-canary/1.0"},
             method="GET",
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            # The parsed target is constrained to same-origin HTTPS immediately above.
+            with urlopen(request, timeout=self.timeout_seconds) as response:  # nosec B310
                 return FetchResult(response.status, response.read(), {key.lower(): value for key, value in response.headers.items()})
         except HTTPError as exc:
             return FetchResult(exc.code, exc.read(), {key.lower(): value for key, value in exc.headers.items()})
@@ -61,7 +73,8 @@ def _json_bytes(payload: Any) -> bytes:
 
 def _stock_code(item: dict[str, Any]) -> str:
     value = item.get("stockCode") or item.get("code")
-    _require(isinstance(value, str) and value, "market item missing stockCode")
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("market item missing stockCode")
     return value
 
 
@@ -114,7 +127,8 @@ def _validate_page(
     _require(page.get("disclosure") == disclosure and page.get("category") == category, "page identity mismatch")
     _require(page.get("cursor") == cursor, "page cursor mismatch")
     rows = page.get("items")
-    _require(isinstance(rows, list), "page items must be a list")
+    if not isinstance(rows, list):
+        raise RuntimeError("page items must be a list")
     _require(len(rows) == reference["count"], "page item count mismatch")
     return {_stock_code(item) for item in rows}
 
@@ -134,7 +148,7 @@ def fetch_v2_identity_sets(
     _validate_index(index, index_result.body)
     if expected_generation:
         _require(index["generationId"] == expected_generation, "market generation did not match expected generation")
-    identities = {category: set() for category in CATEGORIES}
+    identities: dict[str, set[str]] = {category: set() for category in CATEGORIES}
     page_count = 0
     for disclosure in DISCLOSURES:
         for category in CATEGORIES:

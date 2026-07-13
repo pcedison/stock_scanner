@@ -142,7 +142,7 @@ def _replace_page(generation, index, pages, page_index, **updates):
 
 
 def _generation_identities(generation) -> set[tuple[str, str, str]]:
-    identities = set()
+    identities: set[tuple[str, str, str]] = set()
     for disclosure in DISCLOSURES:
         for category in CATEGORIES:
             for reference in generation.index["disclosures"][disclosure][category]["pages"]:

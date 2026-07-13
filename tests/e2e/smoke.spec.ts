@@ -558,10 +558,6 @@ function marketV2Page(index: any, category: "entry" | "watch" | "excluded", curs
 }
 
 async function useMarketV2(page) {
-  await page.addInitScript(() => {
-    const config = globalThis.StockScannerConfig || {};
-    globalThis.StockScannerConfig = { ...config, marketApiVersion: "v2" };
-  });
   await page.route("**/api/runtime-config", (route) =>
     route.fulfill({
       status: 200,
@@ -604,6 +600,7 @@ test("paged market and market index lazy load bounded windows", async ({ page, i
   await closeBlockingModals(page);
   await showView(page, isMobile, "scan");
   await expect(page.locator(".market-result-code strong").first()).toHaveText("1000");
+  await expect(page.locator("#overview-entry-count")).toHaveText("205");
   await expect(page.locator('[data-market-column-nav="entry"]')).toContainText("205");
   expect(resultRequests).toEqual([{ category: "entry", cursor: 0 }]);
   expect(legacyCalls).toBe(0);

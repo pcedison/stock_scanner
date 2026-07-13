@@ -60,10 +60,12 @@ def _public_job(job: dict) -> dict:
 def _validate_scan_payload(payload: object) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Scan result is empty or inconsistent")
-    categories = (payload.get("entry"), payload.get("watch"), payload.get("excluded"))
-    if not all(isinstance(category, list) for category in categories):
+    entry = payload.get("entry")
+    watch = payload.get("watch")
+    excluded = payload.get("excluded")
+    if not isinstance(entry, list) or not isinstance(watch, list) or not isinstance(excluded, list):
         raise ValueError("Scan result is empty or inconsistent")
-    actual_universe_size = sum(len(category) for category in categories)
+    actual_universe_size = len(entry) + len(watch) + len(excluded)
     reported_universe_size = payload.get("universeSize", actual_universe_size)
     if (
         isinstance(reported_universe_size, bool)

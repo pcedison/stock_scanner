@@ -2,6 +2,7 @@ import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -9,6 +10,7 @@ import scripts.build_cloudflare_seed as seed_build
 from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 from backend.models.analysis import AnalysisResult, RuleResult
 from backend.models.company import Company
+from backend.models.financial import FundamentalSnapshot
 
 
 class ObjectResult:
@@ -85,7 +87,10 @@ def test_merge_seed_companies_unions_snapshot_companies_without_dropping_profile
 
     merged = seed_build.merge_seed_companies(
         [profile_company],
-        [SimpleNamespace(company=snapshot_duplicate), SimpleNamespace(company=snapshot_only)],
+        [
+            cast(FundamentalSnapshot, SimpleNamespace(company=snapshot_duplicate)),
+            cast(FundamentalSnapshot, SimpleNamespace(company=snapshot_only)),
+        ],
     )
 
     assert [company.stockCode for company in merged] == ["1111", "9999"]
@@ -229,7 +234,7 @@ def test_seed_quality_rejects_missing_market_company_coverage(monkeypatch):
         "watch": [{} for _ in range(1000)],
         "excluded": [],
     }
-    analysis_by_code = {str(index): {} for index in range(1000)}
+    analysis_by_code: dict[str, dict] = {str(index): {} for index in range(1000)}
     companies = [SimpleNamespace(market="TWSE") for _ in range(3)]
 
     with pytest.raises(RuntimeError, match="TPEX company market coverage"):

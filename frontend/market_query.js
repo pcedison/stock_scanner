@@ -457,11 +457,14 @@
     }
     return { loadWindow, refresh, forceRefresh: () => refresh({ force: true }) };
   }
-  function createMarketCountUi({ state, apiVersion, queryAll, labels, activeTab, activeColumn, groupScan, renderOps }) {
+  function createMarketCountUi(options) {
+    const { state, apiVersion, queryAll, labels, activeTab, activeColumn, groupScan, renderOps } = options;
+    const getApiVersion = options.getApiVersion || (() => apiVersion);
     function renderOverview(scan = state.marketScan, selectedTab = state.activeMarketDisclosureTab) {
       if (typeof document === "undefined") return;
       const keys = CATEGORIES;
       const values = Object.fromEntries(keys.map((key) => [key, "--"]));
+      const apiVersion = getApiVersion() === "v2" ? "v2" : "v1";
       const source = apiVersion === "v2" ? state.marketIndex : scan;
       const note = source?.generatedAt ? `${new Date(source.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
       const tab = activeTab(selectedTab);
@@ -480,6 +483,7 @@
       renderOps(source);
     }
     function updateNavigation(grouped = null, selectedTab = state.activeMarketDisclosureTab) {
+      const apiVersion = getApiVersion() === "v2" ? "v2" : "v1";
       const tab = activeTab(selectedTab);
       queryAll("[data-market-column-nav]").forEach((button) => {
         const category = button.dataset.marketColumnNav;

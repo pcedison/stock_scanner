@@ -2090,7 +2090,7 @@ def test_worker_scan_market_post_rejects_non_d1_refresh_failure(monkeypatch, cap
         "generatedAt": "2026-02-19T00:00:00+00:00",
         "counts": {"companies": 1000, "analysis": 1000},
     }
-    scan = {"entry": [], "watch": [], "excluded": []}
+    scan: dict[str, list[dict[str, object]]] = {"entry": [], "watch": [], "excluded": []}
     worker, api, _db = build_router_api(
         monkeypatch,
         r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
@@ -2121,7 +2121,7 @@ def test_worker_scan_market_post_rejects_unexpected_refresh_failure(monkeypatch,
         "generatedAt": "2026-02-19T00:00:00+00:00",
         "counts": {"companies": 1000, "analysis": 1000},
     }
-    scan = {"entry": [], "watch": [], "excluded": []}
+    scan: dict[str, list[dict[str, object]]] = {"entry": [], "watch": [], "excluded": []}
     _worker, api, _db = build_router_api(
         monkeypatch,
         r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},

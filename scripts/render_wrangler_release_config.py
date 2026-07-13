@@ -219,7 +219,7 @@ def wrangler_version() -> tuple[int, int, int]:
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", completed.stdout + completed.stderr)
     if completed.returncode != 0 or not match:
         raise RuntimeError("unable to determine wrangler version")
-    return tuple(int(part) for part in match.groups())
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
 def validate_wrangler_minimum(minimum: tuple[int, int, int] = (4, 69, 0)) -> None:

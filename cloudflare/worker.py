@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Protocol, cast
 from urllib.parse import parse_qs, urlparse
 
 from js import Object, Response
@@ -30,6 +31,10 @@ except ModuleNotFoundError:
 
 CLIENT_ERROR_STATUS = {BadRequestError: 400, NotFoundError: 404, ValidationError: 422, PermissionError: 401, ForbiddenError: 403}
 set_response_header = observability.set_response_header
+
+
+class _DependencyFailureWithCode(Protocol):
+    error_code: str
 
 
 async def on_fetch(request, env):
@@ -451,7 +456,8 @@ class Api:
             )
         except worker_refresh_jobs.RefreshJobReadBackError as exc:
             failure = DependencyFailure("d1_read", True, exc)
-            failure.error_code = "REFRESH_JOB_READ_BACK_INVARIANT"
+            failure_with_code = cast(_DependencyFailureWithCode, failure)
+            failure_with_code.error_code = "REFRESH_JOB_READ_BACK_INVARIANT"
         except DependencyFailure as exc:
             if exc.stage == "d1_write" and getattr(exc, "error_code", "") in observability.RETRYABLE_D1_READ_CODES:
                 exc.retryable = True

@@ -363,7 +363,7 @@ const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({
 const { renderOverview: renderOverviewStats, updateNavigation: updateMarketColumnNav } =
   MARKET_QUERY_HELPERS.createMarketCountUi({
     state,
-    apiVersion: MARKET_API_VERSION,
+    getApiVersion: () => MARKET_API_VERSION,
     queryAll: $$,
     labels: MARKET_COLUMN_LABELS,
     activeTab: activeMarketDisclosureKey,

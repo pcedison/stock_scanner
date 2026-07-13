@@ -229,7 +229,8 @@ def build_market_generation(
 
 def _load_page(pages: Mapping[str, Any], reference: Mapping[str, Any]) -> dict[str, Any]:
     key = reference.get("key")
-    _require(isinstance(key, str) and key in pages, "referenced market page is missing")
+    if not isinstance(key, str) or key not in pages:
+        raise ValueError("referenced market page is missing")
     value = pages[key]
     raw = value if isinstance(value, bytes) else canonical_json_bytes(value)
     _require(len(raw) == reference["bytes"], "market page byte count mismatch")
@@ -287,19 +288,18 @@ def query_market_generation(
 ) -> dict[str, Any]:
     _require(index.get("schemaVersion") == _SCHEMA_VERSION, "invalid market index schemaVersion")
     generation_id = index.get("generationId")
-    _require(isinstance(generation_id, str) and bool(re.fullmatch(r"[0-9a-f]{24}", generation_id)), "invalid ID")
+    if not isinstance(generation_id, str) or not re.fullmatch(r"[0-9a-f]{24}", generation_id):
+        raise ValueError("invalid ID")
     _require(disclosure in DISCLOSURES, "invalid disclosure")
     _require(category in CATEGORIES, "invalid category")
     _require(type(cursor) is int and cursor >= 0, "cursor must be non-negative")
     _require(type(limit) is int and 1 <= limit <= PAGE_SIZE, "limit must be between 1 and 100")
-
     try:
         bucket = index["disclosures"][disclosure][category]
         total = _require_nonnegative_int(bucket["count"], "bucket total")
         references = _validated_references(bucket["pages"], generation_id, disclosure, category, total)
     except (KeyError, TypeError) as exc:
         raise ValueError("market index disclosure bucket is malformed") from exc
-
     requested_end = min(total, cursor + limit)
     items: list[Any] = []
     for reference in references:
@@ -329,11 +329,11 @@ def query_market_generation(
             "market page nextCursor mismatch",
         )
         page_items = page.get("items")
-        _require(isinstance(page_items, list) and len(page_items) == page_count, "market page item count mismatch")
+        if not isinstance(page_items, list) or len(page_items) != page_count:
+            raise ValueError("market page item count mismatch")
         start = max(cursor, page_cursor) - page_cursor
         end = min(requested_end, page_cursor + page_count) - page_cursor
         items.extend(page_items[start:end])
-
     expected_count = max(0, requested_end - min(cursor, total))
     _require(len(items) == expected_count, "market page range is incomplete")
     next_cursor = cursor + len(items) if cursor + len(items) < total else None

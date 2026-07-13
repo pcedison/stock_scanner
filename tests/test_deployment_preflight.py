@@ -291,7 +291,7 @@ def test_r2_refresh_job_completion_is_scoped_to_claiming_run():
     assert (
         "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', "
         "owner_run_id = '${GITHUB_RUN_ID}', "
-        "started_at = datetime('now'), updated_at = datetime('now') "
+        "dispatch_error_code = NULL, started_at = datetime('now'), updated_at = datetime('now') "
         "WHERE job_type = 'market_scan' AND status = 'queued';"
     ) in text
     assert (
@@ -321,17 +321,17 @@ def test_r2_refresh_workflow_sql_claims_and_finalizes_only_its_jobs():
     database = sqlite3.connect(":memory:")
     database.executescript(Path("cloudflare/schema.sql").read_text(encoding="utf-8"))
     rows = (
-        ("pending", "market_scan", "cache-pending", "queued", "pending"),
-        ("dispatched", "market_scan", "cache-dispatched", "queued", "dispatched"),
-        ("dispatch-failed", "market_scan", "cache-failed", "queued", "failed"),
-        ("dispatch-unknown", "market_scan", "cache-unknown", "queued", "unknown"),
-        ("other-type", "other_job", "cache-other", "queued", "pending"),
+        ("pending", "market_scan", "cache-pending", "queued", "pending", "OLD_ERROR"),
+        ("dispatched", "market_scan", "cache-dispatched", "queued", "dispatched", "OLD_ERROR"),
+        ("dispatch-failed", "market_scan", "cache-failed", "queued", "failed", "GITHUB_HTTP_503"),
+        ("dispatch-unknown", "market_scan", "cache-unknown", "queued", "unknown", "UNKNOWN"),
+        ("other-type", "other_job", "cache-other", "queued", "pending", "OTHER_ERROR"),
     )
     database.executemany(
         """
         INSERT INTO refresh_jobs
-        (id, job_type, cache_key, status, reason, queued_at, updated_at, dispatch_status)
-        VALUES (?, ?, ?, ?, 'manual', '2026-07-13', '2026-07-13', ?)
+        (id, job_type, cache_key, status, reason, queued_at, updated_at, dispatch_status, dispatch_error_code)
+        VALUES (?, ?, ?, ?, 'manual', '2026-07-13', '2026-07-13', ?, ?)
         """,
         rows,
     )
@@ -350,6 +350,10 @@ def test_r2_refresh_workflow_sql_claims_and_finalizes_only_its_jobs():
             "SELECT status, dispatch_status FROM refresh_jobs WHERE job_type = 'market_scan'"
         )
     ) == {("running", "workflow_claimed")}
+    assert set(
+        database.execute("SELECT dispatch_error_code FROM refresh_jobs WHERE job_type = 'market_scan'")
+    ) == {(None,)}
+    assert database.execute("SELECT dispatch_error_code FROM refresh_jobs WHERE id = 'other-type'").fetchone()[0] == "OTHER_ERROR"
 
     database.execute(
         """

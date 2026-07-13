@@ -99,7 +99,7 @@ async def github_workflow_dispatch(env, payload) -> DispatchResult:
     if not token or not repository or "/" not in repository or not workflow_file:
         return DispatchResult(error_code="GITHUB_DISPATCH_NOT_CONFIGURED")
     try:
-        import js  # type: ignore[import-not-found]
+        import js
 
         response = await js.fetch(
             f"https://api.github.com/repos/{repository}/actions/workflows/{workflow_file}/dispatches",

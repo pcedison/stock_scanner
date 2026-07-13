@@ -70,10 +70,10 @@ def _request_json(
                 raise RuntimeError(f"{safe_url} returned HTTP {response.status}: {str(payload)[:1000]}")
             return response.status, response_headers, payload
     except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
+        response_body = exc.read().decode("utf-8", errors="replace")
         if exc.code == expected_status:
-            return exc.code, {key.lower(): value for key, value in exc.headers.items()}, json.loads(body or "{}")
-        raise RuntimeError(f"{safe_url} returned HTTP {exc.code}: {body[:1000]}") from exc
+            return exc.code, {key.lower(): value for key, value in exc.headers.items()}, json.loads(response_body or "{}")
+        raise RuntimeError(f"{safe_url} returned HTTP {exc.code}: {response_body[:1000]}") from exc
 
 
 def _fetch_json(url: str) -> dict[str, Any]:

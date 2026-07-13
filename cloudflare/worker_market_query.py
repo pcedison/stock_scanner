@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -62,14 +62,17 @@ def _first_query_value(query: Mapping[str, list[str]], field: str, *, required: 
     values = query.get(field)
     if values is None and not required:
         return None
-    _require(isinstance(values, list) and len(values) == 1, f"invalid {field}")
+    if not isinstance(values, list) or len(values) != 1:
+        raise ValueError(f"invalid {field}")
     value = values[0]
-    _require(isinstance(value, str) and bool(value), f"invalid {field}")
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"invalid {field}")
     return value
 
 
 def _bounded_int(value: str | None, field: str, minimum: int, maximum: int) -> int:
-    _require(isinstance(value, str) and bool(re.fullmatch(r"[0-9]+", value)), f"invalid {field}")
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]+", value) is None:
+        raise ValueError(f"invalid {field}")
     _require(len(value) <= 32, f"invalid {field}")
     significant = value.lstrip("0") or "0"
     _require(len(significant) <= len(str(maximum)), f"invalid {field}")
@@ -84,8 +87,10 @@ def parse_market_results_query(query: Mapping[str, list[str]]) -> MarketResultsQ
     cursor = _bounded_int(_first_query_value(query, "cursor"), "cursor", 0, MAX_CURSOR)
     limit = _bounded_int(_first_query_value(query, "limit"), "limit", 1, PAGE_SIZE)
     generation_id = _first_query_value(query, "generationId", required=False)
-    _require(disclosure in DISCLOSURES, "invalid disclosure")
-    _require(category in CATEGORIES, "invalid category")
+    if disclosure is None or disclosure not in DISCLOSURES:
+        raise ValueError("invalid disclosure")
+    if category is None or category not in CATEGORIES:
+        raise ValueError("invalid category")
     _require(generation_id is None or bool(GENERATION_PATTERN.fullmatch(generation_id)), "invalid generationId")
     return MarketResultsQuery(disclosure, category, cursor, limit, generation_id)
 
@@ -101,19 +106,18 @@ def _index_identity(index: Mapping[str, Any]) -> str:
     _require(index.get("pageSize") == PAGE_SIZE and type(index.get("pageSize")) is int, "invalid index pageSize")
     _require(index.get("detailMode") == "summary", "invalid index detailMode")
     generated_at = index.get("generatedAt")
-    _require(isinstance(generated_at, str) and bool(generated_at), "invalid index generatedAt")
+    if not isinstance(generated_at, str) or not generated_at:
+        raise ValueError("invalid index generatedAt")
     try:
         datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("invalid index generatedAt") from exc
-    _require(
-        index.get("disclosurePeriod") is None or isinstance(index.get("disclosurePeriod"), str),
-        "invalid index disclosurePeriod",
-    )
+    _require(index.get("disclosurePeriod") is None or isinstance(index.get("disclosurePeriod"), str), "invalid index disclosurePeriod")
     for field in ("filingContext", "financialFreshness", "cacheStatusInputs"):
         _require(isinstance(index.get(field), Mapping), f"invalid index {field}")
     generation_id = index.get("generationId")
-    _require(isinstance(generation_id, str) and bool(GENERATION_PATTERN.fullmatch(generation_id)), "invalid index ID")
+    if not isinstance(generation_id, str) or GENERATION_PATTERN.fullmatch(generation_id) is None:
+        raise ValueError("invalid index ID")
     _require(len(_canonical_bytes(index)) < MAX_INDEX_BYTES, "market index is too large")
     return generation_id
 
@@ -239,7 +243,8 @@ def merge_market_pages(
             "market page identity mismatch",
         )
         page_items = page.get("items")
-        _require(isinstance(page_items, list) and len(page_items) == reference["count"], "market page item count mismatch")
+        if not isinstance(page_items, list) or len(page_items) != reference["count"]:
+            raise ValueError("market page item count mismatch")
         for item in page_items:
             _require(_valid_page_item(item), "market page item is invalid")
         start = max(query.cursor, cursor) - cursor
@@ -344,8 +349,9 @@ async def _r2_json_bytes(
     try:
         size = getattr(obj, "size", None)
         _require(type(size) is int and 0 <= size < max_bytes, "market R2 object size is invalid")
-        read_body = getattr(obj, "arrayBuffer", None)
-        _require(callable(read_body), "market R2 object body is unavailable")
+        read_body: Callable[[], object] | None = getattr(obj, "arrayBuffer", None)
+        if not callable(read_body):
+            raise ValueError("market R2 object body is unavailable")
     except (TypeError, ValueError) as exc:
         raise ValueError("market R2 object is malformed") from exc
     buffer = await dependency_call(lambda: read_body(), dependency_failure_type, "r2_read", True)

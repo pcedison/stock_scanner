@@ -176,7 +176,7 @@ def _seed_members(
     seed_company_count: int = TEST_SEED_COMPANIES,
     entry_count: int = 10,
     excluded_count: int = 10,
-) -> dict[str, str]:
+) -> dict[str, str | bytes]:
     quarters = {
         f"{index + 1000:04d}": {f"202{i}Q4": {"period": f"202{i}Q4"} for i in range(rows)} for index in range(companies)
     }
@@ -205,7 +205,7 @@ def _seed_members(
             isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in candidate_counts.values()
         ):
             scan_counts = candidate_counts
-    def rows(category: str, count: int) -> list[dict[str, object]]:
+    def scan_rows(category: str, count: int) -> list[dict[str, object]]:
         prefix = {"entry": "E", "watch": "W", "excluded": "X"}[category]
         status = {"entry": "ENTRY", "watch": "INSUFFICIENT_DATA", "excluded": "EXCLUDED"}[category]
         reasons = (
@@ -232,9 +232,9 @@ def _seed_members(
             "monthlyRevenuePeriod": "2026-06",
         },
         "financialFreshness": {"latestCachedFinancialPeriod": "2026Q1"},
-        "entry": rows("entry", scan_counts["entry"]),
-        "watch": rows("watch", scan_counts["watch"]),
-        "excluded": rows("excluded", scan_counts["excluded"]),
+        "entry": scan_rows("entry", scan_counts["entry"]),
+        "watch": scan_rows("watch", scan_counts["watch"]),
+        "excluded": scan_rows("excluded", scan_counts["excluded"]),
     }
     cache_status_inputs = {
         "generatedAt": market_scan["generatedAt"],

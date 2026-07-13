@@ -109,7 +109,7 @@ class OfficialDataProvider:
 
     @staticmethod
     def _company_market_counts(companies: list[Company]) -> dict[str, int]:
-        counts = Counter(company.market for company in companies)
+        counts: Counter[str] = Counter(company.market for company in companies)
         return {market: counts.get(market, 0) for market in _CORE_PROFILE_MARKETS}
 
     def _profile_refresh_problem(self, companies: list[Company]) -> str | None:

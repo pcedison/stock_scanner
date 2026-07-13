@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   refresh:
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    environment: production
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -105,10 +107,9 @@ jobs:
           npm ci
           pip install -r requirements.txt -c constraints.txt
 
-      - name: Apply D1 migrations
+      - name: Recover orphaned market refresh jobs
         if: steps.early-check.outputs.run_refresh == 'true'
-        run: npx wrangler d1 migrations apply "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml
-
+        run: npx wrangler d1 execute "$CF_D1_DATABASE" --remote --config cloudflare/wrangler.toml --command "UPDATE refresh_jobs SET status = 'queued', dispatch_status = 'pending', owner_run_id = NULL, started_at = NULL, finished_at = NULL, updated_at = datetime('now'), error = NULL, dispatch_error_code = NULL WHERE job_type = 'market_scan' AND status = 'running';"
       - name: Check pending market refresh jobs
         id: refresh-check
         if: steps.early-check.outputs.run_refresh == 'true'
@@ -171,7 +172,7 @@ jobs:
           npx wrangler d1 execute "$CF_D1_DATABASE" \
             --remote \
             --config cloudflare/wrangler.toml \
-            --command "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', owner_run_id = '${GITHUB_RUN_ID}', started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
+            --command "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed', owner_run_id = '${GITHUB_RUN_ID}', dispatch_error_code = NULL, started_at = datetime('now'), updated_at = datetime('now') WHERE job_type = 'market_scan' AND status = 'queued';"
 
       - name: Rebuild seed from official sources
         if: steps.refresh-check.outputs.run_refresh == 'true'
@@ -189,38 +190,31 @@ jobs:
             --max-age-days 3
           cat .tmp/seed-quality.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload rebuilt seed cache to R2
+      - name: Prepare R2 publication backup
+        id: r2-backup
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
           python scripts/cloudflare_seed_upload_plan.py \
             --seed-dir cloudflare/seed \
             --data-dir data \
-            --output-json .tmp/r2-upload-plan.json \
-            --output-tsv .tmp/r2-upload-plan.tsv
-          put_with_retry() {
-            object_key="$1"
-            file_path="$2"
-            attempt=1
-            max_attempts=5
-            delay=5
-            while true; do
-              if npx wrangler r2 object put "$CF_R2_BUCKET/$object_key" --remote --file "$file_path" </dev/null; then
-                return 0
-              fi
-              if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "R2 上傳 $object_key 失敗：已重試 $max_attempts 次仍未成功" >&2
-                return 1
-              fi
-              echo "R2 上傳 $object_key 第 $attempt 次失敗，${delay}s 後重試..." >&2
-              sleep "$delay"
-              attempt=$((attempt + 1))
-              delay=$((delay * 2))
-            done
-          }
-          while IFS=$'\t' read -r object_key file_path; do
-            # Preserve the generated order: immutable pages/index first and the public pointer last.
-            put_with_retry "$object_key" "$file_path"
-          done < .tmp/r2-upload-plan.tsv
+            --output-json .tmp/r2-upload-plan.json
+          python scripts/r2_publication_backup.py backup \
+            --plan-json .tmp/r2-upload-plan.json --bucket "$CF_R2_BUCKET" \
+            --backup-dir .tmp/r2-backup --manifest .tmp/r2-backup/manifest.json
+
+      - name: Preserve R2 publication backup
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: r2-publication-backup-${{ github.run_id }}
+          path: .tmp/r2-backup
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish rebuilt seed cache to R2
+        id: r2-publish
+        if: steps.refresh-check.outputs.run_refresh == 'true'
+        run: python scripts/r2_publication_backup.py publish --plan-json .tmp/r2-upload-plan.json --bucket "$CF_R2_BUCKET"
 
       - name: Verify refreshed production seed
         if: steps.refresh-check.outputs.run_refresh == 'true'
@@ -241,6 +235,10 @@ jobs:
             --max-cache-age-hours 36 \
             --max-refresh-delay-minutes 15 \
             --reject-offline-seed
+
+      - name: Restore previous R2 publication after failure
+        if: failure() && steps.refresh-check.outputs.run_refresh == 'true' && steps.r2-backup.outcome == 'success' && steps.r2-publish.outcome != 'skipped'
+        run: python scripts/r2_publication_backup.py restore --bucket "$CF_R2_BUCKET" --backup-dir .tmp/r2-backup --manifest .tmp/r2-backup/manifest.json
 
       - name: Mark refresh jobs as completed
         if: steps.refresh-check.outputs.run_refresh == 'true'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -156,15 +157,15 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
         build_upload_plan(seed_dir, data_dir)
 
 
-def test_r2_refresh_workflow_consumes_upload_tsv_without_sorting():
+def test_r2_refresh_workflow_publishes_the_generated_plan_without_sorting():
     workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
     plan_command = "python scripts/cloudflare_seed_upload_plan.py"
-    consumer = "done < .tmp/r2-upload-plan.tsv"
+    consumer = "python scripts/r2_publication_backup.py publish"
     upload_block = workflow[workflow.index(plan_command) : workflow.index(consumer) + len(consumer)]
 
     assert "sort " not in upload_block
     assert "sort\t" not in upload_block
-    assert "while IFS=$'\\t' read -r object_key file_path" in upload_block
+    assert "--plan-json .tmp/r2-upload-plan.json" in upload_block
 
 
 def test_r2_refresh_restores_persisted_monthly_history_before_build():
@@ -178,6 +179,69 @@ def test_r2_refresh_restores_persisted_monthly_history_before_build():
     assert workflow.index(get_command) < workflow.index(hydrate_command) < workflow.index(build_command)
     assert "unzip -o" not in workflow
     assert len(workflow.splitlines()) <= 260
+
+
+def test_production_workflows_restrict_release_refs_and_r2_uses_environment():
+    deploy = Path(".github/workflows/cloudflare-deploy.yml").read_text(encoding="utf-8")
+    refresh = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+
+    main_only = "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'"
+    assert deploy.count(main_only) >= 2
+    assert "      - master" not in deploy
+    assert "environment: production" in refresh
+    assert "github.event_name == 'schedule' || github.ref == 'refs/heads/main'" in refresh
+
+
+def test_r2_refresh_leaves_migrations_to_deploy_and_recovers_orphaned_jobs():
+    workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    recover = (
+        "UPDATE refresh_jobs SET status = 'queued', dispatch_status = 'pending', owner_run_id = NULL, "
+        "started_at = NULL, finished_at = NULL, updated_at = datetime('now'), error = NULL, "
+        "dispatch_error_code = NULL "
+        "WHERE job_type = 'market_scan' AND status = 'running';"
+    )
+    claim = "UPDATE refresh_jobs SET status = 'running', dispatch_status = 'workflow_claimed'"
+
+    assert "wrangler d1 migrations apply" not in workflow
+    assert recover in workflow
+    assert workflow.index(recover) < workflow.index(claim)
+
+    database = sqlite3.connect(":memory:")
+    database.execute(
+        "CREATE TABLE refresh_jobs (job_type TEXT, status TEXT, dispatch_status TEXT, owner_run_id TEXT, "
+        "started_at TEXT, finished_at TEXT, updated_at TEXT, error TEXT, dispatch_error_code TEXT)"
+    )
+    database.executemany(
+        "INSERT INTO refresh_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("market_scan", "running", "workflow_claimed", "old", "start", None, "old", "error", "OLD_ERROR"),
+            ("market_scan", "success", "completed", "done", "start", "finish", "old", None, None),
+            ("other", "running", "workflow_claimed", "other", "start", None, "old", "error", "OTHER_ERROR"),
+        ],
+    )
+    database.execute(recover)
+    rows = database.execute(
+        "SELECT job_type, status, dispatch_status, owner_run_id, started_at, finished_at, error, dispatch_error_code "
+        "FROM refresh_jobs ORDER BY rowid"
+    ).fetchall()
+
+    assert rows[0] == ("market_scan", "queued", "pending", None, None, None, None, None)
+    assert rows[1][:3] == ("market_scan", "success", "completed")
+    assert rows[2][:3] == ("other", "running", "workflow_claimed")
+
+
+def test_r2_refresh_backs_up_before_publish_and_rolls_back_before_failed_job_mutation():
+    workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    backup = "python scripts/r2_publication_backup.py backup"
+    artifact = "uses: actions/upload-artifact@v6"
+    publish = "python scripts/r2_publication_backup.py publish"
+    verify = "python scripts/check_cloudflare_health.py"
+    restore = "python scripts/r2_publication_backup.py restore"
+    failed = "UPDATE refresh_jobs SET status = 'failed'"
+
+    assert workflow.index(backup) < workflow.index(artifact) < workflow.index(publish)
+    assert workflow.index(publish) < workflow.rindex(verify) < workflow.index(restore) < workflow.index(failed)
+    assert "steps.r2-publish.outcome != 'skipped'" in workflow
 
 
 def test_standard_seed_refresh_uses_the_same_validated_hydration_path():

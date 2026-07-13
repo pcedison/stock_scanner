@@ -183,13 +183,14 @@ def test_authoritative_refresh_check_carries_early_stale_evidence_into_final_or(
     assert initial_index < health_failure_index < stale_output_index < final_or_index
 
 
-def test_refresh_workflow_applies_migrations_before_dispatch_state_claim():
-    text = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+def test_deploy_workflow_is_the_only_d1_migration_owner():
+    deploy = Path(".github/workflows/cloudflare-deploy.yml").read_text(encoding="utf-8")
+    refresh = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    migration = 'wrangler d1 migrations apply "$CF_D1_DATABASE"'
 
-    migration_index = text.index('wrangler d1 migrations apply "$CF_D1_DATABASE"')
-    claim_index = text.index("dispatch_status = 'workflow_claimed'")
-
-    assert migration_index < claim_index
+    assert migration in deploy
+    assert deploy.index(migration) < deploy.index("Deploy Python Worker API")
+    assert migration not in refresh
 
 
 def test_workflow_command_options_reject_inline_shell_comments():

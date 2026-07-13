@@ -270,7 +270,8 @@ def _current_market_generation() -> tuple[MarketGeneration, dict]:
         scan = jsonable_encoder(scan_market_cached())
         if not isinstance(scan, dict):
             raise ValueError("market scan must be an object")
-        context = scan.get("filingContext") if isinstance(scan.get("filingContext"), dict) else {}
+        filing_context = scan.get("filingContext")
+        context = filing_context if isinstance(filing_context, dict) else {}
         generation = build_market_generation(
             _compact_market_query_scan(scan),
             cache_status_inputs={
