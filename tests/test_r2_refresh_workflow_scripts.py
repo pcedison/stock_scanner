@@ -98,6 +98,39 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
         (seed_dir / name).write_text("{}", encoding="utf-8")
     (seed_dir / "analysis_shards" / "23.json").write_text("{}", encoding="utf-8")
     (seed_dir / "holding_analysis_shards" / "23.json").write_text("{}", encoding="utf-8")
+    generation_id = "a" * 24
+    page_key = f"public/market_scan/v2/{generation_id}/pending/watch/0.json"
+    pointer = {
+        "generationId": generation_id,
+        "disclosures": {
+            "announced": {
+                "count": 0,
+                **{category: {"count": 0, "pages": []} for category in ("entry", "watch", "excluded")},
+            },
+            "pending": {
+                "count": 1,
+                "entry": {"count": 0, "pages": []},
+                "watch": {
+                    "count": 1,
+                    "pages": [
+                        {
+                            "key": page_key,
+                            "cursor": 0,
+                            "count": 1,
+                            "bytes": 2,
+                            "sha256": "0" * 64,
+                        }
+                    ],
+                },
+                "excluded": {"count": 0, "pages": []},
+            },
+        },
+    }
+    (seed_dir / "market_scan_index.json").write_text(json.dumps(pointer), encoding="utf-8")
+    generation_dir = seed_dir / "market_scan" / "v2" / generation_id
+    (generation_dir / "pending" / "watch").mkdir(parents=True)
+    (generation_dir / "pending" / "watch" / "0.json").write_text("{}", encoding="utf-8")
+    (generation_dir / "index.json").write_text(json.dumps(pointer), encoding="utf-8")
     (data_dir / "official_fundamentals_history.json").write_text("{}", encoding="utf-8")
     (data_dir / "official_history_backfill_progress.json").write_text("{}", encoding="utf-8")
     (data_dir / "monthly_revenue_history.json").write_text("{}", encoding="utf-8")
@@ -112,11 +145,26 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
     assert "public/holding_analysis_shards/23.json" in keys
     assert "official/monthly_revenue_history.json" in keys
     assert "official/official_cache_seed_2026-05-14.zip" in keys
-    assert json.loads(json.dumps([item.__dict__ for item in plan]))[0]["object_key"] == "public/manifest.json"
+    assert keys[0] == page_key
+    assert keys[1] == f"public/market_scan/v2/{generation_id}/index.json"
+    assert keys[-2] == "public/manifest.json"
+    assert keys[-1] == "public/market_scan_index.json"
+    assert json.loads(json.dumps([item.__dict__ for item in plan]))[-1]["object_key"] == "public/market_scan_index.json"
 
     (data_dir / "monthly_revenue_history.json").unlink()
     with pytest.raises(FileNotFoundError, match="monthly_revenue_history.json"):
         build_upload_plan(seed_dir, data_dir)
+
+
+def test_r2_refresh_workflow_consumes_upload_tsv_without_sorting():
+    workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    plan_command = "python scripts/cloudflare_seed_upload_plan.py"
+    consumer = "done < .tmp/r2-upload-plan.tsv"
+    upload_block = workflow[workflow.index(plan_command) : workflow.index(consumer) + len(consumer)]
+
+    assert "sort " not in upload_block
+    assert "sort\t" not in upload_block
+    assert "while IFS=$'\\t' read -r object_key file_path" in upload_block
 
 
 def test_r2_refresh_restores_persisted_monthly_history_before_build():

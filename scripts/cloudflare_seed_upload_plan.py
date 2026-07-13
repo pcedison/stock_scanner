@@ -7,13 +7,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 try:
+    from package_cloudflare_seed_cache import referenced_market_generation_files
     from seed_utils import find_seed_zip
 except ModuleNotFoundError:  # Imported as scripts.cloudflare_seed_upload_plan under pytest.
+    from scripts.package_cloudflare_seed_cache import referenced_market_generation_files
     from scripts.seed_utils import find_seed_zip
 
 
 PUBLIC_FILES = (
-    "manifest.json",
     "companies.json",
     "data_sources_status.json",
     "market_scan_latest.json",
@@ -42,6 +43,19 @@ def _require_file(path: Path) -> Path:
 
 def build_upload_plan(seed_dir: Path, data_dir: Path) -> list[UploadPlanItem]:
     plan: list[UploadPlanItem] = []
+    generation_files = referenced_market_generation_files(seed_dir)
+    generation_index: Path | None = None
+    for path in generation_files:
+        relative = path.resolve().relative_to(seed_dir.resolve()).as_posix()
+        if relative.endswith("/index.json"):
+            generation_index = path
+            continue
+        plan.append(UploadPlanItem(f"public/{relative}", path.as_posix()))
+    if generation_index is None:
+        raise FileNotFoundError("required immutable market generation index is missing")
+    generation_index_relative = generation_index.resolve().relative_to(seed_dir.resolve()).as_posix()
+    plan.append(UploadPlanItem(f"public/{generation_index_relative}", generation_index.as_posix()))
+
     for name in PUBLIC_FILES:
         path = _require_file(seed_dir / name)
         plan.append(UploadPlanItem(f"public/{name}", path.as_posix()))
@@ -62,6 +76,11 @@ def build_upload_plan(seed_dir: Path, data_dir: Path) -> list[UploadPlanItem]:
     seed_zip = find_seed_zip(data_dir)
     if seed_zip.is_file():
         plan.append(UploadPlanItem(f"official/{seed_zip.name}", seed_zip.as_posix()))
+
+    manifest = _require_file(seed_dir / "manifest.json")
+    plan.append(UploadPlanItem("public/manifest.json", manifest.as_posix()))
+    pointer = _require_file(seed_dir / "market_scan_index.json")
+    plan.append(UploadPlanItem("public/market_scan_index.json", pointer.as_posix()))
 
     return plan
 

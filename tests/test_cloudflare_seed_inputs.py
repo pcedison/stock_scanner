@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import stat
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import scripts.validate_cloudflare_seed_inputs as validator_module
+from backend.services.market_query import MAX_INDEX_BYTES, MAX_PAGE_BYTES, build_market_generation, canonical_json_bytes
 from scripts.validate_cloudflare_seed_inputs import (
     _load_json_from_zip,
     failed_company_summary,
@@ -17,6 +21,9 @@ from scripts.validate_cloudflare_seed_inputs import (
 )
 
 TEST_SEED_COMPANIES = 1700
+_SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
+_SUMMARY_REASON_KEYS = ("code", "title", "passed", "severity", "message")
+_SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X1", "X2", "X3", "X4", "X5"}
 
 
 def _company_items(count: int = TEST_SEED_COMPANIES) -> list[dict[str, str]]:
@@ -31,72 +38,45 @@ def _company_items(count: int = TEST_SEED_COMPANIES) -> list[dict[str, str]]:
     ]
 
 
+def _compact_generation_scan(scan: dict[str, object]) -> dict[str, object]:
+    compact = dict(scan)
+    for category in ("entry", "watch", "excluded", "results"):
+        items = compact.get(category)
+        if not isinstance(items, list):
+            continue
+        compact_items = []
+        for item in items:
+            assert isinstance(item, dict)
+            result = {key: item.get(key) for key in _SUMMARY_RESULT_KEYS if key in item}
+            reasons = item.get("reasons")
+            if isinstance(reasons, list):
+                result["reasons"] = [
+                    {key: reason.get(key) for key in _SUMMARY_REASON_KEYS if key in reason}
+                    for reason in reasons
+                    if isinstance(reason, dict) and str(reason.get("code") or "") in _SUMMARY_REASON_CODES
+                ]
+            result["detailsAvailable"] = True
+            result["hasFullDetails"] = False
+            compact_items.append(result)
+        compact[category] = compact_items
+    compact["detailMode"] = "summary"
+    return compact
+
+
 def _write_seed_zip(
     path: Path,
     companies: int = 1000,
     rows_per_company: int = 5,
     seed_companies: int = TEST_SEED_COMPANIES,
 ) -> None:
-    quarters = {}
-    for index in range(companies):
-        stock_code = f"{index + 1000:04d}"
-        quarters[stock_code] = {
-            f"202{i}Q4": {"stockCode": stock_code, "period": f"202{i}Q4"} for i in range(rows_per_company)
-        }
+    members = _seed_members(
+        companies=companies,
+        rows=rows_per_company,
+        seed_company_count=seed_companies,
+    )
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": quarters}))
-        archive.writestr("official_history_backfill_progress.json", "{}")
-        archive.writestr(
-            "monthly_revenue_history.json",
-            json.dumps(
-                {
-                    "months": {
-                        stock_code: {
-                            "2026-05": {"monthlyRevenueYoY": 10.0},
-                            "2026-06": {"monthlyRevenueYoY": 12.0},
-                        }
-                        for stock_code in quarters
-                    }
-                }
-            ),
-        )
-        archive.writestr(
-            "cloudflare_seed/manifest.json",
-            json.dumps(
-                {
-                    "generatedAt": "2026-05-17T00:00:00+00:00",
-                    "latestRevenuePeriod": "2026-04",
-                    "latestFinancialPeriod": "2026Q1",
-                    "counts": {
-                        "companies": seed_companies,
-                        "entry": 10,
-                        "watch": companies - 20,
-                        "excluded": 10,
-                        "analysis": companies,
-                        "analysisShards": 1,
-                        "holdingAnalysis": companies,
-                        "holdingAnalysisShards": 1,
-                    },
-                }
-            ),
-        )
-        archive.writestr("cloudflare_seed/companies.json", json.dumps({"items": _company_items(seed_companies)}))
-        archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
-        archive.writestr(
-            "cloudflare_seed/market_scan_latest.json",
-            json.dumps(
-                {
-                    "universeSize": companies,
-                    "entry": [{} for _ in range(10)],
-                    "watch": [{} for _ in range(companies - 20)],
-                    "excluded": [{} for _ in range(10)],
-                }
-            ),
-        )
-        archive.writestr("cloudflare_seed/analysis_by_code.json", "{}")
-        archive.writestr("cloudflare_seed/holding_analysis_by_code.json", "{}")
-        archive.writestr("cloudflare_seed/analysis_shards/10.json", "{}")
-        archive.writestr("cloudflare_seed/holding_analysis_shards/10.json", "{}")
+        for entry, content in members.items():
+            archive.writestr(entry, content)
 
 
 def test_validate_seed_zip_accepts_populated_history(tmp_path):
@@ -126,32 +106,9 @@ def test_seed_freshness_rejects_stale_manifest():
 
 
 def test_validate_seed_zip_rejects_empty_history(tmp_path):
-    archive_path = tmp_path / "seed.zip"
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": {}}))
-        archive.writestr("official_history_backfill_progress.json", "{}")
-        archive.writestr(
-            "monthly_revenue_history.json",
-            json.dumps(
-                {
-                    "months": {
-                        f"{index + 1000:04d}": {
-                            "2026-05": {"monthlyRevenueYoY": 10.0},
-                            "2026-06": {"monthlyRevenueYoY": 12.0},
-                        }
-                        for index in range(1000)
-                    }
-                }
-            ),
-        )
-        archive.writestr("cloudflare_seed/manifest.json", json.dumps({"counts": {}}))
-        archive.writestr("cloudflare_seed/companies.json", "{}")
-        archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
-        archive.writestr("cloudflare_seed/market_scan_latest.json", "{}")
-        archive.writestr("cloudflare_seed/analysis_by_code.json", "{}")
-        archive.writestr("cloudflare_seed/holding_analysis_by_code.json", "{}")
-        archive.writestr("cloudflare_seed/analysis_shards/10.json", "{}")
-        archive.writestr("cloudflare_seed/holding_analysis_shards/10.json", "{}")
+    members = _seed_members()
+    members["official_fundamentals_history.json"] = json.dumps({"quarters": {}})
+    archive_path = _zip_from(tmp_path, members)
 
     with pytest.raises(ValueError, match="companies"):
         validate_seed_zip(archive_path)
@@ -217,6 +174,8 @@ def _seed_members(
     rows: int = 5,
     manifest: object | None = None,
     seed_company_count: int = TEST_SEED_COMPANIES,
+    entry_count: int = 10,
+    excluded_count: int = 10,
 ) -> dict[str, str]:
     quarters = {
         f"{index + 1000:04d}": {f"202{i}Q4": {"period": f"202{i}Q4"} for i in range(rows)} for index in range(companies)
@@ -232,8 +191,12 @@ def _seed_members(
             "holdingAnalysis": companies,
         },
     }
-    selected_manifest = default_manifest if manifest is None else manifest
-    scan_counts = {"entry": 10, "watch": companies - 20, "excluded": 10}
+    selected_manifest = json.loads(json.dumps(default_manifest if manifest is None else manifest))
+    scan_counts = {
+        "entry": entry_count,
+        "watch": companies - entry_count - excluded_count,
+        "excluded": excluded_count,
+    }
     if isinstance(selected_manifest, dict) and isinstance(selected_manifest.get("counts"), dict):
         candidate_counts = {
             category: selected_manifest["counts"].get(category) for category in ("entry", "watch", "excluded")
@@ -242,7 +205,63 @@ def _seed_members(
             isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in candidate_counts.values()
         ):
             scan_counts = candidate_counts
-    return {
+    def rows(category: str, count: int) -> list[dict[str, object]]:
+        prefix = {"entry": "E", "watch": "W", "excluded": "X"}[category]
+        status = {"entry": "ENTRY", "watch": "INSUFFICIENT_DATA", "excluded": "EXCLUDED"}[category]
+        reasons = (
+            [{"code": "OFFICIAL_Q", "severity": "INFO", "message": "2026Q1 official financials"}]
+            if category != "watch"
+            else [{"code": "OFFICIAL_Q", "severity": "INSUFFICIENT_DATA", "message": "2026Q2 not released"}]
+        )
+        return [
+            {
+                "stockCode": f"{prefix}{index:06d}",
+                "companyName": f"{category}-{index}",
+                "status": status,
+                "reasons": reasons,
+            }
+            for index in range(count)
+        ]
+
+    market_scan = {
+        "generatedAt": "2026-05-17T00:00:00+00:00",
+        "universeSize": sum(scan_counts.values()),
+        "filingContext": {
+            "freshnessFinancialReport": {"period": "2026Q1"},
+            "activeFinancialReport": {"period": "2026Q2"},
+            "monthlyRevenuePeriod": "2026-06",
+        },
+        "financialFreshness": {"latestCachedFinancialPeriod": "2026Q1"},
+        "entry": rows("entry", scan_counts["entry"]),
+        "watch": rows("watch", scan_counts["watch"]),
+        "excluded": rows("excluded", scan_counts["excluded"]),
+    }
+    cache_status_inputs = {
+        "generatedAt": market_scan["generatedAt"],
+        "latestRevenuePeriod": market_scan["filingContext"]["monthlyRevenuePeriod"],
+        "latestFinancialPeriod": market_scan["financialFreshness"]["latestCachedFinancialPeriod"],
+    }
+    generation = build_market_generation(
+        _compact_generation_scan(market_scan),
+        cache_status_inputs=cache_status_inputs,
+    )
+    if isinstance(selected_manifest, dict):
+        page_sizes = [
+            len(content)
+            for key, content in generation.files.items()
+            if not key.endswith("/index.json")
+        ]
+        selected_manifest.update(
+            {
+                "marketApiSchemaVersion": 2,
+                "marketGenerationId": generation.generation_id,
+                "marketIndexBytes": len(canonical_json_bytes(generation.index)),
+                "marketPageCount": len(page_sizes),
+                "marketMaxPageBytes": max(page_sizes, default=0),
+            }
+        )
+
+    members: dict[str, str | bytes] = {
         "official_fundamentals_history.json": json.dumps({"quarters": quarters}),
         "official_history_backfill_progress.json": "{}",
         "monthly_revenue_history.json": json.dumps(
@@ -259,22 +278,23 @@ def _seed_members(
         "cloudflare_seed/manifest.json": json.dumps(selected_manifest),
         "cloudflare_seed/companies.json": json.dumps({"items": _company_items(seed_company_count)}),
         "cloudflare_seed/data_sources_status.json": "{}",
-        "cloudflare_seed/market_scan_latest.json": json.dumps(
-            {
-                "universeSize": sum(scan_counts.values()),
-                "entry": [{} for _ in range(scan_counts["entry"])],
-                "watch": [{} for _ in range(scan_counts["watch"])],
-                "excluded": [{} for _ in range(scan_counts["excluded"])],
-            }
-        ),
+        "cloudflare_seed/market_scan_latest.json": json.dumps(market_scan),
+        "cloudflare_seed/market_scan_index.json": canonical_json_bytes(generation.index),
         "cloudflare_seed/analysis_by_code.json": "{}",
         "cloudflare_seed/holding_analysis_by_code.json": "{}",
         "cloudflare_seed/analysis_shards/10.json": "{}",
         "cloudflare_seed/holding_analysis_shards/10.json": "{}",
     }
+    members.update(
+        {
+            f"cloudflare_seed/{object_key.removeprefix('public/')}": content
+            for object_key, content in generation.files.items()
+        }
+    )
+    return members
 
 
-def _zip_from(tmp_path: Path, members: dict[str, str], name: str = "seed.zip") -> Path:
+def _zip_from(tmp_path: Path, members: dict[str, str | bytes], name: str = "seed.zip") -> Path:
     path = tmp_path / name
     with zipfile.ZipFile(path, "w") as archive:
         for entry, content in members.items():
@@ -563,3 +583,435 @@ def test_validate_seed_zip_rejects_nested_local_user_paths(tmp_path, private_pat
 
     with pytest.raises(ValueError, match="contains a local user path"):
         validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def _v2_pointer(members: dict[str, str | bytes]) -> dict[str, object]:
+    raw = members["cloudflare_seed/market_scan_index.json"]
+    return json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+
+
+def _sync_v2_index(members: dict[str, str | bytes], pointer: dict[str, object]) -> None:
+    raw = canonical_json_bytes(pointer)
+    generation_id = pointer["generationId"]
+    members["cloudflare_seed/market_scan_index.json"] = raw
+    members[f"cloudflare_seed/market_scan/v2/{generation_id}/index.json"] = raw
+
+
+def _first_v2_ref(pointer: dict[str, object], disclosure: str, category: str, index: int = 0) -> dict[str, object]:
+    return pointer["disclosures"][disclosure][category]["pages"][index]
+
+
+def _replace_v2_page(
+    members: dict[str, str | bytes],
+    pointer: dict[str, object],
+    reference: dict[str, object],
+    page: dict[str, object],
+) -> None:
+    raw = canonical_json_bytes(page)
+    reference["bytes"] = len(raw)
+    reference["sha256"] = hashlib.sha256(raw).hexdigest()
+    members[f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"] = raw
+    _sync_v2_index(members, pointer)
+
+
+def test_validate_seed_zip_reports_verified_v2_generation_summary(tmp_path):
+    summary = validate_seed_zip(_zip_from(tmp_path, _seed_members()))
+
+    assert len(summary["marketGenerationId"]) == 24
+    assert summary["marketPageCount"] == 12
+    assert 0 < summary["marketMaxPageBytes"] < MAX_PAGE_BYTES
+
+
+def test_validate_seed_zip_rejects_duplicate_zip_members(tmp_path):
+    archive_path = _zip_from(tmp_path, _seed_members())
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(archive_path, "a") as archive:
+            archive.writestr("cloudflare_seed/market_scan_index.json", "{}")
+
+    with pytest.raises(ValueError, match="duplicate ZIP member"):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_requires_pointer_and_immutable_index_raw_bytes_to_match(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    immutable_name = f"cloudflare_seed/market_scan/v2/{pointer['generationId']}/index.json"
+    members[immutable_name] = bytes(members[immutable_name]) + b"\n"
+
+    with pytest.raises(ValueError, match="pointer bytes do not match immutable generation index"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_rejects_missing_and_orphan_generation_files(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    missing_ref = _first_v2_ref(pointer, "pending", "watch")
+    del members[f"cloudflare_seed/{str(missing_ref['key']).removeprefix('public/')}"]
+    with pytest.raises(ValueError, match="v2 generation files do not match pointer references"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+    members = _seed_members()
+    members[f"cloudflare_seed/market_scan/v2/{'f' * 24}/index.json"] = "{}"
+    with pytest.raises(ValueError, match="v2 generation files do not match pointer references"):
+        validate_seed_zip(_zip_from(tmp_path, members, name="orphan.zip"))
+
+
+def test_validate_seed_zip_rejects_unsafe_and_duplicate_page_references(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "announced", "entry")
+    reference["key"] = "public/market_scan/v2/../../secret.json"
+    _sync_v2_index(members, pointer)
+    with pytest.raises(ValueError, match="unsafe market page path"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    references = pointer["disclosures"]["pending"]["watch"]["pages"]
+    references[1]["cursor"] = references[0]["cursor"]
+    _sync_v2_index(members, pointer)
+    with pytest.raises(ValueError, match="page references must be contiguous"):
+        validate_seed_zip(_zip_from(tmp_path, members, name="duplicate-cursor.zip"))
+
+
+def test_validate_seed_zip_checks_raw_page_hash_and_size(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "pending", "watch")
+    reference["sha256"] = "0" * 64
+    _sync_v2_index(members, pointer)
+    with pytest.raises(ValueError, match="page SHA-256"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "pending", "watch")
+    raw = b'{' + b'"padding":"' + (b"x" * MAX_PAGE_BYTES) + b'"}'
+    reference["bytes"] = len(raw)
+    reference["sha256"] = hashlib.sha256(raw).hexdigest()
+    members[f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"] = raw
+    _sync_v2_index(members, pointer)
+    with pytest.raises(ValueError, match="page size"):
+        validate_seed_zip(_zip_from(tmp_path, members, name="large-page.zip"))
+
+
+def test_validate_seed_zip_rejects_index_size_overflow(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    pointer["padding"] = "x" * MAX_INDEX_BYTES
+    _sync_v2_index(members, pointer)
+
+    with pytest.raises(ValueError, match="index size"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_checks_page_next_cursor_and_aggregate_counts(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "pending", "watch")
+    page_name = f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"
+    page = json.loads(bytes(members[page_name]))
+    page["nextCursor"] = 999
+    _replace_v2_page(members, pointer, reference, page)
+    with pytest.raises(ValueError, match="nextCursor"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    pointer["counts"]["categories"]["watch"] -= 1
+    _sync_v2_index(members, pointer)
+    with pytest.raises(ValueError, match="aggregate counts"):
+        validate_seed_zip(_zip_from(tmp_path, members, name="count.zip"))
+
+
+def test_validate_seed_zip_requires_v1_v2_identity_and_freshness_classification_parity(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "pending", "watch")
+    page_name = f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"
+    page = json.loads(bytes(members[page_name]))
+    page["items"][1]["stockCode"] = page["items"][0]["stockCode"]
+    _replace_v2_page(members, pointer, reference, page)
+
+    with pytest.raises(ValueError, match="duplicate market identity|identity parity"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_cross_checks_manifest_v2_raw_metrics(tmp_path):
+    members = _seed_members()
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    manifest["marketMaxPageBytes"] += 1
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+
+    with pytest.raises(ValueError, match="manifest marketMaxPageBytes"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_rejects_wrong_page_generation_and_cursor_gap(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "pending", "watch")
+    page_name = f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"
+    page = json.loads(bytes(members[page_name]))
+    page["generationId"] = "f" * 24
+    _replace_v2_page(members, pointer, reference, page)
+    with pytest.raises(ValueError, match="page identity fields"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    references = pointer["disclosures"]["pending"]["watch"]["pages"]
+    references[1]["cursor"] = 101
+    references[1]["key"] = str(references[1]["key"]).replace("/100.json", "/101.json")
+    _sync_v2_index(members, pointer)
+    with pytest.raises(ValueError, match="page references must be contiguous"):
+        validate_seed_zip(_zip_from(tmp_path, members, name="cursor-gap.zip"))
+
+
+@pytest.mark.parametrize("extra_kind", ["disclosure", "category", "reference"])
+def test_validate_seed_zip_rejects_extra_market_index_structure(tmp_path, extra_kind):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    if extra_kind == "disclosure":
+        pointer["disclosures"]["archived"] = {}
+    elif extra_kind == "category":
+        pointer["disclosures"]["announced"]["bonus"] = {"count": 0, "pages": []}
+    else:
+        pointer["disclosures"]["announced"]["entry"]["pages"][0]["unexpected"] = True
+    _sync_v2_index(members, pointer)
+
+    with pytest.raises(ValueError, match="unexpected market index fields"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+@pytest.mark.parametrize("oversized_member", ["pointer", "immutable-index", "page"])
+def test_validate_seed_zip_rejects_oversized_members_before_read(tmp_path, monkeypatch, oversized_member):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    generation_id = pointer["generationId"]
+    if oversized_member == "pointer":
+        target = "cloudflare_seed/market_scan_index.json"
+        members[target] = b"x" * MAX_INDEX_BYTES
+        expected_error = "market index size"
+    elif oversized_member == "immutable-index":
+        target = f"cloudflare_seed/market_scan/v2/{generation_id}/index.json"
+        members[target] = b"x" * MAX_INDEX_BYTES
+        expected_error = "market index size"
+    else:
+        reference = _first_v2_ref(pointer, "pending", "watch")
+        target = f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"
+        members[target] = b"x" * MAX_PAGE_BYTES
+        expected_error = "market page size"
+    archive_path = _zip_from(tmp_path, members)
+    real_read = zipfile.ZipFile.read
+
+    def explode_if_oversized_is_read(archive, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if member_name == target:
+            raise AssertionError(f"oversized member was read: {target}")
+        return real_read(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", explode_if_oversized_is_read)
+
+    with pytest.raises(ValueError, match=expected_error):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_rejects_consistently_rewritten_non_content_generation_id(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    old_id = pointer["generationId"]
+    new_id = "f" * 24
+    pointer["generationId"] = new_id
+    rewritten: dict[str, str | bytes] = {}
+    for disclosure in ("announced", "pending"):
+        for category in ("entry", "watch", "excluded"):
+            for reference in pointer["disclosures"][disclosure][category]["pages"]:
+                old_key = str(reference["key"])
+                old_name = f"cloudflare_seed/{old_key.removeprefix('public/')}"
+                page = json.loads(bytes(members.pop(old_name)))
+                page["generationId"] = new_id
+                reference["key"] = old_key.replace(old_id, new_id)
+                raw = canonical_json_bytes(page)
+                reference["bytes"] = len(raw)
+                reference["sha256"] = hashlib.sha256(raw).hexdigest()
+                rewritten[f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"] = raw
+    members.pop(f"cloudflare_seed/market_scan/v2/{old_id}/index.json")
+    members.update(rewritten)
+    _sync_v2_index(members, pointer)
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    page_sizes = [len(content) for name, content in rewritten.items() if name.endswith(".json")]
+    manifest.update(
+        {
+            "marketGenerationId": new_id,
+            "marketIndexBytes": len(canonical_json_bytes(pointer)),
+            "marketPageCount": len(rewritten),
+            "marketMaxPageBytes": max(page_sizes),
+        }
+    )
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+
+    with pytest.raises(ValueError, match="content-derived generation ID"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_rejects_boolean_top_level_count_before_reading_pages(tmp_path, monkeypatch):
+    members = _seed_members(entry_count=1)
+    pointer = _v2_pointer(members)
+    pointer["counts"]["categories"]["entry"] = True
+    _sync_v2_index(members, pointer)
+    archive_path = _zip_from(tmp_path, members)
+    real_read = zipfile.ZipFile.read
+
+    def explode_if_page_is_read(archive, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if "/market_scan/v2/" in member_name and not member_name.endswith("/index.json"):
+            raise AssertionError(f"page was read before count validation: {member_name}")
+        return real_read(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", explode_if_page_is_read)
+
+    with pytest.raises(ValueError, match="non-negative integer"):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_rejects_same_generation_unreferenced_page_and_unique_identity_gap(tmp_path):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    generation_id = pointer["generationId"]
+    members[f"cloudflare_seed/market_scan/v2/{generation_id}/pending/watch/9999.json"] = "{}"
+    with pytest.raises(ValueError, match="generation files do not match pointer references"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    reference = _first_v2_ref(pointer, "pending", "watch")
+    page_name = f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"
+    page = json.loads(bytes(members[page_name]))
+    page["items"][0]["stockCode"] = "UNIQUE-NOT-IN-V1"
+    _replace_v2_page(members, pointer, reference, page)
+    with pytest.raises(ValueError, match="identity parity"):
+        validate_seed_zip(_zip_from(tmp_path, members, name="identity-gap.zip"))
+
+
+@pytest.mark.parametrize("unsafe_name", ["../escape.json", "/absolute.json", r"cloudflare_seed\evil.json"])
+def test_validate_seed_zip_rejects_unsafe_member_names(tmp_path, unsafe_name):
+    if "\\" in unsafe_name:
+        archive_path = _zip_from(tmp_path, _seed_members())
+        normalized_name = unsafe_name.replace("\\", "/")
+        with zipfile.ZipFile(archive_path, "a") as archive:
+            archive.writestr(normalized_name, "{}")
+        archive_path.write_bytes(
+            archive_path.read_bytes().replace(normalized_name.encode(), unsafe_name.encode())
+        )
+    else:
+        members = _seed_members()
+        members[unsafe_name] = "{}"
+        archive_path = _zip_from(tmp_path, members)
+
+    with pytest.raises(ValueError, match="unsafe ZIP member name"):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_rejects_unix_symlink_member(tmp_path):
+    archive_path = _zip_from(tmp_path, _seed_members())
+    info = zipfile.ZipInfo("cloudflare_seed/symlink.json")
+    info.create_system = 3
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive_path, "a") as archive:
+        archive.writestr(info, "../../outside.json")
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_rejects_cache_status_not_derived_from_legacy_scan(tmp_path):
+    members = _seed_members()
+    market_scan = json.loads(members["cloudflare_seed/market_scan_latest.json"])
+    cache_status_inputs = {
+        "generatedAt": market_scan["generatedAt"],
+        "latestRevenuePeriod": market_scan["filingContext"]["monthlyRevenuePeriod"],
+        "latestFinancialPeriod": "2099Q4",
+    }
+    generation = build_market_generation(
+        _compact_generation_scan(market_scan),
+        cache_status_inputs=cache_status_inputs,
+    )
+    pointer = generation.index
+    members = {
+        name: content
+        for name, content in members.items()
+        if not name.startswith("cloudflare_seed/market_scan/v2/")
+    }
+    members["cloudflare_seed/market_scan_index.json"] = canonical_json_bytes(pointer)
+    members.update(
+        {
+            f"cloudflare_seed/{key.removeprefix('public/')}": content
+            for key, content in generation.files.items()
+        }
+    )
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    page_sizes = [len(content) for key, content in generation.files.items() if not key.endswith("/index.json")]
+    manifest.update(
+        marketGenerationId=generation.generation_id,
+        marketIndexBytes=len(canonical_json_bytes(pointer)),
+        marketPageCount=len(page_sizes),
+        marketMaxPageBytes=max(page_sizes),
+    )
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+
+    with pytest.raises(ValueError, match="cacheStatusInputs"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+@pytest.mark.parametrize("mutation", ["pointer-field", "page-content"])
+def test_validate_seed_zip_rejects_noncanonical_generation_bytes(tmp_path, mutation):
+    members = _seed_members()
+    pointer = _v2_pointer(members)
+    if mutation == "pointer-field":
+        pointer["unexpected"] = True
+        _sync_v2_index(members, pointer)
+        manifest = json.loads(members["cloudflare_seed/manifest.json"])
+        manifest["marketIndexBytes"] = len(canonical_json_bytes(pointer))
+        members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+    else:
+        reference = _first_v2_ref(pointer, "pending", "watch")
+        page_name = f"cloudflare_seed/{str(reference['key']).removeprefix('public/')}"
+        page = json.loads(bytes(members[page_name]))
+        page["items"][0]["companyName"] = "tampered"
+        _replace_v2_page(members, pointer, reference, page)
+
+    with pytest.raises(ValueError, match="canonical generation bytes"):
+        validate_seed_zip(_zip_from(tmp_path, members, name=f"{mutation}.zip"))
+
+
+def test_validate_seed_zip_rejects_unexpected_safe_member_without_reading_it(tmp_path, monkeypatch):
+    members = _seed_members()
+    target = "cloudflare_seed/extra.json"
+    members[target] = "{}"
+    archive_path = _zip_from(tmp_path, members)
+    real_read = zipfile.ZipFile.read
+
+    def explode_if_extra_is_read(archive, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if member_name == target:
+            raise AssertionError("unexpected member was decompressed")
+        return real_read(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", explode_if_extra_is_read)
+
+    with pytest.raises(ValueError, match="unexpected ZIP member"):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_rejects_archive_uncompressed_budget_before_json_reads(tmp_path, monkeypatch):
+    archive_path = _zip_from(tmp_path, _seed_members())
+    monkeypatch.setattr(validator_module, "MAX_ZIP_UNCOMPRESSED_BYTES", 1)
+    monkeypatch.setattr(
+        zipfile.ZipFile,
+        "read",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("archive member was decompressed")),
+    )
+
+    with pytest.raises(ValueError, match="uncompressed size"):
+        validate_seed_zip(archive_path)

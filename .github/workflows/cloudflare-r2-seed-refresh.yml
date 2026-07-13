@@ -218,6 +218,7 @@ jobs:
             done
           }
           while IFS=$'\t' read -r object_key file_path; do
+            # Preserve the generated order: immutable pages/index first and the public pointer last.
             put_with_retry "$object_key" "$file_path"
           done < .tmp/r2-upload-plan.tsv
 
