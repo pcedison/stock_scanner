@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import importlib.util
 import json
 import re
@@ -1005,7 +1006,7 @@ class RoutingFakeStatement:
         return self
 
     async def run(self):
-        return self.db.run_sql(self.sql, self.params)
+        return await self.db.run_sql(self.sql, self.params)
 
     async def first(self):
         return self.db.first_sql(self.sql, self.params)
@@ -1023,6 +1024,10 @@ class RoutingFakeD1:
         self.auth_attempts = []
         self.refresh_jobs = []
         self._next_user_id = 1
+        self._refresh_insert_lock = asyncio.Lock()
+        self.complete_active_after_idempotency_miss = False
+        self.hide_refresh_job_reads = False
+        self.refresh_insert_attempts = 0
 
     def prepare(self, sql):
         return RoutingFakeStatement(self, sql)
@@ -1064,11 +1069,36 @@ class RoutingFakeD1:
         if "failure_count, first_failed_at FROM auth_attempts" in sql:
             attempt = self._attempt(params[0])
             return None if attempt is None else {"failure_count": attempt["failure_count"], "first_failed_at": attempt["first_failed_at"]}
+        if "FROM refresh_jobs" in sql and "WHERE idempotency_key = ?" in sql:
+            if self.hide_refresh_job_reads:
+                return None
+            row = next((dict(job) for job in self.refresh_jobs if job.get("idempotency_key") == params[0]), None)
+            if row is None and self.complete_active_after_idempotency_miss:
+                self.complete_active_after_idempotency_miss = False
+                for job in self.refresh_jobs:
+                    if job["status"] in {"queued", "running"}:
+                        job["status"] = "success"
+            return row
+        if "FROM refresh_jobs" in sql and "cache_key = ?" in sql and "status IN ('queued', 'running')" in sql:
+            if self.hide_refresh_job_reads:
+                return None
+            job_type, cache_key = params
+            return next(
+                (
+                    dict(job)
+                    for job in sorted(self.refresh_jobs, key=lambda row: (row["queued_at"], row["id"]), reverse=True)
+                    if job["job_type"] == job_type
+                    and job["cache_key"] == cache_key
+                    and job["status"] in {"queued", "running"}
+                ),
+                None,
+            )
         if "FROM refresh_jobs" in sql and "status IN ('queued', 'running')" in sql:
+            job_type = params[0]
             cutoff = params[1]
             return next(
                 (j for j in sorted(self.refresh_jobs, key=lambda r: r["queued_at"], reverse=True)
-                 if j["status"] in {"queued", "running"} and j["queued_at"] > cutoff),
+                 if j["job_type"] == job_type and j["status"] in {"queued", "running"} and j["queued_at"] > cutoff),
                 None,
             )
         raise AssertionError(f"Unhandled first() SQL: {sql}")
@@ -1098,7 +1128,7 @@ class RoutingFakeD1:
             "active_session_count": len(sessions),
         }
 
-    def run_sql(self, sql, params):
+    async def run_sql(self, sql, params):
         if "INSERT INTO users" in sql:
             username, display_name, password_hash, created_at = params
             self.users.append({"id": self._next_user_id, "username": username, "display_name": display_name, "password_hash": password_hash, "created_at": created_at})
@@ -1137,12 +1167,50 @@ class RoutingFakeD1:
             attempt.update(row) if attempt else self.auth_attempts.append(row)
         elif "DELETE FROM refresh_jobs WHERE queued_at" in sql:
             self.refresh_jobs = [j for j in self.refresh_jobs if j["queued_at"] >= params[0]]
+        elif "INSERT OR IGNORE INTO refresh_jobs" in sql:
+            job_id, job_type, cache_key, idempotency_key, reason, queued_at, updated_at = params
+            async with self._refresh_insert_lock:
+                await asyncio.sleep(0)
+                self.refresh_insert_attempts += 1
+                conflict = any(
+                    (idempotency_key is not None and job.get("idempotency_key") == idempotency_key)
+                    or (
+                        job["job_type"] == job_type
+                        and job["cache_key"] == cache_key
+                        and job["status"] in {"queued", "running"}
+                    )
+                    for job in self.refresh_jobs
+                )
+                if conflict:
+                    return {"success": True, "meta": {"changes": 0}}
+                self.refresh_jobs.append(
+                    {
+                        "id": job_id,
+                        "job_type": job_type,
+                        "cache_key": cache_key,
+                        "idempotency_key": idempotency_key,
+                        "status": "queued",
+                        "reason": reason,
+                        "queued_at": queued_at,
+                        "updated_at": updated_at,
+                    }
+                )
         elif "INSERT INTO refresh_jobs" in sql:
+            await asyncio.sleep(0)
             keys = ("id", "job_type", "cache_key", "status", "reason", "queued_at", "updated_at")
             self.refresh_jobs.append(dict(zip(keys, params, strict=True)))
         else:
             raise AssertionError(f"Unhandled run() SQL: {sql}")
         return {"success": True, "meta": {"changes": 1}}
+
+    def active_job_count(self, job_type, cache_key=None):
+        return sum(
+            1
+            for job in self.refresh_jobs
+            if job["job_type"] == job_type
+            and job["status"] in {"queued", "running"}
+            and (cache_key is None or job["cache_key"] == cache_key)
+        )
 
 
 def r2_seed(mapping):
@@ -2108,11 +2176,227 @@ def test_worker_ensure_refresh_job_fresh_and_existing(monkeypatch):
     fresh = asyncio.run(api.ensure_refresh_job(manifest, force=False))
     assert fresh["status"] == "fresh"
 
-    db.refresh_jobs.append({"id": "existing", "job_type": "market_scan", "cache_key": "abc", "status": "running", "reason": "manual", "queued_at": "2026-02-20T00:59:00+00:00", "updated_at": "2026-02-20T00:59:00+00:00"})
+    db.refresh_jobs.append({"id": "existing", "job_type": "market_scan", "cache_key": worker.cache_key_from_manifest(manifest), "status": "running", "reason": "manual", "queued_at": "2026-02-20T00:59:00+00:00", "updated_at": "2026-02-20T00:59:00+00:00"})
     existing = asyncio.run(api.ensure_refresh_job(manifest, force=True))
     assert existing["status"] == "running"
     assert existing["jobId"] == "existing"
     assert existing["ownerRunUrl"] is None
+
+
+@pytest.mark.parametrize("invalid", ["", " leading", "trailing ", "slash/key", "測試", "x" * 81, 7])
+def test_refresh_job_idempotent_key_rejects_invalid_values(invalid):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        refresh_jobs.normalize_idempotency_key(invalid)
+
+
+def test_refresh_job_idempotent_key_is_hashed_and_fallback_uses_bounded_bucket():
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    first = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+    same_bucket = datetime.fromisoformat("2026-07-13T12:09:59+00:00")
+    next_bucket = datetime.fromisoformat("2026-07-13T12:10:00+00:00")
+
+    assert refresh_jobs.normalize_idempotency_key(None) is None
+    assert refresh_jobs.normalize_idempotency_key("Client_key:1.2-3") == "Client_key:1.2-3"
+    assert refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", "client-1", first) == (
+        refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", "client-1", next_bucket)
+    )
+    assert refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", "client-1", first) != (
+        refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", "client-2", first)
+    )
+    assert refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", "client-1", first) != (
+        refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-b", "client-1", first)
+    )
+    assert refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", "client-1", first) != (
+        refresh_jobs.derive_refresh_idempotency_key("other_job", "cache-a", "client-1", first)
+    )
+    fallback = refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", None, first)
+    assert fallback == refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", None, same_bucket)
+    assert fallback != refresh_jobs.derive_refresh_idempotency_key("market_scan", "cache-a", None, next_bucket)
+    assert re.fullmatch(r"[0-9a-f]{64}", fallback)
+
+
+def test_refresh_job_invalid_client_key_is_rejected_even_when_cache_is_fresh(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-07-13T12:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "invalid key", now))
+
+    assert db.refresh_jobs == []
+
+
+def test_refresh_job_same_client_key_reuses_d1_read_back_id(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    async def enqueue_twice():
+        first = await refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-same", now)
+        second = await refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-same", now)
+        return first, second
+
+    first, second = asyncio.run(enqueue_twice())
+
+    assert first["jobId"] == second["jobId"] == db.refresh_jobs[0]["id"]
+    assert len(db.refresh_jobs) == 1
+    assert "client-same" not in json.dumps(db.refresh_jobs)
+    assert re.fullmatch(r"[0-9a-f]{64}", db.refresh_jobs[0]["idempotency_key"])
+
+
+def test_refresh_job_different_client_keys_share_active_cache_job(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    async def enqueue_both():
+        return await asyncio.gather(
+            refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-a", now),
+            refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-b", now),
+        )
+
+    first, second = asyncio.run(enqueue_both())
+
+    assert first["jobId"] == second["jobId"]
+    assert db.active_job_count("market_scan") == 1
+
+
+def test_refresh_job_after_success_creates_new_job_for_new_request(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    first = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-first", now))
+    db.refresh_jobs[0]["status"] = "success"
+    second = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-next", now))
+
+    assert first["jobId"] != second["jobId"]
+    assert len(db.refresh_jobs) == 2
+    assert db.active_job_count("market_scan") == 1
+
+
+def test_refresh_job_terminal_transition_retries_insert_and_reads_back_new_id(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    first = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-first", now))
+    db.complete_active_after_idempotency_miss = True
+    second = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-racing", now))
+
+    assert first["jobId"] != second["jobId"]
+    assert second["jobId"] == db.refresh_jobs[-1]["id"]
+    assert db.refresh_insert_attempts == 3
+    assert db.active_job_count("market_scan") == 1
+
+
+def test_refresh_job_missing_read_back_raises_invariant_without_returning_candidate(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    _worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    db.hide_refresh_job_reads = True
+    now = datetime.fromisoformat("2026-07-13T12:01:00+00:00")
+
+    with pytest.raises(refresh_jobs.RefreshJobReadBackError, match="read-back invariant"):
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "client-hidden", now))
+
+    assert db.refresh_insert_attempts == 2
+    assert len(db.refresh_jobs) == 1
+
+
+def test_refresh_job_read_back_invariant_serves_verified_last_good(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    scan = {
+        "entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "last good"}],
+        "watch": [],
+        "excluded": [],
+    }
+    worker, api, db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    db.hide_refresh_job_reads = True
+
+    response = asyncio.run(
+        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["entry"][0]["stockCode"] == "2330"
+    assert payload["cacheStatus"]["refreshStatus"] == "unavailable"
+    assert payload["cacheStatus"]["retryable"] is True
+
+
+def test_refresh_job_read_back_invariant_without_last_good_is_safe_503(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    db.hide_refresh_job_reads = True
+
+    response = asyncio.run(
+        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["stage"] == "d1_read"
+    assert payload["retryable"] is True
+    assert "cacheStatus" not in payload
+
+
+def test_ensure_refresh_job_read_back_failure_drops_cause_and_client_key(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    db.hide_refresh_job_reads = True
+
+    with pytest.raises(worker.DependencyFailure) as caught:
+        asyncio.run(api.ensure_refresh_job(manifest, force=True, client_key="private-client-key"))
+
+    failure = caught.value
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+    assert failure.error_code == "REFRESH_JOB_READ_BACK_INVARIANT"
+    assert "private-client-key" not in str(failure)
+
+
+def test_concurrent_ensure_refresh_job_keeps_one_active_row(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+
+    async def enqueue_all():
+        return await asyncio.gather(
+            *[
+                api.ensure_refresh_job(manifest, force=True, client_key=f"client-{index}")
+                for index in range(10)
+            ]
+        )
+
+    jobs = asyncio.run(enqueue_all())
+
+    assert len({job["jobId"] for job in jobs}) == 1
+    assert db.active_job_count("market_scan") == 1
+
+
+def test_refresh_job_request_path_has_no_cleanup_delete_and_worker_delegates():
+    worker_source = (ROOT / "cloudflare" / "worker.py").read_text(encoding="utf-8")
+    helper_source = (ROOT / "cloudflare" / "worker_refresh_jobs.py").read_text(encoding="utf-8")
+
+    assert "DELETE FROM refresh_jobs" not in worker_source
+    assert "DELETE FROM refresh_jobs" not in helper_source
+    assert "worker_refresh_jobs.enqueue_or_reuse_refresh_job" in worker_source
 
 
 def test_worker_github_actions_run_url_requires_valid_repo(monkeypatch):

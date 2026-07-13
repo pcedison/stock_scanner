@@ -24,6 +24,7 @@ DEFAULT_BUDGETS = {
     "cloudflare/worker.py": 880,
     "cloudflare/worker_health.py": 120,
     "cloudflare/worker_market_query.py": 450,
+    "cloudflare/worker_refresh_jobs.py": 200,
     "cloudflare/worker_market_resilience.py": 160,
     "cloudflare/worker_observability.py": 200,
     "cloudflare/worker_support.py": 590,

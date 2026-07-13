@@ -21,8 +21,9 @@ try:
     import worker_market_query
     import worker_market_resilience as market_resilience
     import worker_observability as observability
+    import worker_refresh_jobs
 except ModuleNotFoundError:
-    from cloudflare import worker_health, worker_market_query
+    from cloudflare import worker_health, worker_market_query, worker_refresh_jobs
     from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
 
@@ -397,54 +398,16 @@ class Api:
             "quality": manifest_quality(manifest),
         }
 
-    async def ensure_refresh_job(self, manifest, force=False):
-        policy = self.cache_policy()
-        status = self.cache_status_from_manifest(manifest, {"status": "checking", "reason": policy["reason"]})
-        if not force and not status["isStale"]:
-            return {"status": "fresh", "reason": policy["reason"]}
-        cache_key = status["cacheKey"]
-        cutoff = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
-        existing = await self.db_first(
-            """
-            SELECT id, status, reason, queued_at, owner_run_id
-            FROM refresh_jobs
-            WHERE job_type = ? AND status IN ('queued', 'running') AND queued_at > ?
-            ORDER BY queued_at DESC
-            LIMIT 1
-            """,
-            "market_scan",
-            cutoff,
-        )
-        if existing:
-            return {
-                "status": existing["status"],
-                "reason": existing["reason"],
-                "jobId": existing["id"],
-                "queuedAt": existing["queued_at"],
-                "ownerRunId": existing.get("owner_run_id"),
-                "ownerRunUrl": self.github_actions_run_url(existing.get("owner_run_id")),
-            }
-        job_id = secrets.token_hex(16)
-        now = utc_now()
-        stale_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-        await self.db_run(
-            "DELETE FROM refresh_jobs WHERE queued_at < ?",
-            stale_cutoff,
-        )
-        await self.db_run(
-            """
-            INSERT INTO refresh_jobs (id, job_type, cache_key, status, reason, queued_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            job_id,
-            "market_scan",
-            cache_key,
-            "queued",
-            policy["reason"],
-            now,
-            now,
-        )
-        return {"status": "queued", "reason": policy["reason"], "jobId": job_id, "queuedAt": now}
+    async def ensure_refresh_job(self, manifest, force=False, client_key=None):
+        failure = None
+        try:
+            return await worker_refresh_jobs.enqueue_or_reuse_refresh_job(
+                self, manifest, force, client_key, datetime.now(UTC)
+            )
+        except worker_refresh_jobs.RefreshJobReadBackError as exc:
+            failure = DependencyFailure("d1_read", True, exc)
+            failure.error_code = "REFRESH_JOB_READ_BACK_INVARIANT"
+        raise failure from None
 
     def github_actions_run_url(self, owner_run_id):
         if not owner_run_id:
