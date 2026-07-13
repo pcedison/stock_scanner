@@ -782,6 +782,7 @@ Execution evidence (2026-07-13): commit `4ee7c08`; the RED selector failed `12` 
 - Modify: `tests/test_cloudflare_migrations.py`
 - Modify: `tests/test_deployment_preflight.py`
 - Modify: `tests/test_operational_readiness.py`
+- Modify: `scripts/check_operational_readiness.py`
 
 **Interfaces:**
 
@@ -789,7 +790,7 @@ Execution evidence (2026-07-13): commit `4ee7c08`; the RED selector failed `12` 
 - Produces state flow: `pending -> dispatching -> dispatched|failed|unknown -> workflow_claimed`.
 - Keeps main job `status='queued'` for dispatch `failed` or `unknown` so the GitHub schedule remains a fallback.
 
-- [ ] **Step 1: Write migration and workflow state tests**
+- [x] **Step 1: Write migration and workflow state tests**
 
 Test schema/migration equivalence, default pending state, dispatch index, workflow claim setting `workflow_claimed`, owner-run-scoped success/failure updates, and proof that dispatch failure never changes main status from queued.
 
@@ -801,7 +802,7 @@ def test_refresh_workflow_claims_dispatch_state_with_owner_run():
     assert "status = 'queued'" in text
 ```
 
-- [ ] **Step 2: Run RED dispatch-state tests**
+- [x] **Step 2: Run RED dispatch-state tests**
 
 Run:
 
@@ -811,23 +812,23 @@ python -m pytest tests\test_cloudflare_migrations.py tests\test_deployment_prefl
 
 Expected: migration and workflow fields are missing.
 
-- [ ] **Step 3: Implement migration and workflow claim**
+- [x] **Step 3: Implement migration and workflow claim**
 
 Migration:
 
 ```sql
-ALTER TABLE refresh_jobs ADD COLUMN dispatch_status TEXT DEFAULT 'pending';
+ALTER TABLE refresh_jobs ADD COLUMN dispatch_status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE refresh_jobs ADD COLUMN dispatch_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE refresh_jobs ADD COLUMN dispatched_at TEXT;
 ALTER TABLE refresh_jobs ADD COLUMN dispatch_error_code TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_refresh_jobs_dispatch
-ON refresh_jobs(status, dispatch_status, queued_at);
+ON refresh_jobs(job_type, status, dispatch_status, queued_at);
 ```
 
-Update the GitHub claim SQL to set `status='running'`, `dispatch_status='workflow_claimed'`, `owner_run_id`, `started_at`, and `updated_at` in one statement. Keep final updates scoped by `owner_run_id='${GITHUB_RUN_ID}'`.
+Backfill only running/terminal rows that already have an `owner_run_id` to `workflow_claimed`; queued and unclaimed historical rows remain `pending`. Update the GitHub claim SQL to set `status='running'`, `dispatch_status='workflow_claimed'`, `owner_run_id`, `started_at`, and `updated_at` in one statement. Keep final updates scoped by `job_type='market_scan'`, `status='running'`, and `owner_run_id='${GITHUB_RUN_ID}'`.
 
-- [ ] **Step 4: Run GREEN dispatch-state verification**
+- [x] **Step 4: Run GREEN dispatch-state verification**
 
 Run:
 
@@ -835,19 +836,24 @@ Run:
 python -m pytest tests\test_cloudflare_migrations.py tests\test_deployment_preflight.py tests\test_operational_readiness.py -q --basetemp (Join-Path $env:TEMP 'pytest-plan-b-task7-green')
 python scripts\check_deployment_preflight.py
 python scripts\check_operational_readiness.py
+python -m ruff check cloudflare\migrations scripts\check_operational_readiness.py tests\test_cloudflare_migrations.py tests\test_deployment_preflight.py tests\test_operational_readiness.py
+npx.cmd wrangler d1 migrations apply stock-scanner-beta-db --local --config cloudflare\wrangler.toml --persist-to (Join-Path $env:TEMP 'stock-plan-b-task7-d1')
+npx.cmd wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir (Join-Path $env:TEMP 'stock-worker-plan-b-task7')
 git diff --check
 ```
 
 Expected: all commands exit `0`; workflow claim and fallback invariants are locked by tests.
 
-- [ ] **Step 5: Review and commit Task 7**
+- [x] **Step 5: Review and commit Task 7**
 
 After migration/workflow review and fresh Step 4:
 
 ```powershell
-git add cloudflare\migrations\0004_refresh_jobs_dispatch_state.sql cloudflare\schema.sql .github\workflows\cloudflare-r2-seed-refresh.yml tests\test_cloudflare_migrations.py tests\test_deployment_preflight.py tests\test_operational_readiness.py
+git add cloudflare\migrations\0004_refresh_jobs_dispatch_state.sql cloudflare\schema.sql .github\workflows\cloudflare-r2-seed-refresh.yml scripts\check_operational_readiness.py tests\test_cloudflare_migrations.py tests\test_deployment_preflight.py tests\test_operational_readiness.py
 git commit -m "feat: track refresh dispatch state"
 ```
+
+Execution evidence (2026-07-13): commit `c0f5fc9`; the Task 7 RED gate produced the expected `5 failed, 38 passed` before migration/workflow implementation. The final focused migration/preflight/readiness gate passed `45/45`, and the full Python gate passed `966` with `1` skipped from `967 collected`. Deployment preflight, operational readiness, Ruff, `git diff --check`, and the Worker bundle dry-run exited `0`. A fresh Wrangler `4.103.0` local D1 applied migrations `0001` through `0004`, a second apply reported `No migrations to apply`, and the dispatch index was verified as `(job_type, status, dispatch_status, queued_at)`. A real Python Worker against that 0004 state returned command HTTP `202`, status HTTP `200` with `dispatchStatus="pending"`, matching no-store headers, and malformed-ID HTTP `404`, proving Task 6's strict status allowlist remains forward-compatible. SQLite execution tests prove pending/dispatched/failed/unknown queued rows transition to `workflow_claimed`, a later run cannot steal an earlier owner, and terminal updates cannot cross owner or job type. The production deploy migration-before-live-Worker order and refresh migration-before-claim order are both locked by tests; the standalone readiness checker now rejects missing workflow claims or unscoped terminal mutations. Two independent reviews reported Critical `0`, Important `0`, Minor `0`, Ready for local commit `Yes`. Production deployment remains blocked by the Task 6 public-command abuse gate assigned to Task 8. No push or deployment was performed.
 
 ---
 
