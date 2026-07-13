@@ -11,7 +11,7 @@
   // The only app-state coupling (active disclosure tab / column and the current
   // market scan) is injected via `getState()`; `safeText` is borrowed from the
   // normalization module. Bodies are otherwise unchanged from app.js.
-  function createMarketScan({ getState, safeText }) {
+  function createMarketScan({ getState, safeText, findLoadedResult = () => null }) {
     const MARKET_RESULT_COLUMNS = [
       ["entry", "適合進場"],
       ["watch", "接近觀察"],
@@ -142,7 +142,11 @@
 
     function findMarketResultById(resultId) {
       const marketScan = getState().marketScan;
-      if (!marketScan) return null;
+      if (!marketScan) {
+        const [groupKey, columnKey, stockCode] = String(resultId || "").split(":");
+        const loaded = findLoadedResult(stockCode);
+        return loaded && marketResultId(loaded, groupKey, columnKey) === resultId ? loaded : null;
+      }
       const grouped = groupMarketScanResults(marketScan);
       for (const tab of MARKET_DISCLOSURE_TABS) {
         for (const [columnKey] of MARKET_RESULT_COLUMNS) {

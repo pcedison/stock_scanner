@@ -125,26 +125,29 @@
     }
     function renderMarketColumn(groupKey, columnKey, title, results) {
       const page = getMarketPage(groupKey, columnKey);
-      const pageStart = page * MARKET_LIST_PAGE_SIZE;
-      const sortedResults = sortMarketResultsForDisplay(columnKey, results);
-      const visibleResults = sortedResults.slice(pageStart, pageStart + MARKET_LIST_PAGE_SIZE);
+      const isWindow = !Array.isArray(results);
+      const sortedResults = isWindow ? results?.items || [] : sortMarketResultsForDisplay(columnKey, results);
+      const visibleResults = isWindow
+        ? sortedResults
+        : sortedResults.slice(page * MARKET_LIST_PAGE_SIZE, (page + 1) * MARKET_LIST_PAGE_SIZE);
+      const total = isWindow ? Math.max(0, Number(results?.total) || 0) : sortedResults.length;
       const note = marketColumnNote(columnKey);
       return `
         <div class="result-column">
           <div class="result-column-head">
-            <h3>${escapeHtml(title)} (${escapeHtml(sortedResults.length)})</h3>
+            <h3>${escapeHtml(title)} (${escapeHtml(total)})</h3>
             ${note ? `<span class="result-column-note">${escapeHtml(note)}</span>` : ""}
           </div>
-          ${visibleResults.length ? `<div class="market-result-list">${visibleResults.map((result) => renderMarketResultRow(result, { allowAddAction: true, disclosureGroup: groupKey, columnKey })).join("")}</div>` : `<div class="empty-state">沒有結果</div>`}
-          ${renderMarketPagination(groupKey, columnKey, sortedResults.length)}
+          ${visibleResults.length ? `<div class="market-result-list">${visibleResults.map((result) => renderMarketResultRow(result, { allowAddAction: true, disclosureGroup: groupKey, columnKey })).join("")}</div>` : !results?.loading ? `<div class="empty-state">沒有結果</div>` : ""}
+          ${results?.loading ? `<p class="muted" role="status">載入掃描結果中…</p>` : ""}
+          ${results?.error ? `<p class="form-error" role="status">${escapeHtml(results.error)}</p>` : ""}
+          ${renderMarketPagination(groupKey, columnKey, total)}
         </div>
       `;
     }
     function formatCacheTime(value) {
-      if (!value) return "未記錄";
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) return "未記錄";
-      return date.toLocaleString();
+      const date = new Date(value || Number.NaN);
+      return Number.isNaN(date.getTime()) ? "未記錄" : date.toLocaleString();
     }
     function cacheRefreshLabel(status = "") {
       const labels = {

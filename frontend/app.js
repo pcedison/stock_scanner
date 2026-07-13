@@ -14,6 +14,7 @@ const OPS_STATUS_HELPERS = _mod("StockScannerOpsStatus", "./ops_status.js");
 const OPS_VIEW_RENDERER_HELPERS = _mod("StockScannerOpsViewRenderers", "./ops_view_renderers.js");
 const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
 const API_CLIENT_HELPERS = _mod("StockScannerApiClient", "./api_client.js");
+const MARKET_QUERY_HELPERS = _mod("StockScannerMarketQuery", "./market_query.js");
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
 const safeRequestId = (value) => (typeof value === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(value) ? value : "");
@@ -25,6 +26,9 @@ const API_CLIENT = API_CLIENT_HELPERS.createApiClient({
   csrfHeaderName: CSRF_HEADER_NAME,
   csrfHeaderValue: CSRF_HEADER_VALUE,
 });
+const MARKET_API_VERSION = MARKET_QUERY_HELPERS.marketApiVersion();
+const APP_STORAGE = STORAGE_HELPERS.safeStorage();
+const MARKET_QUERY_CLIENT = MARKET_QUERY_HELPERS.createMarketQueryClient({ apiJson, storage: APP_STORAGE });
 
 const DEFAULT_SETTINGS = {
   auto_scan_full_market: true,
@@ -44,6 +48,9 @@ const state = {
   selectedCompany: null,
   marketScan: null,
   marketScanWarning: null,
+  marketIndex: null,
+  marketWindow: { items: [], total: 0, windowStart: 0, loading: false, error: null },
+  marketQueryWarning: null,
   holdingsScan: null,
   onboardingDraft: [],
   editingHoldingCode: null,
@@ -132,58 +139,44 @@ const {
 } = MARKET_SCAN_HELPERS.createMarketScan({
   getState: () => state,
   safeText,
+  findLoadedResult: (stockCode) => MARKET_QUERY_CLIENT.findLoadedResult(stockCode),
 });
 
 function escapeHtml(value) {
   return DOM_HELPERS.escapeHtml(value);
 }
-
 function emptyStateHtml(message) {
   return DOM_HELPERS.emptyStateHtml(message);
 }
-
 function setEmptyState(target, message) {
   DOM_HELPERS.setEmptyState(target, message);
 }
-
 function setFormError(target, message) {
   DOM_HELPERS.setFormError(target, message);
 }
-
 function setSafeHtml(target, html) {
   DOM_HELPERS.setSafeHtml(target, html);
 }
-
 function clearElement(target) {
   DOM_HELPERS.clearElement(target);
 }
-
-function loadHoldingsFromStorage(storage = localStorage, companies = state.companies) {
+function loadHoldingsFromStorage(storage = APP_STORAGE, companies = state.companies) {
   return STORAGE_HELPERS.loadHoldingsFromStorage(storage, companies, normalizeHoldingRecords);
 }
-
-function loadHoldings() {
-  const normalized = loadHoldingsFromStorage(localStorage, state.companies);
-  saveHoldingsLocalOnly(normalized);
-  return normalized;
-}
-
-function saveHoldingsLocalOnly(holdings = state.holdings, storage = localStorage) {
+function saveHoldingsLocalOnly(holdings = state.holdings, storage = APP_STORAGE) {
   STORAGE_HELPERS.saveHoldingsLocalOnly(holdings, storage, state.companies, normalizeHoldingRecords);
 }
-
-function saveHoldings(holdings = state.holdings, storage = localStorage) {
+function saveHoldings(holdings = state.holdings, storage = APP_STORAGE) {
   const normalized = normalizeHoldingRecords(holdings, state.companies);
   state.holdings = normalized;
   saveHoldingsLocalOnly(normalized, storage);
-  const isBrowserLocalStorage = typeof localStorage !== "undefined" && storage === localStorage;
+  const isBrowserLocalStorage = storage === APP_STORAGE;
   if (isBrowserLocalStorage && state.auth?.authenticated) {
     state.pendingHoldingsSync = true;
     syncHoldingsToServer(normalized);
   }
   if (isBrowserLocalStorage) requestHoldingsScanRefresh();
 }
-
 async function syncHoldingsToServer(holdings = state.holdings) {
   if (!state.auth?.authenticated) return false;
   if (state.isSyncingHoldings) {
@@ -219,7 +212,6 @@ async function syncHoldingsToServer(holdings = state.holdings) {
     }
   }
 }
-
 function isHoldingTracked(stockCode) {
   const normalized = safeText(stockCode);
   return Boolean(normalized && state.holdings.some((holding) => holding.stockCode === normalized));
@@ -259,6 +251,7 @@ const { renderDataConsole, renderHoldingCard, renderSchedulerStatus } =
 const MARKET_RENDER_HELPERS = _mod("StockScannerMarketRender", "./market_render.js");
 const {
   getMarketPage,
+  resetMarketListUi,
   clampMarketListPages,
   renderMarketPagination,
   renderMarketResultRow,
@@ -286,23 +279,31 @@ const {
   MARKET_RESULT_COLUMNS,
   MARKET_DISCLOSURE_TABS,
 });
+const MARKET_QUERY_COORDINATOR = MARKET_QUERY_HELPERS.createMarketQueryCoordinator({
+  client: MARKET_QUERY_CLIENT,
+  state,
+  getSelection: () => ({
+    disclosure: activeMarketDisclosureKey(),
+    category: activeMarketColumnKey(),
+    uiPage: getMarketPage(activeMarketDisclosureKey(), activeMarketColumnKey()),
+  }),
+  resetUi: resetMarketListUi,
+  render: renderMarketResults,
+});
 
 function holdingScanResultByCode(stockCode, scan = state.holdingsScan) {
   const normalized = safeText(stockCode);
   if (!normalized || !scan || !Array.isArray(scan.results)) return null;
   return scan.results.find((result) => safeText(result?.stockCode) === normalized) || null;
 }
-
 function holdingScanMissingByCode(stockCode, scan = state.holdingsScan) {
   const normalized = safeText(stockCode);
   if (!normalized || !scan || !Array.isArray(scan.missing)) return null;
   return scan.missing.find((item) => safeText(item?.stockCode) === normalized) || null;
 }
-
 function holdingExitCodes(result = {}) {
   return HOLDING_SIGNAL_HELPERS.holdingExitCodes(result);
 }
-
 function holdingSignal(result = null, missing = null) {
   const display = result ? displayResultStatus(result, "holding") : null;
   return HOLDING_SIGNAL_HELPERS.holdingSignal(
@@ -313,7 +314,6 @@ function holdingSignal(result = null, missing = null) {
     },
   );
 }
-
 function renderHoldingSignal(result = null, missing = null) {
   const display = result ? displayResultStatus(result, "holding") : null;
   return HOLDING_SIGNAL_HELPERS.renderHoldingSignal(
@@ -324,7 +324,6 @@ function renderHoldingSignal(result = null, missing = null) {
     },
   );
 }
-
 function holdingExitAlerts(scan = state.holdingsScan) {
   const results = Array.isArray(scan?.results) ? scan.results : [];
   const savedHoldingCodes = new Set(
@@ -357,6 +356,17 @@ const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({
   getState: () => state,
   holdingExitAlerts,
 });
+const { renderOverview: renderOverviewStats, updateNavigation: updateMarketColumnNav } =
+  MARKET_QUERY_HELPERS.createMarketCountUi({
+    state,
+    apiVersion: MARKET_API_VERSION,
+    queryAll: $$,
+    labels: MARKET_COLUMN_LABELS,
+    activeTab: activeMarketDisclosureKey,
+    activeColumn: activeMarketColumnKey,
+    groupScan: groupMarketScanResults,
+    renderOps: renderOverviewOpsStatus,
+  });
 function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
   if (!alerts.length) return "";
   const exitCount = alerts.filter((item) => item.status === "EXIT").length;
@@ -395,7 +405,6 @@ function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
     </section>
   `;
 }
-
 function renderHoldingExitAlerts() {
   if (typeof document === "undefined") return;
   const target = $("#holding-exit-alerts");
@@ -410,13 +419,11 @@ function renderHoldingExitAlerts() {
   target.replaceChildren(...Array.from(parsed.body.childNodes));
   target.classList.remove("hidden");
 }
-
 function refreshHoldingsDependentViews() {
   renderHoldings();
   if (state.holdingsScan) renderHoldingResults();
-  if (state.marketScan) renderMarketResults();
+  if (state.marketScan || state.marketIndex) renderMarketResults();
 }
-
 function upsertHolding(holding) {
   const normalizedCompany = normalizeCompany(holding);
   if (!normalizedCompany) return false;
@@ -443,7 +450,6 @@ function upsertHolding(holding) {
   refreshHoldingsDependentViews();
   return true;
 }
-
 function reduceHolding(stockCode, amount) {
   const holding = state.holdings.find((item) => item.stockCode === stockCode);
   if (!holding) return;
@@ -457,20 +463,17 @@ function reduceHolding(stockCode, amount) {
   saveHoldings();
   refreshHoldingsDependentViews();
 }
-
 function clearHolding(stockCode) {
   state.holdings = state.holdings.filter((item) => item.stockCode !== stockCode);
   if (state.editingHoldingCode === stockCode) state.editingHoldingCode = null;
   saveHoldings();
   refreshHoldingsDependentViews();
 }
-
 function holdingResultsVisible() {
   if (typeof document === "undefined") return false;
   const target = $("#holding-results");
   return Boolean(target && !target.classList.contains("hidden"));
 }
-
 function requestHoldingsScanRefresh() {
   if (typeof window === "undefined") return;
   window.clearTimeout(holdingsScanRefreshTimer);
@@ -488,7 +491,6 @@ function requestHoldingsScanRefresh() {
     refreshStoredHoldingAnalysis({ renderResults: holdingResultsVisible(), quiet: true });
   }, 250);
 }
-
 async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = false } = {}) {
   const target = typeof document !== "undefined" ? $("#holding-results") : null;
   if (!state.holdings.length) {
@@ -524,7 +526,6 @@ async function refreshStoredHoldingAnalysis({ renderResults = false, quiet = fal
   if (renderResults) renderHoldingResults();
   return true;
 }
-
 async function apiJson(url, options = {}) {
   const response = await apiFetch(url, options);
   const text = await response.text();
@@ -533,7 +534,6 @@ async function apiJson(url, options = {}) {
   }
   return text ? JSON.parse(text) : {};
 }
-
 async function apiFetch(url, options = {}) {
   try {
     return await API_CLIENT.request(url, options);
@@ -541,7 +541,6 @@ async function apiFetch(url, options = {}) {
     throw new Error(apiErrorMessage({ status: 503, headers: { get: () => "" } }, ""));
   }
 }
-
 function apiErrorMessage(response, text = "") {
   const status = Number(response?.status) || 0;
   const contentType = String(
@@ -576,12 +575,11 @@ function apiErrorMessage(response, text = "") {
   if (!normalized || /<(!doctype|html|head|body|script|style)\b/i.test(normalized)) return fallback;
   return normalized.length <= 240 ? normalized : fallback;
 }
-
-function hasCompletedOnboarding(storage = localStorage, user = state.auth?.user || null) {
+function hasCompletedOnboarding(storage = APP_STORAGE, user = state.auth?.user || null) {
   return STORAGE_HELPERS.hasCompletedOnboarding(storage, user);
 }
 
-function markOnboardingDone(storage = localStorage, user = state.auth?.user || null) {
+function markOnboardingDone(storage = APP_STORAGE, user = state.auth?.user || null) {
   STORAGE_HELPERS.markOnboardingDone(storage, user);
 }
 
@@ -672,7 +670,8 @@ function renderAdminVisibility() {
 }
 
 async function loadAccountState() {
-  const localHoldings = loadHoldings();
+  const localHoldings = loadHoldingsFromStorage(APP_STORAGE, state.companies);
+  saveHoldingsLocalOnly(localHoldings);
   try {
     const me = await apiJson("/api/auth/me");
     const authUser = normalizeAuthUser(me.user);
@@ -726,7 +725,7 @@ async function authenticateFromForm(mode, source = "header") {
   state.auth.message = "";
   renderAccountPanel();
   try {
-    const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+    const localHoldings = loadHoldingsFromStorage(APP_STORAGE, state.companies);
     const result = await apiJson(mode === "register" ? "/api/auth/register" : "/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
@@ -790,7 +789,7 @@ async function logoutAccount() {
 
 async function importLocalHoldingsToAccount() {
   if (!state.auth?.authenticated) return;
-  const localHoldings = loadHoldingsFromStorage(localStorage, state.companies);
+  const localHoldings = loadHoldingsFromStorage(APP_STORAGE, state.companies);
   const merged = normalizeHoldingRecords([...state.holdings, ...localHoldings], state.companies);
   state.holdings = merged;
   const ok = await syncHoldingsToServer(merged);
@@ -1065,38 +1064,6 @@ function renderStrategyRulesGrid() {
   setSafeHtml(target, renderStrategyRuleCards());
 }
 
-function renderOverviewStats(scan = state.marketScan, activeTab = state.activeMarketDisclosureTab) {
-  if (typeof document === "undefined") return;
-  const metricKeys = ["entry", "watch", "excluded"];
-  const values = Object.fromEntries(metricKeys.map((key) => [key, "--"]));
-  const note = scan?.generatedAt ? `${new Date(scan.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
-  if (scan) {
-    const grouped = groupMarketScanResults(scan);
-    const tabKey = activeMarketDisclosureKey(activeTab);
-    for (const key of metricKeys) {
-      values[key] = grouped?.[tabKey]?.[key]?.length ?? 0;
-    }
-  }
-  for (const key of metricKeys) {
-    const count = document.querySelector(`#overview-${key}-count`);
-    const noteEl = document.querySelector(`#overview-${key}-note`);
-    if (count) count.textContent = String(values[key]);
-    if (noteEl) noteEl.textContent = note;
-  }
-  renderOverviewOpsStatus(scan);
-}
-
-function updateMarketColumnNav(grouped = null, activeTab = state.activeMarketDisclosureTab) {
-  const tabKey = activeMarketDisclosureKey(activeTab);
-  $$("[data-market-column-nav]").forEach((button) => {
-    const columnKey = button.dataset.marketColumnNav;
-    const label = MARKET_COLUMN_LABELS[columnKey] || columnKey;
-    const count = grouped ? (grouped?.[tabKey]?.[columnKey]?.length ?? 0) : null;
-    button.classList.toggle("active", columnKey === activeMarketColumnKey());
-    button.textContent = count === null ? label : `${label} (${count})`;
-  });
-}
-
 async function loadMarketResultDetails(resultId) {
   const result = findMarketResultById(resultId);
   if (!result || result.hasFullDetails || result.detailLoading || !result.detailsAvailable) return;
@@ -1123,61 +1090,61 @@ async function loadMarketResultDetails(resultId) {
 
 function renderMarketResults() {
   const target = $("#market-results");
-  if (!state.marketScan) {
-    setEmptyState(target, "尚未掃描市場");
+  const isV2 = MARKET_API_VERSION === "v2";
+  const source = isV2 ? state.marketIndex : state.marketScan;
+  if (!source) {
+    setEmptyState(target, isV2 ? "等待市場索引" : "尚未掃描市場");
     updateMarketColumnNav();
     renderOverviewStats();
     return;
   }
-  $("#scan-time").textContent = `更新 ${new Date(state.marketScan.generatedAt).toLocaleString()}`;
-  const grouped = groupMarketScanResults(state.marketScan);
-  clampMarketListPages(grouped);
+  $("#scan-time").textContent = `更新 ${new Date(source.generatedAt).toLocaleString()}`;
+  const grouped = isV2 ? null : groupMarketScanResults(source);
+  if (grouped) clampMarketListPages(grouped);
   const activeTab = activeMarketDisclosureKey();
   const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
-  const activeGroup = grouped[activeTab];
   const activeColumn = activeMarketColumnKey();
   const activeColumnTitle = MARKET_COLUMN_LABELS[activeColumn] || "掃描結果";
   updateMarketColumnNav(grouped, activeTab);
-  const filingSummary = state.marketScan.filingContext?.activeFinancialReport
-    ? `目前依 ${state.marketScan.filingContext.activeFinancialReport.label}（一般公司期限 ${state.marketScan.filingContext.activeFinancialReport.generalDeadline}${
-        state.marketScan.filingContext.activeFinancialReport.financialDeadline
-          ? `，金控期限 ${state.marketScan.filingContext.activeFinancialReport.financialDeadline}`
-          : ""
-      }）判斷當期已公告。`
-    : `目前非季報/年報申報窗口，主要依 ${state.marketScan.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
-  const freshnessSummary = state.marketScan.financialFreshness?.message
-    ? `財報快取：${state.marketScan.financialFreshness.message}`
-    : "";
+  const page = getMarketPage(activeTab, activeColumn);
+  const windowMatches =
+    state.marketWindow.disclosure === activeTab &&
+    state.marketWindow.category === activeColumn &&
+    state.marketWindow.uiPage === page;
+  const activeResults = isV2
+    ? windowMatches
+      ? state.marketWindow
+      : {
+          items: [],
+          total: source.disclosures[activeTab][activeColumn].count,
+          loading: true,
+          error: null,
+        }
+    : grouped[activeTab][activeColumn] || [];
+  const report = source.filingContext?.activeFinancialReport;
+  const filingSummary = isV2
+    ? `財報期別 ${source.disclosurePeriod || "最新"}`
+    : report
+      ? `目前依 ${report.label}（一般公司期限 ${report.generalDeadline}${
+          report.financialDeadline ? `，金控期限 ${report.financialDeadline}` : ""
+        }）判斷當期已公告。`
+      : `目前非季報/年報申報窗口，主要依 ${source.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
+  const freshnessSummary = source.financialFreshness?.message ? `財報快取：${source.financialFreshness.message}` : "";
+  const sourceName = isV2 ? "官方分頁快取" : source.dataSource || "mock";
+  const sourceNote = isV2 ? filingSummary : source.note || "目前為示範樣本，不代表真實全台股即時掃描。";
+  const tabTotal = (tab) => (isV2 ? source.disclosures[tab].count : countMarketGroup(grouped[tab]));
   setSafeHtml(
     target,
-    `
-    <div class="data-source-note">
-      <strong>資料來源：${escapeHtml(state.marketScan.dataSource || "mock")}</strong>
-      <span>${escapeHtml(state.marketScan.note || "目前為示範樣本，不代表真實全台股即時掃描。")}</span>
-    </div>
-    ${renderScanCacheStatus(state.marketScan)}
-    <div class="market-disclosure-tabs" aria-label="公告狀態分組">
-      ${MARKET_DISCLOSURE_TABS.map((tab) => {
-        const total = countMarketGroup(grouped[tab.key]);
-        return `
-          <button class="tab ${tab.key === activeTab ? "active" : ""}" type="button" data-market-disclosure-tab="${escapeHtml(tab.key)}">
-            ${escapeHtml(tab.title)} (${escapeHtml(total)})
-          </button>
-        `;
-      }).join("")}
-    </div>
-    <div class="data-source-note disclosure-note">
-      <strong>${escapeHtml(activeMeta.title)}</strong>
-      <span>${escapeHtml(filingSummary)} ${escapeHtml(freshnessSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span>
-    </div>
-    <div class="result-columns single-result-column">
-      ${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeGroup[activeColumn] || [])}
-    </div>
-  `,
+    `<div class="data-source-note"><strong>資料來源：${escapeHtml(sourceName)}</strong><span>${escapeHtml(sourceNote)}</span></div>
+    ${renderScanCacheStatus(source)}
+    ${isV2 && state.marketQueryWarning ? `<p class="data-source-note market-scan-warning" role="status">${escapeHtml(state.marketQueryWarning)}</p>` : ""}
+    <div class="market-disclosure-tabs" aria-label="公告狀態分組">${MARKET_DISCLOSURE_TABS.map((tab) => `<button class="tab ${tab.key === activeTab ? "active" : ""}" type="button" data-market-disclosure-tab="${escapeHtml(tab.key)}">${escapeHtml(tab.title)} (${escapeHtml(tabTotal(tab.key))})</button>`).join("")}</div>
+    <div class="data-source-note disclosure-note"><strong>${escapeHtml(activeMeta.title)}</strong><span>${escapeHtml(filingSummary)} ${escapeHtml(freshnessSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span></div>
+    <div class="result-columns single-result-column">${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeResults)}</div>`,
   );
-  renderMarketScanWarning(target);
+  if (!isV2) renderMarketScanWarning(target);
   applyEvidenceBarWidths(target);
-  renderOverviewStats(state.marketScan, activeTab);
+  renderOverviewStats(source, activeTab);
 }
 function renderDataAndScheduler() {
   const dataTarget = $("#data-source-status");
@@ -1323,7 +1290,7 @@ async function loadDataStatus() {
     state.schedulerAutoScan = status.schedulerAutoScan;
     state.integrationStatus = status.integrationStatus;
     state.backtestStatus = status.backtestStatus;
-    if (state.schedulerAutoScan?.scan) {
+    if (MARKET_API_VERSION !== "v2" && state.schedulerAutoScan?.scan) {
       acceptMarketScan(state.schedulerAutoScan.scan, { resetUi: true });
       renderMarketResults();
     }
@@ -1423,6 +1390,29 @@ async function analyzeSelectedCompany() {
   }
 }
 
+async function loadActiveMarketWindow() {
+  return MARKET_QUERY_COORDINATOR.loadWindow();
+}
+
+async function refreshMarketQuery({ revealResults = false, refreshMode = "auto" } = {}) {
+  const target = $("#market-results");
+  if (revealResults) {
+    showView("scan");
+    showTab("market");
+  }
+  try {
+    return await MARKET_QUERY_COORDINATOR.refresh({ force: refreshMode === "force" });
+  } catch (error) {
+    state.marketQueryWarning = error?.message || "市場索引暫時無法載入";
+    if (state.marketIndex) {
+      renderMarketResults();
+      return state.marketIndex;
+    }
+    if (revealResults && target) setFormError(target, state.marketQueryWarning);
+    return null;
+  }
+}
+
 async function scanMarket() {
   return refreshMarketScan({ revealResults: true });
 }
@@ -1436,6 +1426,7 @@ function handleMarketScanFailure(error, { revealResults = false, target = null }
   return null;
 }
 async function refreshMarketScan({ revealResults = false, refreshMode = "auto" } = {}) {
+  if (MARKET_API_VERSION === "v2") return refreshMarketQuery({ revealResults, refreshMode });
   const target = $("#market-results");
   if (revealResults) {
     if (!state.marketScan) setEmptyState(target, "掃描中");
@@ -1615,6 +1606,7 @@ function bindEvents() {
         showView("scan");
         showTab("market");
         renderMarketResults();
+        if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
         closeMobileMenu();
         return;
       }
@@ -1886,6 +1878,7 @@ function bindEvents() {
     if (tabButton) {
       state.activeMarketDisclosureTab = tabButton.dataset.marketDisclosureTab;
       renderMarketResults();
+      if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
       return;
     }
     const pageButton = event.target.closest("[data-market-page-column]");
@@ -1896,6 +1889,7 @@ function bindEvents() {
       if (state.marketListPages?.[tabKey] && columnKey in state.marketListPages[tabKey]) {
         state.marketListPages[tabKey][columnKey] = Math.max(0, getMarketPage(tabKey, columnKey) + direction);
         renderMarketResults();
+        if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
       }
       return;
     }
@@ -2003,6 +1997,7 @@ if (typeof module !== "undefined") {
     escapeHtml,
     emptyStateHtml,
     setEmptyState,
+    saveHoldings,
     acceptMarketScan,
     handleMarketScanFailure,
     refreshMarketScan,

@@ -328,6 +328,41 @@ test("holdings and mobile navigation render without layout blockers", async ({ p
   await expect(page.locator("#data-source-status")).toBeVisible();
 });
 
+test("localStorage SecurityError stays fail-soft through browser initialization", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(`${error.name}:${error.message}`));
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("blocked localStorage", "SecurityError");
+      },
+    });
+  });
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
+  expect(pageErrors.filter((message) => /SecurityError|localStorage/.test(message))).toEqual([]);
+});
+
+test("localStorage quota failures do not block initialization or holding saves", async ({ page, isMobile }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(`${error.name}:${error.message}`));
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = function setItem() {
+      throw new DOMException("quota", "QuotaExceededError");
+    };
+  });
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
+  await showView(page, isMobile, "holdings");
+  await page.locator("#manual-stock-input").fill("2357 100 500");
+  await page.locator("#manual-add-form").evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await expect(page.locator("#holdings-list")).toContainText("2357");
+  expect(pageErrors.filter((message) => /QuotaExceededError|quota/.test(message))).toEqual([]);
+});
+
 test("saved holdings surface X1-X5 exit alerts", async ({ page, isMobile }) => {
   await page.goto("/");
   await closeBlockingModals(page);
@@ -443,4 +478,192 @@ test("authenticated holdings survive reload and market results expose evidence",
   expect(expanded).toBe(true);
   await expect(page.locator(".rule-evidence").first()).toBeVisible();
   await expect(page.locator("[data-evidence-width]").first()).toBeVisible();
+});
+
+const MARKET_V2_GENERATION = "a".repeat(24);
+
+function marketV2Index(entry = 205, watch = 3) {
+  const pages = (category: string, count: number) =>
+    Array.from({ length: Math.ceil(count / 100) }, (_, page) => {
+      const cursor = page * 100;
+      return {
+        key: `public/market_scan/v2/${MARKET_V2_GENERATION}/announced/${category}/${cursor}.json`,
+        cursor,
+        count: Math.min(100, count - cursor),
+        bytes: 256,
+        sha256: "0".repeat(64),
+      };
+    });
+  const bucket = (category: string, count: number, disclosure = "announced") => ({
+    count,
+    pages: disclosure === "announced" ? pages(category, count) : [],
+  });
+  return {
+    schemaVersion: 2,
+    generationId: MARKET_V2_GENERATION,
+    generatedAt: "2026-07-13T01:02:03+00:00",
+    pageSize: 100,
+    detailMode: "summary",
+    disclosurePeriod: "2026Q1",
+    filingContext: { freshnessFinancialReport: { period: "2026Q1" } },
+    financialFreshness: { latestCachedFinancialPeriod: "2026Q1" },
+    cacheStatusInputs: { latestFinancialPeriod: "2026Q1" },
+    counts: {
+      universeSize: entry + watch,
+      announced: entry + watch,
+      pending: 0,
+      categories: { entry, watch, excluded: 0 },
+    },
+    disclosures: {
+      announced: {
+        count: entry + watch,
+        entry: bucket("entry", entry),
+        watch: bucket("watch", watch),
+        excluded: bucket("excluded", 0),
+      },
+      pending: {
+        count: 0,
+        entry: bucket("entry", 0, "pending"),
+        watch: bucket("watch", 0, "pending"),
+        excluded: bucket("excluded", 0, "pending"),
+      },
+    },
+    cacheStatus: { cacheHit: true, isStale: false, storedAt: "2026-07-13T01:02:03+00:00", refreshStatus: "fresh" },
+  };
+}
+
+function marketV2Page(index: any, category: "entry" | "watch" | "excluded", cursor: number) {
+  const total = index.disclosures.announced[category].count;
+  const count = Math.max(0, Math.min(100, total - cursor));
+  const base = category === "entry" ? 1000 : 2000;
+  return {
+    schemaVersion: 2,
+    generationId: index.generationId,
+    disclosure: "announced",
+    category,
+    cursor,
+    limit: 100,
+    total,
+    nextCursor: cursor + count < total ? cursor + count : null,
+    items: Array.from({ length: count }, (_, offset) => ({
+      stockCode: category === "entry" && cursor + offset === 101 ? "2357" : String(base + cursor + offset),
+      companyName: `V2 ${category} ${cursor + offset}`,
+      status: category === "entry" ? "ENTRY" : "WATCH",
+      summary: "paged result",
+      reasons: [],
+      detailsAvailable: false,
+      hasFullDetails: true,
+    })),
+  };
+}
+
+async function useMarketV2(page) {
+  await page.addInitScript(() => {
+    const config = globalThis.StockScannerConfig || {};
+    globalThis.StockScannerConfig = { ...config, marketApiVersion: "v2" };
+  });
+}
+
+test("paged market and market index lazy load bounded windows", async ({ page, isMobile }) => {
+  await useMarketV2(page);
+  const index = marketV2Index();
+  const resultRequests: { category: string; cursor: number }[] = [];
+  let legacyCalls = 0;
+  let reportCalls = 0;
+  await page.route("**/api/scan/market/index", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(index) }),
+  );
+  await page.route("**/api/scan/market/results?*", (route) => {
+    const url = new URL(route.request().url());
+    const category = url.searchParams.get("category") as "entry" | "watch" | "excluded";
+    const cursor = Number(url.searchParams.get("cursor"));
+    resultRequests.push({ category, cursor });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(marketV2Page(index, category, cursor)),
+    });
+  });
+  await page.route("**/api/scan/market", (route) => {
+    legacyCalls += 1;
+    return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/api/reports/market?*", (route) => {
+    reportCalls += 1;
+    return route.fulfill({ status: 200, contentType: "text/csv", body: "stockCode\n1000\n" });
+  });
+
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1000");
+  await expect(page.locator('[data-market-column-nav="entry"]')).toContainText("205");
+  expect(resultRequests).toEqual([{ category: "entry", cursor: 0 }]);
+  expect(legacyCalls).toBe(0);
+
+  const next = page.locator('[data-market-page-column="entry"][data-market-page-dir="1"]');
+  for (let pageNumber = 0; pageNumber < 16; pageNumber += 1) await next.click();
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1096");
+  await expect(page.locator(".market-result-code strong").last()).toHaveText("2357");
+  expect(resultRequests.filter((request) => request.category === "entry").map((request) => request.cursor)).toEqual([
+    0, 100,
+  ]);
+
+  await showMarketColumn(page, isMobile, "watch");
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("2000");
+  await showMarketColumn(page, isMobile, "excluded");
+  await expect(page.locator("#market-results .empty-state")).toBeVisible();
+  expect(resultRequests.some((request) => request.category === "excluded")).toBe(false);
+
+  const beforeExport = resultRequests.length;
+  await page.locator("#export-market-csv-btn").click();
+  await expect.poll(() => reportCalls).toBe(1);
+  expect(resultRequests).toHaveLength(beforeExport);
+
+  await showMarketColumn(page, isMobile, "entry");
+  await page.locator('[data-market-result-toggle*="2357"]').click();
+  const add = page.locator('[data-add-from-result="2357"]');
+  await expect(add).toHaveCount(1);
+  await add.click();
+  await expect(page.locator('[data-add-from-result="2357"]')).toHaveCount(0);
+});
+
+test("last-known-good shell keeps validated market index offline", async ({ page, isMobile }) => {
+  await useMarketV2(page);
+  const index = marketV2Index(12, 0);
+  await page.addInitScript((storedIndex) => {
+    localStorage.setItem("tw_stock_scanner.market_index.v2", JSON.stringify(storedIndex));
+  }, index);
+  await page.route("**/api/scan/market/index", (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "offline" }) }),
+  );
+  await page.route("**/api/scan/market/results?*", (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "offline page" }) }),
+  );
+
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  await expect(page.locator('[data-market-column-nav="entry"]')).toContainText("12");
+  await expect(page.locator("#market-results")).toContainText("2026Q1");
+  await expect(page.locator(".market-scan-warning")).toBeVisible();
+  await expect(page.locator("#market-results .form-error")).toBeVisible();
+});
+
+test("legacy market fallback uses v1 route only", async ({ page }) => {
+  let legacyCalls = 0;
+  let indexCalls = 0;
+  await page.route("**/api/scan/market/index", (route) => {
+    indexCalls += 1;
+    return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/api/scan/market", async (route) => {
+    legacyCalls += 1;
+    return route.continue();
+  });
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
+  expect(legacyCalls).toBeGreaterThan(0);
+  expect(indexCalls).toBe(0);
 });

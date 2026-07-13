@@ -10,19 +10,44 @@
   const HOLDINGS_KEY = "tw_stock_scanner.holdings.v1";
   const ONBOARDING_KEY = "tw_stock_scanner.onboarding_done.v1";
 
+  function safeStorage(root = typeof globalThis !== "undefined" ? globalThis : {}) {
+    try {
+      return root.localStorage || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function safeGet(storage, key, fallback = null) {
+    try {
+      return storage?.getItem(key) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function safeSet(storage, key, value) {
+    try {
+      storage?.setItem(key, value);
+    } catch {
+      return false;
+    }
+    return Boolean(storage);
+  }
+
   function loadHoldingsFromStorage(storage, companies, normalizeHoldingRecords) {
     try {
-      const parsed = JSON.parse(storage.getItem(HOLDINGS_KEY) || "[]");
+      const parsed = JSON.parse(safeGet(storage, HOLDINGS_KEY, "[]"));
       if (!Array.isArray(parsed)) throw new Error("Holdings must be an array");
       return normalizeHoldingRecords(parsed, companies);
     } catch {
-      storage.setItem(HOLDINGS_KEY, "[]");
+      safeSet(storage, HOLDINGS_KEY, "[]");
       return [];
     }
   }
 
   function saveHoldingsLocalOnly(holdings, storage, companies, normalizeHoldingRecords) {
-    storage.setItem(HOLDINGS_KEY, JSON.stringify(normalizeHoldingRecords(holdings, companies)));
+    safeSet(storage, HOLDINGS_KEY, JSON.stringify(normalizeHoldingRecords(holdings, companies)));
   }
 
   function onboardingStorageKey(user) {
@@ -31,11 +56,11 @@
   }
 
   function hasCompletedOnboarding(storage, user) {
-    return storage.getItem(onboardingStorageKey(user)) === "true";
+    return safeGet(storage, onboardingStorageKey(user)) === "true";
   }
 
   function markOnboardingDone(storage, user) {
-    storage.setItem(onboardingStorageKey(user), "true");
+    safeSet(storage, onboardingStorageKey(user), "true");
   }
 
   return {
@@ -46,5 +71,6 @@
     markOnboardingDone,
     onboardingStorageKey,
     saveHoldingsLocalOnly,
+    safeStorage,
   };
 });
