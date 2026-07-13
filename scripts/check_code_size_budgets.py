@@ -8,6 +8,7 @@ from typing import cast
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGETS = {
+    "backend/services/market_query.py": 350,
     "frontend/app.js": 2010,
     "frontend/dom.js": 90,
     "frontend/renderers.js": 300,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import tempfile
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,6 +41,7 @@ from backend.models.financial import FundamentalSnapshot  # noqa: E402
 from backend.models.holding import Holding  # noqa: E402
 from backend.models.settings import ScannerSettings  # noqa: E402
 from backend.services.cache_policy import refresh_policy  # noqa: E402
+from backend.services.market_query import build_market_generation, canonical_json_bytes  # noqa: E402
 from backend.services.market_scan import data_sources_status_payload, scan_market_payload  # noqa: E402
 from backend.services.official_data_provider import OfficialDataProvider, _is_financial_company  # noqa: E402
 from backend.services.rules import RuleEngine  # noqa: E402
@@ -82,19 +85,36 @@ def write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(jsonable_encoder(payload), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
-def clear_generated_analysis_shards() -> None:
-    for directory in (ANALYSIS_SHARD_DIR, HOLDING_ANALYSIS_SHARD_DIR):
+def _resolved_seed_child(path: Path) -> Path:
+    output_root = OUT_DIR.resolve()
+    target = path.resolve()
+    if target == output_root or not target.is_relative_to(output_root):
+        raise RuntimeError("Refusing to access generated output outside the seed directory")
+    return target
+
+
+def _remove_generated_json_files(directories: list[Path]) -> None:
+    for directory in directories:
         if not directory.exists():
             continue
         for path in directory.glob("*.json"):
             path.unlink()
 
 
+def clear_generated_analysis_shards() -> None:
+    directories = [_resolved_seed_child(path) for path in (ANALYSIS_SHARD_DIR, HOLDING_ANALYSIS_SHARD_DIR)]
+    _remove_generated_json_files(directories)
+
+
 def clear_seed_output() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    analysis_dirs = [_resolved_seed_child(path) for path in (ANALYSIS_SHARD_DIR, HOLDING_ANALYSIS_SHARD_DIR)]
+    market_v2_dir = _resolved_seed_child(OUT_DIR / "market_scan" / "v2")
     for path in OUT_DIR.glob("*.json"):
         path.unlink()
-    clear_generated_analysis_shards()
+    _remove_generated_json_files(analysis_dirs)
+    if market_v2_dir.exists():
+        shutil.rmtree(market_v2_dir)
 
 
 def analysis_shard_key(stock_code: str) -> str:
@@ -149,6 +169,68 @@ def add_market_scan_summary_to_manifest(manifest: dict) -> dict:
 
 def write_market_scan_summary(scan_payload: dict) -> None:
     write_json(OUT_DIR / MARKET_SCAN_SUMMARY_FILE, compact_market_scan_payload(scan_payload))
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def write_market_generation(scan_payload: dict, manifest: dict) -> dict:
+    filing_context = scan_payload.get("filingContext")
+    if not isinstance(filing_context, dict):
+        filing_context = {}
+    generation = build_market_generation(
+        compact_market_scan_payload(scan_payload),
+        cache_status_inputs={
+            "generatedAt": scan_payload.get("generatedAt"),
+            "latestRevenuePeriod": filing_context.get("monthlyRevenuePeriod"),
+            "latestFinancialPeriod": latest_financial_period(scan_payload),
+        },
+    )
+    generation_index_key = f"public/market_scan/v2/{generation.generation_id}/index.json"
+    page_sizes = []
+    immutable_files = []
+    for object_key, content in generation.files.items():
+        expected_prefix = f"public/market_scan/v2/{generation.generation_id}/"
+        if not object_key.startswith(expected_prefix):
+            raise RuntimeError("Refusing to write an unsafe market generation key")
+        target = _resolved_seed_child(OUT_DIR / object_key.removeprefix("public/"))
+        immutable_files.append((object_key, target, content))
+        if object_key != generation_index_key:
+            page_sizes.append(len(content))
+    for _object_key, target, content in immutable_files:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    _atomic_write_bytes(OUT_DIR / "market_scan_index.json", canonical_json_bytes(generation.index))
+
+    updated = dict(manifest)
+    files = list(updated.get("files") or [])
+    if "market_scan_index.json" not in files:
+        files.append("market_scan_index.json")
+    updated["files"] = files
+    updated["marketApiSchemaVersion"] = 2
+    updated["marketGenerationId"] = generation.generation_id
+    updated["marketIndexBytes"] = len(canonical_json_bytes(generation.index))
+    updated["marketPageCount"] = len(page_sizes)
+    updated["marketMaxPageBytes"] = max(page_sizes, default=0)
+    return updated
 
 
 def rebuild_scan_from_analysis(scan_payload: dict, results: list[dict]) -> dict:
@@ -503,6 +585,7 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
         raise RuntimeError("Offline seed companies.json must contain an items list")
     write_market_scan_summary(scan_payload)
     manifest = add_market_scan_summary_to_manifest(manifest)
+    manifest = write_market_generation(scan_payload, manifest)
     manifest["companiesByMarket"] = company_market_counts(companies)
     counts = manifest.get("counts", {})
     assert_seed_quality(
@@ -676,6 +759,7 @@ def main() -> None:
             "fallbackSource": fallback_source,
         },
     }
+    manifest = write_market_generation(scan_payload, manifest)
     write_json(OUT_DIR / "manifest.json", manifest)
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 
