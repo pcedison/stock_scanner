@@ -154,15 +154,17 @@ test("manual refresh failure preserves last successful market scan", async ({ pa
   await showView(page, isMobile, "scan");
 
   const successfulScan = await page.evaluate(async () => (await fetch("/api/scan/market")).json());
-  const activePeriod = successfulScan.filingContext?.activeFinancialReport?.period;
-  expect(activePeriod).toBeTruthy();
+  const visiblePeriod =
+    successfulScan.filingContext?.freshnessFinancialReport?.period ||
+    successfulScan.filingContext?.activeFinancialReport?.period;
+  expect(visiblePeriod).toBeTruthy();
   expect(successfulScan.entry?.length).toBeGreaterThan(0);
   const template = successfulScan.entry[0];
   const lastGoodScan = {
     ...successfulScan,
     generatedAt: "2026-07-12T01:00:00+00:00",
     entry: Array.from({ length: 7 }, (_, index) =>
-      withActiveOfficialQuarter(template, activePeriod, {
+      withActiveOfficialQuarter(template, visiblePeriod, {
         stockCode: String(9100 + index),
         companyName: `保留測試公司 ${index + 1}`,
         detailsAvailable: false,
@@ -255,11 +257,13 @@ test("successful market refresh clears last-good warning", async ({ page, isMobi
   await closeBlockingModals(page);
   await showView(page, isMobile, "scan");
   const successfulScan = await page.evaluate(async () => (await fetch("/api/scan/market")).json());
-  const activePeriod = successfulScan.filingContext?.activeFinancialReport?.period;
-  expect(activePeriod).toBeTruthy();
+  const visiblePeriod =
+    successfulScan.filingContext?.freshnessFinancialReport?.period ||
+    successfulScan.filingContext?.activeFinancialReport?.period;
+  expect(visiblePeriod).toBeTruthy();
   expect(successfulScan.entry?.length).toBeGreaterThan(0);
   successfulScan.entry = successfulScan.entry.map((item: any, index: number) =>
-    index === 0 ? withActiveOfficialQuarter(item, activePeriod, { stockCode: "2454", companyName: "聯發科" }) : item,
+    index === 0 ? withActiveOfficialQuarter(item, visiblePeriod, { stockCode: "2454", companyName: "聯發科" }) : item,
   );
   successfulScan.generatedAt = "2026-07-12T02:00:00+00:00";
 

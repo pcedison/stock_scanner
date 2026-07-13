@@ -82,9 +82,11 @@ client = TestClient(main_module.app)
 def _use_official_mode(monkeypatch, **settings_kwargs):
     """Switch the app to official mode with the provider's network stubbed out."""
     save_settings(ScannerSettings(use_mock_data=False, **settings_kwargs))
-    monkeypatch.setattr(deps_module.official_provider, "list_snapshots", lambda settings: [])
-    monkeypatch.setattr(deps_module.official_provider, "list_companies", lambda: [])
-    monkeypatch.setattr(deps_module.official_provider, "get_snapshot", lambda code: None)
+    snapshots = deps_module.mock_provider.list_snapshots(ScannerSettings(use_mock_data=True))
+    by_code = {snapshot.company.stockCode: snapshot for snapshot in snapshots}
+    monkeypatch.setattr(deps_module.official_provider, "list_snapshots", lambda settings: snapshots)
+    monkeypatch.setattr(deps_module.official_provider, "list_companies", lambda: [item.company for item in snapshots])
+    monkeypatch.setattr(deps_module.official_provider, "get_snapshot", by_code.get)
     monkeypatch.setattr(deps_module.official_provider, "refresh", lambda force=False: None)
 
 

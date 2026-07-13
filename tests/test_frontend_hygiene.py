@@ -12,6 +12,7 @@ OPS_DASHBOARD_VERSION = "20260622-ops-dashboard"
 API_CLIENT_VERSION = "20260712-resilient-api"
 APP_VERSION = "20260712-last-good-scan"
 MARKET_RENDER_VERSION = "20260712-last-good-scan"
+MARKET_SCAN_VERSION = "20260713-filing-period"
 STRATEGY_CONTENT_VERSION = "20260612-x1-exit-rule"
 DOM_VERSION = "20260525-dom-hardening"
 
@@ -129,6 +130,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert 'src="/storage.js?v=20260522-frontend-split"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
     assert f'src="/api_client.js?v={API_CLIENT_VERSION}"' in index_html
+    assert f'src="/market_scan.js?v={MARKET_SCAN_VERSION}"' in index_html
     assert f'src="/market_render.js?v={MARKET_RENDER_VERSION}"' in index_html
     assert f'src="/ops_status.js?v={OPS_DASHBOARD_VERSION}"' in index_html
     assert f'src="/ops_view_renderers.js?v={OPS_DASHBOARD_VERSION}"' in index_html

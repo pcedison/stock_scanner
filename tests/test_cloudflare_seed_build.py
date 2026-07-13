@@ -4,6 +4,7 @@ import pytest
 
 import scripts.build_cloudflare_seed as seed_build
 from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
+from backend.models.analysis import AnalysisResult, RuleResult
 
 
 class ObjectResult:
@@ -274,6 +275,14 @@ def test_add_market_scan_summary_to_manifest():
     assert seed_build.add_market_scan_summary_to_manifest(after_latest)["files"].count("market_scan_summary.json") == 1
 
 
+def test_manifest_declares_all_required_official_artifacts():
+    assert seed_build.OFFICIAL_MANIFEST_FILES == (
+        "official_fundamentals_history.json",
+        "official_history_backfill_progress.json",
+        "monthly_revenue_history.json",
+    )
+
+
 def test_compact_scan_result_encodes_objects_and_drops_non_objects():
     encoded = seed_build.compact_scan_result(
         ObjectResult(stockCode="1234", companyName="X", status="ENTRY", summary="s", reasons=[])
@@ -295,6 +304,121 @@ def test_seed_diagnostics_reports_counts(monkeypatch):
     assert diagnostics["universeSize"] == 5
     assert diagnostics["watch"] == 2
     assert diagnostics["fallbackSource"] == "cloudflare_seed_cache"
+
+
+def test_seed_quality_rejects_systemic_x2_missing_data(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    missing_x2 = {
+        "status": "INSUFFICIENT_DATA",
+        "reasons": [{"code": "X2", "passed": False, "severity": "INSUFFICIENT_DATA"}],
+    }
+    scan_payload = {
+        "universeSize": 1000,
+        "entry": [],
+        "watch": [missing_x2 for _ in range(1000)],
+        "excluded": [],
+    }
+
+    with pytest.raises(RuntimeError, match="X2 monthly-history coverage"):
+        seed_build.assert_seed_quality(
+            scan_payload,
+            [None] * 1000,
+            {str(index): {} for index in range(1000)},
+            fallback_source=None,
+        )
+
+
+def test_seed_quality_rejects_systemic_x2_missing_from_analysis_models(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    missing_x2 = AnalysisResult(
+        stockCode="1101",
+        companyName="Test",
+        status="INSUFFICIENT_DATA",
+        summary="missing",
+        reasons=[
+            RuleResult(
+                code="X2",
+                title="previous month",
+                passed=False,
+                severity="INSUFFICIENT_DATA",
+                message="missing previous month",
+            )
+        ],
+    )
+    scan_payload = {
+        "universeSize": 1000,
+        "entry": [],
+        "watch": [missing_x2 for _ in range(1000)],
+        "excluded": [],
+    }
+
+    with pytest.raises(RuntimeError, match="X2 monthly-history coverage"):
+        seed_build.assert_seed_quality(
+            scan_payload,
+            [None] * 1000,
+            {str(index): {} for index in range(1000)},
+            fallback_source=None,
+        )
+
+
+def test_seed_quality_allows_bounded_x2_missing_data(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    missing_x2 = {
+        "status": "INSUFFICIENT_DATA",
+        "reasons": [{"code": "X2", "passed": False, "severity": "INSUFFICIENT_DATA"}],
+    }
+    healthy = {"status": "WATCH", "reasons": [{"code": "X2", "passed": True, "severity": "INFO"}]}
+    scan_payload = {
+        "universeSize": 1000,
+        "entry": [],
+        "watch": [missing_x2 for _ in range(50)] + [healthy for _ in range(950)],
+        "excluded": [],
+    }
+
+    seed_build.assert_seed_quality(
+        scan_payload,
+        [None] * 1000,
+        {str(index): {} for index in range(1000)},
+        fallback_source=None,
+    )
+    diagnostics = seed_build.seed_diagnostics(scan_payload, [None] * 1000, {}, None)
+    assert diagnostics["x2Missing"] == 50
+    assert diagnostics["x2MissingRatio"] == 0.05
+
+
+def test_seed_quality_rejects_zero_entry_history_fallback(monkeypatch):
+    monkeypatch.setattr(seed_build, "official_provider", FakeProvider())
+    scan_payload = {
+        "universeSize": 1000,
+        "entry": [],
+        "watch": [
+            {"status": "WATCH", "reasons": [{"code": "X2", "passed": True, "severity": "INFO"}]}
+            for _ in range(1000)
+        ],
+        "excluded": [],
+    }
+
+    with pytest.raises(RuntimeError, match="zero-entry fallback seed"):
+        seed_build.assert_seed_quality(
+            scan_payload,
+            [None] * 1000,
+            {str(index): {} for index in range(1000)},
+            fallback_source="official_fundamentals_history",
+        )
+
+
+def test_latest_financial_period_prefers_actual_cached_or_freshness_period():
+    context = {
+        "activeFinancialReport": {"period": "2026Q2"},
+        "freshnessFinancialReport": {"period": "2026Q1"},
+    }
+    assert (
+        seed_build.latest_financial_period(
+            {"filingContext": context, "financialFreshness": {"latestCachedFinancialPeriod": "2026Q1"}}
+        )
+        == "2026Q1"
+    )
+    assert seed_build.latest_financial_period({"filingContext": context}) == "2026Q1"
 
 
 def test_assert_seed_quality_rejects_small_universe_and_analysis(monkeypatch):

@@ -61,12 +61,18 @@ def _data_sources_status_payload() -> dict:
 MIN_SEED_COMPANY_SIZE = int(os.getenv("MIN_SEED_COMPANY_SIZE", "1000"))
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
 MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
+MAX_X2_MISSING_RATIO = min(1.0, max(0.0, float(os.getenv("MAX_X2_MISSING_RATIO", "0.10"))))
 MARKET_SCAN_SUMMARY_FILE = "market_scan_summary.json"
 MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded", "results")
 SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
 REQUIRED_SCAN_SUMMARY_KEYS = ("stockCode", "companyName", "status")
 SUMMARY_REASON_KEYS = ("code", "title", "passed", "severity", "message")
 SUMMARY_REASON_CODES = {"E4", "OFFICIAL_Q", "OFFICIAL_VALUATION", "X1", "X2", "X3", "X4", "X5"}
+OFFICIAL_MANIFEST_FILES = (
+    "official_fundamentals_history.json",
+    "official_history_backfill_progress.json",
+    "monthly_revenue_history.json",
+)
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -350,13 +356,34 @@ def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
 
 
 def seed_diagnostics(scan_payload: dict, companies: list, analysis_by_code: dict, fallback_source: str | None) -> dict:
+    universe_size = scan_payload.get("universeSize") or 0
+    x2_missing = 0
+    for category in ("entry", "watch", "excluded"):
+        for result in scan_payload.get(category, []):
+            encoded_result = result if isinstance(result, dict) else jsonable_encoder(result)
+            if not isinstance(encoded_result, dict):
+                continue
+            reasons = encoded_result.get("reasons")
+            if not isinstance(reasons, list):
+                continue
+            for reason in reasons:
+                encoded_reason = reason if isinstance(reason, dict) else jsonable_encoder(reason)
+                if (
+                    isinstance(encoded_reason, dict)
+                    and encoded_reason.get("code") == "X2"
+                    and encoded_reason.get("severity") == "INSUFFICIENT_DATA"
+                ):
+                    x2_missing += 1
+                    break
     return {
-        "universeSize": scan_payload.get("universeSize") or 0,
+        "universeSize": universe_size,
         "companies": len(companies),
         "analysis": len(analysis_by_code),
         "entry": len(scan_payload.get("entry", [])),
         "watch": len(scan_payload.get("watch", [])),
         "excluded": len(scan_payload.get("excluded", [])),
+        "x2Missing": x2_missing,
+        "x2MissingRatio": x2_missing / universe_size if universe_size else 0.0,
         "fallbackSource": fallback_source,
         "financialFreshness": scan_payload.get("financialFreshness"),
         "providerStatus": official_provider.status(refresh=False),
@@ -380,12 +407,39 @@ def assert_seed_quality(scan_payload: dict, companies: list, analysis_by_code: d
             "Refusing to publish an undersized analysis seed: "
             + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
         )
+    if fallback_source and diagnostics["entry"] <= 0:
+        raise RuntimeError(
+            "Refusing to publish a zero-entry fallback seed: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        )
+    if diagnostics["x2MissingRatio"] > MAX_X2_MISSING_RATIO:
+        raise RuntimeError(
+            "Refusing to publish insufficient X2 monthly-history coverage: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        )
     freshness = diagnostics.get("financialFreshness")
     if isinstance(freshness, dict) and freshness.get("blocksDeployment") is True:
         raise RuntimeError(
             "Refusing to publish a stale financial freshness seed: "
             + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
         )
+
+
+def latest_financial_period(scan_payload: dict) -> str | None:
+    freshness = scan_payload.get("financialFreshness")
+    if isinstance(freshness, dict):
+        cached = freshness.get("latestCachedFinancialPeriod")
+        if isinstance(cached, str) and cached:
+            return cached
+    context = scan_payload.get("filingContext")
+    if not isinstance(context, dict):
+        return None
+    for field in ("freshnessFinancialReport", "activeFinancialReport"):
+        report = context.get(field)
+        period = report.get("period") if isinstance(report, dict) else None
+        if isinstance(period, str) and period:
+            return period
+    return None
 
 
 def has_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> bool:
@@ -541,7 +595,7 @@ def main() -> None:
         "sourceLastCheckedAt": scan_payload.get("generatedAt"),
         "nextRefreshAfter": next_refresh.isoformat(),
         "latestRevenuePeriod": scan_payload.get("filingContext", {}).get("monthlyRevenuePeriod"),
-        "latestFinancialPeriod": scan_payload.get("filingContext", {}).get("activeFinancialReport", {}).get("period"),
+        "latestFinancialPeriod": latest_financial_period(scan_payload),
         "financialFreshness": scan_payload.get("financialFreshness"),
         "cachePolicy": policy,
         "files": [
@@ -553,8 +607,7 @@ def main() -> None:
             "holding_analysis_by_code.json",
             "holding_analysis_shards/*.json",
             "data_sources_status.json",
-            "official_fundamentals_history.json",
-            "official_history_backfill_progress.json",
+            *OFFICIAL_MANIFEST_FILES,
             *(([SEED_CACHE_ZIP.name]) if SEED_CACHE_ZIP.exists() else []),
         ],
         "counts": {
@@ -571,6 +624,8 @@ def main() -> None:
             "minimumCompanySize": MIN_SEED_COMPANY_SIZE,
             "minimumUniverseSize": MIN_SEED_UNIVERSE_SIZE,
             "minimumAnalysisSize": MIN_SEED_ANALYSIS_SIZE,
+            "maximumX2MissingRatio": MAX_X2_MISSING_RATIO,
+            "x2Missing": seed_diagnostics(scan_payload, companies, analysis_by_code, fallback_source)["x2Missing"],
             "fallbackSource": fallback_source,
         },
     }

@@ -126,7 +126,7 @@ jobs:
     steps:
       - run: |
           SELECT COUNT(*) AS pending_count FROM refresh_jobs
-          unzip -o "$SEED_ZIP" -d data
+          python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/cloudflare_seed_upload_plan.py
           echo "UPDATE refresh_jobs SET status = 'success' WHERE status = 'running' AND owner_run_id = '${{GITHUB_RUN_ID}}'"

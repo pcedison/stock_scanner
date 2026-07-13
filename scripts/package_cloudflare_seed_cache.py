@@ -18,9 +18,6 @@ SEED_DIR = ROOT_DIR / "cloudflare" / "seed"
 OFFICIAL_ENTRIES = (
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
-)
-# Entries that are included when present but not required (populated after first online build)
-OFFICIAL_OPTIONAL_ENTRIES = (
     "monthly_revenue_history.json",
 )
 SEED_FILES = (
@@ -47,10 +44,6 @@ def package_seed_cache(zip_path: Path = DEFAULT_ZIP, sha_path: Path = DEFAULT_SH
     with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for entry in OFFICIAL_ENTRIES:
             _add_file(archive, ROOT_DIR / "data" / entry, entry)
-        for entry in OFFICIAL_OPTIONAL_ENTRIES:
-            source = ROOT_DIR / "data" / entry
-            if source.exists():
-                archive.write(source, entry)
         for entry in SEED_FILES:
             _add_file(archive, seed_dir / entry, f"cloudflare_seed/{entry}")
         shard_dir = seed_dir / "analysis_shards"

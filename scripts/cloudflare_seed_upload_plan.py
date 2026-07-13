@@ -24,8 +24,8 @@ PUBLIC_FILES = (
 REQUIRED_OFFICIAL_FILES = (
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
+    "monthly_revenue_history.json",
 )
-OPTIONAL_OFFICIAL_FILES = ("monthly_revenue_history.json",)
 
 
 @dataclass(frozen=True)
@@ -58,11 +58,6 @@ def build_upload_plan(seed_dir: Path, data_dir: Path) -> list[UploadPlanItem]:
     for name in REQUIRED_OFFICIAL_FILES:
         path = _require_file(data_dir / name)
         plan.append(UploadPlanItem(f"official/{name}", path.as_posix()))
-
-    for name in OPTIONAL_OFFICIAL_FILES:
-        path = data_dir / name
-        if path.is_file():
-            plan.append(UploadPlanItem(f"official/{name}", path.as_posix()))
 
     seed_zip = find_seed_zip(data_dir)
     if seed_zip.is_file():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -112,6 +113,33 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
     assert "official/monthly_revenue_history.json" in keys
     assert "official/official_cache_seed_2026-05-14.zip" in keys
     assert json.loads(json.dumps([item.__dict__ for item in plan]))[0]["object_key"] == "public/manifest.json"
+
+    (data_dir / "monthly_revenue_history.json").unlink()
+    with pytest.raises(FileNotFoundError, match="monthly_revenue_history.json"):
+        build_upload_plan(seed_dir, data_dir)
+
+
+def test_r2_refresh_restores_persisted_monthly_history_before_build():
+    workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    get_command = 'r2 object get "$CF_R2_BUCKET/official/monthly_revenue_history.json"'
+    hydrate_command = "python scripts/hydrate_cloudflare_seed_inputs.py"
+    build_command = "CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py"
+
+    assert get_command in workflow
+    assert hydrate_command in workflow
+    assert workflow.index(get_command) < workflow.index(hydrate_command) < workflow.index(build_command)
+    assert "unzip -o" not in workflow
+    assert len(workflow.splitlines()) <= 260
+
+
+def test_standard_seed_refresh_uses_the_same_validated_hydration_path():
+    workflow = Path(".github/workflows/refresh-cloudflare-seed.yml").read_text(encoding="utf-8")
+    hydrate_command = "python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data"
+    build_command = "CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py"
+
+    assert hydrate_command in workflow
+    assert workflow.index(hydrate_command) < workflow.index(build_command)
+    assert "unzip -o" not in workflow
 
 
 def test_find_count_searches_nested_shapes_and_rejects_non_integers():

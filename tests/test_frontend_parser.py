@@ -180,6 +180,68 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
     assert payload["fallback"] == "announced"
 
 
+def test_market_scan_groups_by_freshness_financial_period_before_active_period():
+    script = r"""
+const { createMarketScan } = require("./frontend/market_scan.js");
+const { groupMarketScanResults } = createMarketScan({
+  getState: () => ({}),
+  safeText: (value, fallback = "") => String(value ?? "").trim() || fallback,
+});
+const officialQ = (stockCode, period, status = "INSUFFICIENT_DATA") => ({
+  stockCode,
+  status,
+  reasons: [
+    { code: "E3", severity: "WATCH" },
+    { code: "OFFICIAL_Q", severity: "INFO", message: `${period} EPS 1.23` },
+  ],
+});
+const stockCodes = (group) => Object.fromEntries(
+  Object.entries(group).map(([column, results]) => [column, results.map((result) => result.stockCode)])
+);
+
+const mixedContext = groupMarketScanResults({
+  filingContext: {
+    activeFinancialReport: { period: "2026Q2" },
+    freshnessFinancialReport: { period: "2026Q1" },
+  },
+  entry: [officialQ("1001", "2026Q1", "ENTRY"), officialQ("1002", "2026Q2", "ENTRY")],
+  watch: [officialQ("2001", "2026Q1"), officialQ("2002", "2025Q4")],
+  excluded: [],
+});
+const activeFallback = groupMarketScanResults({
+  filingContext: { activeFinancialReport: { period: "2026Q2" } },
+  entry: [officialQ("3001", "2026Q2", "ENTRY"), officialQ("3002", "2026Q1", "ENTRY")],
+  watch: [],
+  excluded: [],
+});
+const noPeriod = groupMarketScanResults({
+  filingContext: {},
+  entry: [],
+  watch: [{ stockCode: "4001", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }] }],
+  excluded: [],
+});
+console.log(JSON.stringify({
+  mixed: { announced: stockCodes(mixedContext.announced), pending: stockCodes(mixedContext.pending) },
+  fallback: { announced: stockCodes(activeFallback.announced), pending: stockCodes(activeFallback.pending) },
+  noPeriod: { announced: stockCodes(noPeriod.announced), pending: stockCodes(noPeriod.pending) },
+}));
+"""
+    payload = _run_node_json(script)
+
+    assert payload["mixed"] == {
+        "announced": {"entry": ["1001"], "watch": ["2001"], "excluded": []},
+        "pending": {"entry": ["1002"], "watch": ["2002"], "excluded": []},
+    }
+    assert payload["fallback"] == {
+        "announced": {"entry": ["3001"], "watch": [], "excluded": []},
+        "pending": {"entry": ["3002"], "watch": [], "excluded": []},
+    }
+    assert payload["noPeriod"] == {
+        "announced": {"entry": [], "watch": ["4001"], "excluded": []},
+        "pending": {"entry": [], "watch": [], "excluded": []},
+    }
+
+
 def test_api_client_replays_only_safe_reads_after_pages_proxy_5xx():
     script = r"""
 const { createApiClient } = require("./frontend/api_client.js");

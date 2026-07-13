@@ -176,10 +176,8 @@ jobs:
       - name: Rebuild seed from official sources
         if: steps.refresh-check.outputs.run_refresh == 'true'
         run: |
-          SEED_ZIP=$(python scripts/seed_utils.py data --print)
-          if [ -n "$SEED_ZIP" ]; then
-            unzip -o "$SEED_ZIP" -d data
-          fi
+          npx wrangler r2 object get "$CF_R2_BUCKET/official/monthly_revenue_history.json" --remote --file .tmp/r2-monthly-revenue-history.json </dev/null || rm -f .tmp/r2-monthly-revenue-history.json
+          python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data --r2-history .tmp/r2-monthly-revenue-history.json
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py

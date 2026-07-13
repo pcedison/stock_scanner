@@ -13,6 +13,7 @@ from typing import Any
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
+from hydrate_cloudflare_seed_inputs import monthly_history_coverage  # noqa: E402
 from seed_utils import find_seed_zip  # noqa: E402
 
 DEFAULT_ZIP = find_seed_zip(Path("data"))
@@ -20,6 +21,7 @@ DEFAULT_FAILED_COMPANIES_CSV = Path("data/official_history_failed_companies_2026
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
+    "monthly_revenue_history.json",
     "cloudflare_seed/manifest.json",
     "cloudflare_seed/companies.json",
     "cloudflare_seed/data_sources_status.json",
@@ -31,6 +33,7 @@ MIN_HISTORY_COMPANIES = 1000
 MIN_HISTORY_ROWS = 5000
 MIN_SEED_COMPANIES = 1000
 MIN_SEED_ANALYSIS = 1000
+MIN_CONSECUTIVE_MONTHLY_COMPANIES = 1000
 
 
 def _load_json_from_zip(archive: zipfile.ZipFile, name: str) -> Any:
@@ -54,6 +57,7 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
             raise ValueError(f"Seed zip is missing required entries: {', '.join(missing)}")
 
         history = _load_json_from_zip(archive, "official_fundamentals_history.json")
+        monthly_history = _load_json_from_zip(archive, "monthly_revenue_history.json")
         _load_json_from_zip(archive, "official_history_backfill_progress.json")
         manifest = _load_json_from_zip(archive, "cloudflare_seed/manifest.json")
         analysis_shards = sorted(
@@ -91,6 +95,17 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
     if row_count < MIN_HISTORY_ROWS:
         raise ValueError(f"Seed history has only {row_count} quarterly rows; expected at least {MIN_HISTORY_ROWS}")
 
+    if not isinstance(monthly_history, dict) or not isinstance(monthly_history.get("months"), dict):
+        raise ValueError("monthly_revenue_history.json must contain a months object")
+    monthly_coverage = monthly_history_coverage(monthly_history)
+    if monthly_coverage["consecutiveCompanies"] < MIN_CONSECUTIVE_MONTHLY_COMPANIES:
+        raise ValueError(
+            "Seed has insufficient consecutive monthly revenue history: "
+            f"{monthly_coverage['consecutiveCompanies']} companies cover "
+            f"{monthly_coverage['previousMonth']} -> {monthly_coverage['latestMonth']}; "
+            f"expected at least {MIN_CONSECUTIVE_MONTHLY_COMPANIES}"
+        )
+
     if not isinstance(manifest, dict):
         raise ValueError("cloudflare_seed/manifest.json must be a JSON object")
     counts = manifest.get("counts")
@@ -116,6 +131,9 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         "companies": company_count,
         "quarterlyRows": row_count,
         "latestPeriod": latest_period,
+        "latestRevenueHistoryMonth": monthly_coverage["latestMonth"],
+        "previousRevenueHistoryMonth": monthly_coverage["previousMonth"],
+        "consecutiveRevenueHistoryCompanies": monthly_coverage["consecutiveCompanies"],
         "seedCompanies": seed_companies,
         "seedAnalysis": seed_analysis,
         "seedHoldingAnalysis": seed_holding_analysis,
@@ -176,6 +194,8 @@ def render_seed_summary(summary: dict[str, Any], failed_summary: dict[str, Any] 
         f"- official history companies: {summary['companies']}",
         f"- official history quarterly rows: {summary['quarterlyRows']}",
         f"- latest official period: {summary['latestPeriod']}",
+        f"- latest monthly revenue history: {summary.get('latestRevenueHistoryMonth') or 'unknown'}",
+        f"- consecutive monthly revenue coverage: {summary.get('consecutiveRevenueHistoryCompanies') or 0}",
         f"- manifest generated at: {summary.get('generatedAt') or 'unknown'}",
         f"- latest revenue period: {summary.get('latestRevenuePeriod') or 'unknown'}",
         f"- latest financial period: {summary.get('latestFinancialPeriod') or 'unknown'}",

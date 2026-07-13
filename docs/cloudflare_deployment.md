@@ -87,11 +87,13 @@ This keeps production deploys deterministic while preventing the committed seed 
 1. Poll D1 `refresh_jobs` for queued or running `market_scan` jobs and check deployed `/api/health` freshness.
 2. Stop without touching R2 when no job is queued and the production seed is fresh, unless the workflow is manually forced.
 3. Mark queued jobs as `running`.
-4. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
-5. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with a strict freshness gate.
-6. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and official cache artifacts to R2.
-7. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
-8. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
+4. Download the previous R2 `official/monthly_revenue_history.json`, then merge it atomically with the committed seed through `scripts/hydrate_cloudflare_seed_inputs.py`.
+5. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
+6. Reject publication when fewer than 1,000 companies have consecutive revenue months or when more than 10% of scan rows lack the X2 previous-month signal.
+7. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with freshness, monthly-history, universe, and analysis gates.
+8. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and required official cache artifacts to R2.
+9. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
+10. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
 
 The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. When the Worker queues a D1 `market_scan` refresh job, this workflow performs the actual seed rebuild and R2 update on the next run.
 Seed artifact Git policy is documented in `docs/seed_artifact_policy.md`; routine refresh output belongs in R2, and new committed seed zips require an explicit forced add and review note.

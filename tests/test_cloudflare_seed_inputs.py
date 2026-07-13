@@ -29,6 +29,20 @@ def _write_seed_zip(path: Path, companies: int = 1000, rows_per_company: int = 5
         archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": quarters}))
         archive.writestr("official_history_backfill_progress.json", "{}")
         archive.writestr(
+            "monthly_revenue_history.json",
+            json.dumps(
+                {
+                    "months": {
+                        stock_code: {
+                            "2026-05": {"monthlyRevenueYoY": 10.0},
+                            "2026-06": {"monthlyRevenueYoY": 12.0},
+                        }
+                        for stock_code in quarters
+                    }
+                }
+            ),
+        )
+        archive.writestr(
             "cloudflare_seed/manifest.json",
             json.dumps(
                 {
@@ -72,6 +86,8 @@ def test_validate_seed_zip_accepts_populated_history(tmp_path):
     assert summary["seedShards"] == 1
     assert summary["seedHoldingShards"] == 1
     assert summary["generatedAt"] == "2026-05-17T00:00:00+00:00"
+    assert summary["latestRevenueHistoryMonth"] == "2026-06"
+    assert summary["consecutiveRevenueHistoryCompanies"] == 1000
 
 
 def test_seed_freshness_rejects_stale_manifest():
@@ -86,6 +102,20 @@ def test_validate_seed_zip_rejects_empty_history(tmp_path):
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": {}}))
         archive.writestr("official_history_backfill_progress.json", "{}")
+        archive.writestr(
+            "monthly_revenue_history.json",
+            json.dumps(
+                {
+                    "months": {
+                        f"{index + 1000:04d}": {
+                            "2026-05": {"monthlyRevenueYoY": 10.0},
+                            "2026-06": {"monthlyRevenueYoY": 12.0},
+                        }
+                        for index in range(1000)
+                    }
+                }
+            ),
+        )
         archive.writestr("cloudflare_seed/manifest.json", json.dumps({"counts": {}}))
         archive.writestr("cloudflare_seed/companies.json", "{}")
         archive.writestr("cloudflare_seed/data_sources_status.json", "{}")
@@ -105,6 +135,25 @@ def test_validate_seed_zip_rejects_missing_required_entry(tmp_path):
         archive.writestr("official_fundamentals_history.json", json.dumps({"quarters": {}}))
 
     with pytest.raises(ValueError, match="missing required entries"):
+        validate_seed_zip(archive_path)
+
+
+def test_validate_seed_zip_requires_consecutive_monthly_history(tmp_path):
+    members = _seed_members()
+    members["monthly_revenue_history.json"] = json.dumps(
+        {
+            "months": {
+                f"{index + 1000:04d}": {
+                    "2026-04": {"monthlyRevenueYoY": 10.0},
+                    "2026-06": {"monthlyRevenueYoY": 12.0},
+                }
+                for index in range(1000)
+            }
+        }
+    )
+    archive_path = _zip_from(tmp_path, members)
+
+    with pytest.raises(ValueError, match="consecutive monthly revenue history"):
         validate_seed_zip(archive_path)
 
 
@@ -156,6 +205,17 @@ def _seed_members(companies: int = 1000, rows: int = 5, manifest: object | None 
     return {
         "official_fundamentals_history.json": json.dumps({"quarters": quarters}),
         "official_history_backfill_progress.json": "{}",
+        "monthly_revenue_history.json": json.dumps(
+            {
+                "months": {
+                    stock_code: {
+                        "2026-05": {"monthlyRevenueYoY": 10.0},
+                        "2026-06": {"monthlyRevenueYoY": 12.0},
+                    }
+                    for stock_code in quarters
+                }
+            }
+        ),
         "cloudflare_seed/manifest.json": json.dumps(default_manifest if manifest is None else manifest),
         "cloudflare_seed/companies.json": "{}",
         "cloudflare_seed/data_sources_status.json": "{}",

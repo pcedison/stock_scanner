@@ -35,18 +35,28 @@
 
     function hasInsufficientData(result = {}) {
       const reasons = Array.isArray(result.reasons) ? result.reasons : [];
-      return result.status === "INSUFFICIENT_DATA" || reasons.some((reason) => reason?.severity === "INSUFFICIENT_DATA");
+      return (
+        result.status === "INSUFFICIENT_DATA" || reasons.some((reason) => reason?.severity === "INSUFFICIENT_DATA")
+      );
+    }
+
+    function expectedFinancialPeriod(filingContext = {}) {
+      for (const field of ["freshnessFinancialReport", "activeFinancialReport"]) {
+        const report = filingContext?.[field];
+        if (report && typeof report.period === "string" && report.period) return report.period;
+      }
+      return null;
     }
 
     function hasFinancialReportForContext(result = {}, filingContext = {}) {
-      const targetPeriod = filingContext?.activeFinancialReport?.period;
+      const targetPeriod = expectedFinancialPeriod(filingContext);
       if (!targetPeriod) return true;
       const reasons = Array.isArray(result.reasons) ? result.reasons : [];
       return reasons.some(
         (reason) =>
           reason?.code === "OFFICIAL_Q" &&
           reason?.severity !== "INSUFFICIENT_DATA" &&
-          String(reason?.message || "").includes(targetPeriod)
+          String(reason?.message || "").includes(targetPeriod),
       );
     }
 
@@ -94,7 +104,9 @@
     }
 
     function numericFromText(value) {
-      const match = String(value || "").replace(",", "").match(/-?\d+(?:\.\d+)?/);
+      const match = String(value || "")
+        .replace(",", "")
+        .match(/-?\d+(?:\.\d+)?/);
       return match ? Number(match[0]) : null;
     }
 

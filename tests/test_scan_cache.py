@@ -89,6 +89,110 @@ def test_cache_only_with_empty_cache_does_not_call_builder(tmp_path):
     assert result["cacheStatus"]["cacheHit"] is False
     assert result["cacheStatus"]["refreshStatus"] == "cache_only_miss"
     assert result["entry"] == []
+    assert not (tmp_path / "scan.json").exists()
+
+
+def test_preexisting_empty_cache_is_treated_as_miss_and_rebuilt(tmp_path):
+    cache_path = tmp_path / "scan.json"
+    service = ScanCacheService(cache_path, tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+    key = scan_cache_key(settings)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": {
+                    key: {
+                        "storedAt": datetime.now(UTC).isoformat(),
+                        "payload": {"entry": [], "watch": [], "excluded": [], "universeSize": 0},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = {"count": 0}
+
+    def build():
+        calls["count"] += 1
+        return {"entry": [], "watch": [{"stockCode": "2330"}], "excluded": [], "universeSize": 1}
+
+    cache_only = service.get_or_refresh(settings, build, refresh_mode="cache_only")
+    rebuilt = service.get_or_refresh(settings, build, refresh_mode="auto")
+
+    assert cache_only["cacheStatus"]["cacheHit"] is False
+    assert cache_only["cacheStatus"]["refreshStatus"] == "cache_only_miss"
+    assert calls["count"] == 1
+    assert rebuilt["watch"] == [{"stockCode": "2330"}]
+    assert rebuilt["cacheStatus"]["cacheHit"] is False
+
+
+def test_watch_only_scan_is_valid_and_cacheable(tmp_path):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+    payload = {"entry": [], "watch": [{"stockCode": "2330"}], "excluded": [], "universeSize": 1}
+
+    first = service.get_or_refresh(settings, lambda: payload, refresh_mode="auto")
+    cached = service.get_or_refresh(settings, lambda: {}, refresh_mode="cache_only")
+
+    assert first["entry"] == []
+    assert first["watch"] == [{"stockCode": "2330"}]
+    assert cached["cacheStatus"]["cacheHit"] is True
+    assert cached["watch"] == [{"stockCode": "2330"}]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"entry": {}, "watch": [], "excluded": [], "universeSize": 1},
+        {"entry": [{"stockCode": "2330"}], "watch": [], "excluded": [], "universeSize": 2},
+        {"entry": [], "watch": [], "excluded": [], "universeSize": 0},
+    ],
+)
+def test_first_scan_rejects_empty_or_inconsistent_payload_without_storing(tmp_path, payload):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+
+    with pytest.raises(ValueError, match="Scan result is empty or inconsistent"):
+        service.get_or_refresh(settings, lambda: payload, refresh_mode="auto")
+
+    assert not (tmp_path / "scan.json").exists()
+
+
+def test_forced_empty_scan_preserves_last_good_payload(tmp_path):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+
+    service.get_or_refresh(
+        settings,
+        lambda: {"entry": [{"stockCode": "2330"}], "watch": [], "excluded": []},
+        refresh_mode="auto",
+    )
+
+    with pytest.raises(ValueError, match="Scan result is empty or inconsistent"):
+        service.get_or_refresh(
+            settings,
+            lambda: {
+                "entry": [],
+                "watch": [],
+                "excluded": [],
+                "universeSize": 0,
+                "diagnostic": "private filesystem path C:/Users/example/secret.json",
+            },
+            build_refresh=lambda: {
+                "entry": [],
+                "watch": [],
+                "excluded": [],
+                "universeSize": 0,
+                "diagnostic": "private filesystem path C:/Users/example/secret.json",
+            },
+            refresh_mode="force",
+        )
+
+    cached = service.get_or_refresh(settings, lambda: {}, refresh_mode="cache_only")
+    assert cached["entry"] == [{"stockCode": "2330"}]
+    assert "private filesystem path" not in (tmp_path / "scan.json").read_text(encoding="utf-8")
 
 
 def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
@@ -98,7 +202,13 @@ def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     service.store(
         key,
         settings,
-        {"generatedAt": "2026-05-14T00:00:00+00:00", "entry": [], "watch": [], "excluded": []},
+        {
+            "generatedAt": "2026-05-14T00:00:00+00:00",
+            "entry": [{"stockCode": "2330"}],
+            "watch": [],
+            "excluded": [],
+            "universeSize": 1,
+        },
         {"strategy": "stale_while_revalidate", "reason": "test", "minIntervalSeconds": 1},
     )
     cache_path = tmp_path / "scan.json"
@@ -135,6 +245,54 @@ def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     assert status["recentJobs"][-1]["status"] == "success"
 
 
+def test_empty_background_refresh_preserves_last_good_and_marks_job_failed(tmp_path, caplog):
+    service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
+    settings = ScannerSettings(use_mock_data=False)
+    key = scan_cache_key(settings)
+    service.store(
+        key,
+        settings,
+        {
+            "generatedAt": "2026-05-14T00:00:00+00:00",
+            "entry": [{"stockCode": "2330"}],
+            "watch": [],
+            "excluded": [],
+            "universeSize": 1,
+        },
+        {"strategy": "stale_while_revalidate", "reason": "test", "minIntervalSeconds": 1},
+    )
+    cache_path = tmp_path / "scan.json"
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    cache_path.write_text(json.dumps(cached), encoding="utf-8")
+
+    def refresh():
+        return {
+            "entry": [],
+            "watch": [],
+            "excluded": [],
+            "universeSize": 0,
+            "diagnostic": "private filesystem path C:/Users/example/secret.json",
+        }
+
+    with caplog.at_level(logging.WARNING, logger="backend.services.scan_cache"):
+        response = service.get_or_refresh(settings, refresh, build_refresh=refresh, refresh_mode="auto")
+        assert service.wait_for_idle(timeout=3)
+
+    status = service.status(settings)
+    job = status["recentJobs"][-1]
+    retained = service.get_or_refresh(settings, lambda: {}, refresh_mode="cache_only")
+
+    assert response["entry"] == [{"stockCode": "2330"}]
+    assert retained["entry"] == [{"stockCode": "2330"}]
+    assert job["status"] == "failed"
+    assert job["hasError"] is True
+    assert "error" not in job
+    assert "private filesystem path" not in str(status)
+    assert "private filesystem path" not in caplog.text
+    assert "private filesystem path" not in cache_path.read_text(encoding="utf-8")
+
+
 def test_scan_cache_write_uses_unique_atomic_temp_file(tmp_path, monkeypatch):
     calls = []
     original_named_temp = scan_cache_module.tempfile.NamedTemporaryFile
@@ -165,7 +323,13 @@ def test_failed_background_refresh_redacts_error_details(tmp_path, caplog):
     service.store(
         key,
         settings,
-        {"generatedAt": "2026-05-14T00:00:00+00:00", "entry": [], "watch": [], "excluded": []},
+        {
+            "generatedAt": "2026-05-14T00:00:00+00:00",
+            "entry": [{"stockCode": "2330"}],
+            "watch": [],
+            "excluded": [],
+            "universeSize": 1,
+        },
         {"strategy": "stale_while_revalidate", "reason": "test", "minIntervalSeconds": 1},
     )
     cache_path = tmp_path / "scan.json"
