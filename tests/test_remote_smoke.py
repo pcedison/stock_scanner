@@ -14,6 +14,7 @@ class SuccessfulRemoteClient:
             "/api/health": {"runtime": "cloudflare-python-worker", "status": "degraded"},
             "/api/auth/me": {"authenticated": False, "user": None},
             "/api/app-status": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
+            "/api/runtime-config": {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": False},
             "/api/data-sources/status": {"activeProvider": "CloudflareR2Seed"},
             "/api/scan/market": {
                 "entry": [{"stockCode": str(index)} for index in range(1000)],
@@ -96,6 +97,7 @@ def test_validate_public_smoke_payloads_accepts_expected_shapes():
             "authMe": {"authenticated": False, "user": None},
             "badLogin": {"status": 401},
             "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
+            "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": False},
             "dataSources": {"activeProvider": "CloudflareR2Seed"},
             "marketScan": {
                 "entry": [{"stockCode": str(index)} for index in range(10)],
@@ -118,8 +120,9 @@ def test_validate_public_smoke_payloads_rejects_wrong_runtime():
                 "health": {"runtime": "fastapi", "status": "ok"},
                 "authMe": {"authenticated": False, "user": None},
                 "badLogin": {"status": 401},
-                "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {}},
-                "dataSources": {"activeProvider": "CloudflareR2Seed"},
+            "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {}},
+            "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "future", "edgeCacheEnabled": False},
+            "dataSources": {"activeProvider": "CloudflareR2Seed"},
                 "marketScan": {"entry": [{"stockCode": str(index)} for index in range(1000)], "cacheStatus": {}},
             }
         )

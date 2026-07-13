@@ -1,0 +1,45 @@
+name = "stock-scanner-beta-api-staging"
+main = "worker.py"
+compatibility_date = "2026-05-14"
+compatibility_flags = ["python_workers", "disable_python_no_global_handlers", "disable_python_external_sdk"]
+workers_dev = true
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.1
+persist = true
+
+[vars]
+APP_ENV = "staging"
+APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta-staging.pages.dev"
+GITHUB_REPOSITORY = "pcedison/stock_scanner"
+GITHUB_DISPATCH_ENABLED = "false"
+GITHUB_REFRESH_WORKFLOW_FILE = "cloudflare-r2-seed-refresh.yml"
+GITHUB_REFRESH_WORKFLOW_REF = "main"
+MARKET_SCAN_API_VERSION = "v2"
+EDGE_CACHE_ENABLED = "true"
+
+[triggers]
+crons = []
+
+[cache]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stock-scanner-beta-db-staging"
+database_id = "__STAGING_D1_DATABASE_ID__"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "CACHE"
+bucket_name = "__STAGING_R2_BUCKET_NAME__"

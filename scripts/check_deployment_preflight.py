@@ -88,6 +88,23 @@ def validate_worker_observability(wrangler_path: Path = DEFAULT_WRANGLER) -> lis
     return problems
 
 
+def validate_worker_release_defaults(wrangler_path: Path = DEFAULT_WRANGLER) -> list[str]:
+    config = tomllib.loads(wrangler_path.read_text(encoding="utf-8"))
+    vars_config = config.get("vars") or {}
+    problems: list[str] = []
+    if vars_config.get("GITHUB_DISPATCH_ENABLED") != "false":
+        problems.append("committed production wrangler must keep GITHUB_DISPATCH_ENABLED=false")
+    if vars_config.get("MARKET_SCAN_API_VERSION") != "v1":
+        problems.append("committed production wrangler must keep MARKET_SCAN_API_VERSION=v1")
+    if vars_config.get("EDGE_CACHE_ENABLED") != "false":
+        problems.append("committed production wrangler must keep EDGE_CACHE_ENABLED=false")
+    if (config.get("cache") or {}).get("enabled") is not False:
+        problems.append("committed production wrangler must keep [cache].enabled=false")
+    if (config.get("triggers") or {}).get("crons") != []:
+        problems.append("committed production wrangler must keep Worker crons disabled")
+    return problems
+
+
 def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> list[str]:
     problems: list[str] = []
     text = workflow_path.read_text(encoding="utf-8")
@@ -183,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         *validate_seed_zip_selection(args.workflow_dir),
         *validate_worker_cors(args.wrangler),
         *validate_worker_observability(args.wrangler),
+        *validate_worker_release_defaults(args.wrangler),
         *validate_deploy_workflow(args.deploy_workflow),
         *validate_health_url(args.require_health_url),
     ]

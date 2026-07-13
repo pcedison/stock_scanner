@@ -84,6 +84,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     market_scan = payloads.get("marketScan") or {}
     auth_me = payloads.get("authMe") or {}
     bad_login = payloads.get("badLogin") or {}
+    runtime_config = payloads.get("runtimeConfig") or {}
 
     if health.get("runtime") != "cloudflare-python-worker":
         problems.append("health.runtime is not cloudflare-python-worker")
@@ -102,6 +103,10 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         problems.append(f"market scan returned only {market_rows} rows")
     if not isinstance(market_scan.get("cacheStatus"), dict):
         problems.append("market scan is missing cacheStatus")
+    if runtime_config.get("marketScanApiVersion") not in {"v1", "v2"}:
+        problems.append("runtime-config is missing a valid marketScanApiVersion")
+    if not isinstance(runtime_config.get("edgeCacheEnabled"), bool):
+        problems.append("runtime-config is missing edgeCacheEnabled")
     if problems:
         raise RuntimeError("; ".join(problems))
     return {
@@ -110,6 +115,8 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         "activeProvider": data_sources.get("activeProvider"),
         "schedulerAction": app_status.get("schedulerAutoScan", {}).get("action"),
         "marketScanRows": market_rows,
+        "marketScanApiVersion": runtime_config.get("marketScanApiVersion"),
+        "edgeCacheEnabled": runtime_config.get("edgeCacheEnabled"),
     }
 
 
@@ -149,6 +156,7 @@ def run_public_smoke(
                     )[0],
                 },
                 "appStatus": client.request_json("/api/app-status"),
+                "runtimeConfig": client.request_json("/api/runtime-config"),
                 "dataSources": client.request_json("/api/data-sources/status"),
                 "marketScan": client.request_json(
                     "/api/scan/market",

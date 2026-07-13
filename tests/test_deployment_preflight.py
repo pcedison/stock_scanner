@@ -12,6 +12,7 @@ from scripts.check_deployment_preflight import (
     validate_deploy_workflow,
     validate_seed_zip_selection,
     validate_worker_cors,
+    validate_worker_release_defaults,
     validate_workflow_yaml,
 )
 
@@ -135,7 +136,38 @@ def test_production_wrangler_keeps_dispatch_and_cron_disabled_until_release_conf
     config = tomllib.loads(Path("cloudflare/wrangler.toml").read_text(encoding="utf-8"))
 
     assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "false"
+    assert config["vars"]["MARKET_SCAN_API_VERSION"] == "v1"
+    assert config["vars"]["EDGE_CACHE_ENABLED"] == "false"
+    assert config["cache"]["enabled"] is False
     assert config["triggers"]["crons"] == []
+    assert "cloudflare/wrangler.*.generated.toml" in Path(".gitignore").read_text(encoding="utf-8")
+
+
+def test_validate_worker_release_defaults_rejects_committed_release_switches(tmp_path):
+    wrangler = tmp_path / "wrangler.toml"
+    wrangler.write_text(
+        """
+[vars]
+GITHUB_DISPATCH_ENABLED = "true"
+MARKET_SCAN_API_VERSION = "v2"
+EDGE_CACHE_ENABLED = "true"
+
+[cache]
+enabled = true
+
+[triggers]
+crons = ["* * * * *"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    problems = validate_worker_release_defaults(wrangler)
+
+    assert any("GITHUB_DISPATCH_ENABLED" in problem for problem in problems)
+    assert any("MARKET_SCAN_API_VERSION" in problem for problem in problems)
+    assert any("EDGE_CACHE_ENABLED" in problem for problem in problems)
+    assert any("[cache].enabled" in problem for problem in problems)
+    assert any("crons" in problem for problem in problems)
 
 
 def test_validate_workflow_yaml_accepts_current_workflows():

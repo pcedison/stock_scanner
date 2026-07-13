@@ -34,8 +34,15 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 
 - `APP_ENV = "production"`
 - `APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"`
+- `MARKET_SCAN_API_VERSION = "v1"`
+- `EDGE_CACHE_ENABLED = "false"`
+- `[cache].enabled = false`
+- `[triggers].crons = []`
+- `GITHUB_DISPATCH_ENABLED = "false"`
 
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
+
+The committed production config is intentionally conservative. Cron dispatch, v2 market reads, and Worker cache are enabled only through generated full configs from `scripts/render_wrangler_release_config.py`; do not hand-edit production release switches in `cloudflare/wrangler.toml`.
 
 ## Deploy Flow
 
@@ -98,6 +105,50 @@ This keeps production deploys deterministic while preventing the committed seed 
 The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. When the Worker queues a D1 `market_scan` refresh job, this workflow performs the actual seed rebuild and R2 update on the next run.
 Seed artifact Git policy is documented in `docs/seed_artifact_policy.md`; routine refresh output belongs in R2, and new committed seed zips require an explicit forced add and review note.
 
+## Additive Market v2 Rollout and Rollback
+
+Market scan v2 is released in staged, reversible steps. Each command below renders a complete Wrangler config; generated files are ignored by Git and must be dry-run before any real deploy.
+
+1. Merge additive code/artifacts while production remains v1, dispatch disabled, cron empty, and Worker cache disabled.
+2. Provision isolated staging D1/R2 resources and secrets under explicit release authority.
+3. Render staging with v2/cache enabled and dispatch disabled:
+
+```powershell
+python scripts\render_wrangler_release_config.py staging --database-id $env:CF_STAGING_D1_DATABASE_ID --bucket-name $env:CF_STAGING_R2_BUCKET --output cloudflare\wrangler.staging.generated.toml
+npx.cmd wrangler deploy --config cloudflare\wrangler.staging.generated.toml --dry-run --outdir .tmp\worker-staging-dry-run
+```
+
+4. Deploy staging only after dry-run passes, then run the canary:
+
+```powershell
+python scripts\check_market_scan_v2_canary.py --base-url https://stock-scanner-beta-api-staging.<account>.workers.dev --require-edge-hit
+```
+
+5. Deploy production code with the committed v1/cache-disabled config.
+6. Under separate cron release authority, render and dry-run the full cron config:
+
+```powershell
+python scripts\render_wrangler_release_config.py production-cron --enable-production-cron --output cloudflare\wrangler.production-cron.generated.toml
+npx.cmd wrangler deploy --config cloudflare\wrangler.production-cron.generated.toml --dry-run --outdir .tmp\worker-production-cron-dry-run
+```
+
+7. Under separate v2 release authority, render and dry-run the full v2 config:
+
+```powershell
+python scripts\render_wrangler_release_config.py production-v2 --enable-production-cron --enable-production-v2 --output cloudflare\wrangler.production-v2.generated.toml
+npx.cmd wrangler deploy --config cloudflare\wrangler.production-v2.generated.toml --dry-run --outdir .tmp\worker-production-v2-dry-run
+```
+
+8. Observe one full cache window after v2 enablement: financial `2h`, monthly `3h`, routine `12h`.
+9. Roll back by rendering and deploying the full rollback config; this atomically restores v1 and both cache controls false without deleting v2 artifacts:
+
+```powershell
+python scripts\render_wrangler_release_config.py production-v1-rollback --enable-production-cron --confirm-production-v1-rollback --output cloudflare\wrangler.production-v1-rollback.generated.toml
+npx.cmd wrangler deploy --config cloudflare\wrangler.production-v1-rollback.generated.toml --dry-run --outdir .tmp\worker-production-v1-rollback-dry-run
+```
+
+Before each Worker rollout that depends on a new D1 migration, apply and verify the migration first, then deploy the matching Worker immediately in the same controlled release window. Monitor legacy Worker `5xx` responses during that short compatibility interval. Keep current and previous immutable market generations in R2 until the observation gate passes.
+
 ## Monitoring
 
 `.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 30 minutes. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
@@ -110,6 +161,7 @@ python scripts\check_frontend_hygiene.py
 python scripts\check_operational_readiness.py
 python scripts\check_deployment_preflight.py
 npx wrangler deploy --config cloudflare\wrangler.toml --dry-run --outdir .tmp\worker-dry-run
+python scripts\render_wrangler_release_config.py production-v1-rollback --enable-production-cron --confirm-production-v1-rollback --output cloudflare\wrangler.production-v1-rollback.generated.toml
 python scripts\run_wrangler_dev_smoke.py
 npm run test:e2e
 ```
