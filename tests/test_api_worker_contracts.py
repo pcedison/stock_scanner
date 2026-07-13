@@ -571,3 +571,24 @@ def test_market_v2_success_validation_and_generation_status_contracts_match(monk
     worker_mismatch = run_worker_fetch(api, "GET", f"/api/scan/market/results{mismatch_query}")
     assert fast_mismatch.status_code == worker_status(worker_mismatch) == 409
     assert fast_mismatch.headers["cache-control"] == worker_mismatch.headers["cache-control"] == "no-store"
+
+
+def test_refresh_command_worker_contract_is_additive_and_payload_bounded(monkeypatch):
+    _worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": {"generatedAt": "2026-07-13T00:00:00+00:00"}},
+    )
+
+    response = run_worker_fetch(
+        api,
+        "POST",
+        "/api/scan/market/refresh",
+        headers={"idempotency-key": "contract-refresh-1"},
+    )
+    payload = worker_payload(response)
+
+    assert worker_status(response) == 202
+    assert set(payload) == {"jobId", "status", "requestId", "statusUrl"}
+    assert response.headers["Location"] == payload["statusUrl"]
+    assert len(json.dumps(payload).encode("utf-8")) < 1024
+    assert not {"entry", "watch", "excluded", "cacheStatus"} & set(payload)

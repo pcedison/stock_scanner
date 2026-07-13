@@ -405,6 +405,8 @@ console.log(JSON.stringify({
   indexGet: allowsDirectFallback("/api/scan/market/index", "GET"),
   resultsGet: allowsDirectFallback("/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=100", "GET"),
   resultsHead: allowsDirectFallback("/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=100", "HEAD"),
+  refreshStatusGet: allowsDirectFallback(`/api/scan/market/refresh/${"a".repeat(32)}`, "GET"),
+  refreshStatusUpper: allowsDirectFallback(`/api/scan/market/refresh/${"A".repeat(32)}`, "GET"),
   indexPost: allowsDirectFallback("/api/scan/market/index", "POST"),
   suffix: allowsDirectFallback("/api/scan/market/results/extra", "GET"),
 }));
@@ -415,6 +417,8 @@ console.log(JSON.stringify({
         "indexGet": True,
         "resultsGet": True,
         "resultsHead": True,
+        "refreshStatusGet": True,
+        "refreshStatusUpper": False,
         "indexPost": False,
         "suffix": False,
     }
@@ -2599,3 +2603,485 @@ def test_market_query_coordinator_ignores_late_selection_and_resets_ui_on_genera
         "page": 0,
         "expanded": [],
     }
+
+
+def test_market_refresh_polling_same_generation_keeps_page_and_expanded_state():
+    payload = _run_node_json(
+        MARKET_QUERY_NODE_FIXTURE
+        + r"""
+(async () => {
+  const sameIndex = marketIndex({ generationId: generationA, watch: 205 });
+  const state = {
+    marketIndex: sameIndex,
+    marketWindow: { items: [{ stockCode: "1006" }], total: 205, windowStart: 6, disclosure: "announced", category: "watch", uiPage: 1, loading: false, error: null },
+    marketQueryWarning: null,
+    marketListPages: { announced: { watch: 1 } },
+    expandedMarketResultIds: new Set(["announced:watch:1006:WATCH"]),
+  };
+  let resets = 0;
+  const coordinator = createMarketQueryCoordinator({
+    client: {
+      warning: "",
+      async loadIndex() { return sameIndex; },
+      async loadWindow() { return { items: [{ stockCode: "1006" }], total: 205, windowStart: 6, loading: false, error: null }; },
+    },
+    state,
+    getSelection: () => ({ disclosure: "announced", category: "watch", uiPage: 1 }),
+    resetUi() { resets += 1; },
+    render() {},
+  });
+  await coordinator.refresh({ force: true });
+  console.log(JSON.stringify({
+    resets,
+    page: state.marketListPages.announced.watch,
+    expanded: [...state.expandedMarketResultIds],
+    code: state.marketWindow.items[0].stockCode,
+  }));
+})();
+"""
+    )
+
+    assert payload == {
+        "resets": 0,
+        "page": 1,
+        "expanded": ["announced:watch:1006:WATCH"],
+        "code": "1006",
+    }
+
+
+def test_market_refresh_command_and_status_contracts_are_strict():
+    payload = _run_node_json(
+        r"""
+const { validateRefreshCommand, validateRefreshStatus } = require("./frontend/market_refresh.js");
+const jobId = "a".repeat(32);
+const command = { jobId, status: "queued", requestId: "request-1", statusUrl: `/api/scan/market/refresh/${jobId}` };
+const status = { jobId, status: "running", queuedAt: "2026-07-13T12:00:00+00:00", hasError: false };
+const fullStatus = {
+  ...status,
+  reason: "routine_refresh",
+  startedAt: "2026-07-13 12:01:00",
+  finishedAt: null,
+  updatedAt: "2026-07-13T12:02:00Z",
+  ownerRunId: "123",
+  ownerRunUrl: "https://github.com/a/b/actions/runs/123",
+  hasError: true,
+  dispatchStatus: "failed",
+  dispatchErrorCode: "GITHUB_HTTP_403",
+};
+const invalid = [];
+for (const [name, value] of [
+  ["external", { ...command, statusUrl: `https://evil.example/api/scan/market/refresh/${jobId}` }],
+  ["mismatch", { ...command, statusUrl: `/api/scan/market/refresh/${"b".repeat(32)}` }],
+  ["uppercase", { ...command, jobId: "A".repeat(32), statusUrl: `/api/scan/market/refresh/${"A".repeat(32)}` }],
+  ["extra", { ...command, entry: [] }],
+]) {
+  try { validateRefreshCommand(value); } catch { invalid.push(name); }
+}
+for (const [name, value] of [
+  ["wrong-job", { ...status, jobId: "b".repeat(32) }],
+  ["unknown-status", { ...status, status: "done" }],
+  ["raw-error", { ...status, error: "secret" }],
+  ["unsafe-owner", { ...status, ownerRunId: "../secret" }],
+  ["owner-only", { ...status, ownerRunId: "123" }],
+  ["url-only", { ...status, ownerRunUrl: "https://github.com/a/b/actions/runs/123" }],
+  ["owner-mismatch", { ...status, ownerRunId: "123", ownerRunUrl: "https://github.com/a/b/actions/runs/456" }],
+  ["reason", { ...status, reason: "Authorization secret" }],
+  ["timestamp", { ...status, queuedAt: "not-a-date" }],
+  ["has-error", { ...status, hasError: "yes" }],
+  ["dispatch", { ...status, dispatchStatus: "complete" }],
+  ["dispatch-code", { ...status, dispatchErrorCode: "raw/error" }],
+]) {
+  try { validateRefreshStatus(value, jobId); } catch { invalid.push(name); }
+}
+console.log(JSON.stringify({
+  command: validateRefreshCommand(command),
+  status: validateRefreshStatus(status, jobId),
+  fullStatus: validateRefreshStatus(fullStatus, jobId),
+  invalid,
+}));
+"""
+    )
+
+    assert payload["command"]["statusUrl"] == f"/api/scan/market/refresh/{'a' * 32}"
+    assert payload["status"]["status"] == "running"
+    assert payload["fullStatus"]["ownerRunId"] == "123"
+    assert payload["fullStatus"]["dispatchStatus"] == "failed"
+    assert payload["invalid"] == [
+        "external",
+        "mismatch",
+        "uppercase",
+        "extra",
+        "wrong-job",
+        "unknown-status",
+        "raw-error",
+        "unsafe-owner",
+        "owner-only",
+        "url-only",
+        "owner-mismatch",
+        "reason",
+        "timestamp",
+        "has-error",
+        "dispatch",
+        "dispatch-code",
+    ]
+
+
+def test_market_refresh_command_posts_once_polls_returned_url_and_reuses_active_promise():
+    payload = _run_node_json(
+        r"""
+const { createMarketRefreshClient } = require("./frontend/market_refresh.js");
+const jobId = "a".repeat(32);
+const statusUrl = `/api/scan/market/refresh/${jobId}`;
+const calls = [];
+const delays = [];
+let successes = 0;
+let poll = 0;
+const apiJson = async (url, options) => {
+  calls.push({
+    url,
+    method: options.method,
+    key: options.headers?.["Idempotency-Key"],
+    hasSignal: Boolean(options.signal),
+  });
+  if (options.method === "POST") return { jobId, status: "queued", requestId: "request-1", statusUrl };
+  poll += 1;
+  return { jobId, status: poll === 1 ? "running" : "success", hasError: false };
+};
+const client = createMarketRefreshClient({
+  apiJson,
+  createKey: () => "client-key-1",
+  delay: async (ms, signal) => { delays.push(ms); if (signal.aborted) throw signal.reason; },
+  onSuccess: async () => { successes += 1; },
+});
+(async () => {
+  const first = client.refresh();
+  const shared = client.refresh();
+  const [left, right] = await Promise.all([first, shared]);
+  const terminalCalls = [];
+  const terminal = createMarketRefreshClient({
+    apiJson: async (url, options) => {
+      terminalCalls.push({ url, method: options.method });
+      return { jobId, status: "success", requestId: "request-2", statusUrl };
+    },
+    createKey: () => "client-key-2",
+  });
+  await terminal.refresh();
+  console.log(JSON.stringify({ calls, delays, successes, same: left.jobId === right.jobId, terminalCalls }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+
+    assert payload["same"] is True
+    assert payload["calls"] == [
+        {
+            "url": "/api/scan/market/refresh",
+            "method": "POST",
+            "key": "client-key-1",
+            "hasSignal": True,
+        },
+        {
+            "url": f"/api/scan/market/refresh/{'a' * 32}",
+            "method": "GET",
+            "hasSignal": True,
+        },
+        {
+            "url": f"/api/scan/market/refresh/{'a' * 32}",
+            "method": "GET",
+            "hasSignal": True,
+        },
+    ]
+    assert payload["delays"] == [1000, 2000]
+    assert payload["successes"] == 1
+    assert payload["terminalCalls"] == [{"url": "/api/scan/market/refresh", "method": "POST"}]
+
+
+def test_market_refresh_terminal_next_action_uses_new_key_and_backoff_is_bounded():
+    payload = _run_node_json(
+        r"""
+const { createMarketRefreshClient, DEFAULT_TIMEOUT_MS } = require("./frontend/market_refresh.js");
+const jobId = "a".repeat(32);
+const statusUrl = `/api/scan/market/refresh/${jobId}`;
+(async () => {
+  const actionCalls = [];
+  let keyNumber = 0;
+  const actions = createMarketRefreshClient({
+    createKey: () => `action-key-${++keyNumber}`,
+    apiJson: async (url, options) => {
+      actionCalls.push({ url, method: options.method, key: options.headers?.["Idempotency-Key"] });
+      return { jobId, status: "success", requestId: `request-${keyNumber}`, statusUrl };
+    },
+  });
+  await actions.refresh();
+  await actions.refresh();
+
+  const delays = [];
+  let poll = 0;
+  const polling = createMarketRefreshClient({
+    createKey: () => "backoff-key",
+    delay: async (milliseconds) => { delays.push(milliseconds); },
+    apiJson: async (_url, options) => {
+      if (options.method === "POST") return { jobId, status: "queued", requestId: "request-backoff", statusUrl };
+      poll += 1;
+      return { jobId, status: poll === 7 ? "success" : "running", hasError: false };
+    },
+  });
+  await polling.refresh();
+  console.log(JSON.stringify({ actionCalls, createdKeys: keyNumber, delays, defaultTimeout: DEFAULT_TIMEOUT_MS }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+
+    assert payload["actionCalls"] == [
+        {"url": "/api/scan/market/refresh", "method": "POST", "key": "action-key-1"},
+        {"url": "/api/scan/market/refresh", "method": "POST", "key": "action-key-2"},
+    ]
+    assert payload["createdKeys"] == 2
+    assert payload["delays"] == [1000, 2000, 4000, 8000, 15000, 15000, 15000]
+    assert payload["defaultTimeout"] == 60_000
+
+
+def test_market_refresh_reuses_unacknowledged_key_and_rejects_bad_status_url_before_get():
+    payload = _run_node_json(
+        r"""
+const { createMarketRefreshClient } = require("./frontend/market_refresh.js");
+const keys = ["client-key-1", "client-key-2"];
+let keyIndex = 0;
+const calls = [];
+let attempt = 0;
+const client = createMarketRefreshClient({
+  createKey: () => keys[keyIndex++],
+  apiJson: async (url, options) => {
+    calls.push({ url, method: options.method, key: options.headers?.["Idempotency-Key"] });
+    attempt += 1;
+    if (attempt === 1) throw new Error("ambiguous transport failure");
+    const jobId = "a".repeat(32);
+    return {
+      jobId,
+      status: "queued",
+      requestId: "request-1",
+      statusUrl: `https://evil.example/api/scan/market/refresh/${jobId}`,
+    };
+  },
+});
+(async () => {
+  const errors = [];
+  try { await client.refresh(); } catch (error) { errors.push(error.message); }
+  try { await client.refresh(); } catch (error) { errors.push(error.message); }
+  console.log(JSON.stringify({ calls, errors, createdKeys: keyIndex }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+
+    assert [call["method"] for call in payload["calls"]] == ["POST", "POST"]
+    assert [call["key"] for call in payload["calls"]] == ["client-key-1", "client-key-1"]
+    assert payload["createdKeys"] == 1
+    assert len(payload["errors"]) == 2
+
+
+def test_market_refresh_pagehide_and_deadline_abort_inflight_status_without_repost():
+    payload = _run_node_json(
+        r"""
+const { createMarketRefreshClient } = require("./frontend/market_refresh.js");
+const jobId = "a".repeat(32);
+const statusUrl = `/api/scan/market/refresh/${jobId}`;
+function lifecycle() {
+  const listeners = new Map();
+  return {
+    addEventListener(name, listener) { listeners.set(name, listener); },
+    removeEventListener(name) { listeners.delete(name); },
+    dispatch(name) { listeners.get(name)?.(); },
+  };
+}
+async function pagehideCase() {
+  const target = lifecycle();
+  const calls = [];
+  let entered;
+  const enteredPromise = new Promise((resolve) => { entered = resolve; });
+  const client = createMarketRefreshClient({
+    pageLifecycle: target,
+    createKey: () => "pagehide-key",
+    delay: async () => {},
+    apiJson: async (url, options) => {
+      calls.push({ url, method: options.method });
+      if (options.method === "POST") return { jobId, status: "queued", requestId: "request-1", statusUrl };
+      entered();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("rewrapped 503")), { once: true });
+      });
+    },
+  });
+  const pending = client.refresh().catch((error) => error.name);
+  await enteredPromise;
+  target.dispatch("pagehide");
+  return { calls, errorName: await pending };
+}
+async function timeoutCase() {
+  const calls = [];
+  const client = createMarketRefreshClient({
+    timeoutMs: 10,
+    createKey: () => "timeout-key",
+    delay: async () => {},
+    apiJson: async (url, options) => {
+      calls.push({ url, method: options.method });
+      if (options.method === "POST") return { jobId, status: "queued", requestId: "request-2", statusUrl };
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("rewrapped timeout")), { once: true });
+      });
+    },
+  });
+  let errorCode = "";
+  try { await client.refresh(); } catch (error) { errorCode = error.code; }
+  return { calls, errorCode };
+}
+(async () => console.log(JSON.stringify({ pagehide: await pagehideCase(), timeout: await timeoutCase() })))()
+  .catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+
+    assert [call["method"] for call in payload["pagehide"]["calls"]] == ["POST", "GET"]
+    assert payload["pagehide"]["errorName"] == "AbortError"
+    assert [call["method"] for call in payload["timeout"]["calls"]] == ["POST", "GET"]
+    assert payload["timeout"]["errorCode"] == "REFRESH_TIMEOUT"
+
+
+def test_market_query_force_refresh_is_not_swallowed_by_existing_index_request():
+    payload = _run_node_json(
+        MARKET_QUERY_NODE_FIXTURE
+        + r"""
+(async () => {
+  const indexA = marketIndex({ generationId: generationA, watch: 7 });
+  const indexB = marketIndex({ generationId: generationB, watch: 9 });
+  let indexCalls = 0;
+  let releaseOld;
+  const oldResponse = new Promise((resolve) => { releaseOld = () => resolve(indexA); });
+  const apiJson = async (url) => {
+    if (url === "/api/scan/market/index") {
+      indexCalls += 1;
+      if (indexCalls === 1) return indexA;
+      if (indexCalls === 2) return oldResponse;
+      return indexB;
+    }
+    return pagePayload(indexA, "announced", "watch", 0);
+  };
+  const client = createMarketQueryClient({ apiJson, storage: memoryStorage() });
+  await client.loadIndex();
+  await client.loadWindow("announced", "watch", 0);
+  const stale = client.loadIndex({ force: true });
+  await Promise.resolve();
+  const fresh = client.loadIndex({ force: true });
+  const beforeRelease = { indexCalls, oldPage: client.findLoadedResult("1000")?.stockCode };
+  releaseOld();
+  await stale.catch(() => null);
+  const accepted = await fresh;
+  console.log(JSON.stringify({
+    indexCalls,
+    beforeRelease,
+    accepted: accepted.generationId,
+    current: client.index.generationId,
+    oldPageAfterChange: client.findLoadedResult("1000"),
+  }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+
+    assert payload == {
+        "indexCalls": 3,
+    "beforeRelease": {"indexCalls": 3, "oldPage": "1000"},
+        "accepted": "b" * 24,
+        "current": "b" * 24,
+        "oldPageAfterChange": None,
+    }
+
+
+def test_market_refresh_same_generation_force_keeps_real_page_cache_and_lookup():
+    payload = _run_node_json(
+        MARKET_QUERY_NODE_FIXTURE
+        + r"""
+(async () => {
+  const index = marketIndex({ generationId: generationA, watch: 7 });
+  let indexCalls = 0;
+  let pageCalls = 0;
+  const client = createMarketQueryClient({
+    storage: memoryStorage(),
+    apiJson: async (url) => {
+      if (url === "/api/scan/market/index") {
+        indexCalls += 1;
+        return index;
+      }
+      pageCalls += 1;
+      return pagePayload(index, "announced", "watch", 0);
+    },
+  });
+  await client.loadIndex();
+  await client.loadWindow("announced", "watch", 0);
+  const before = client.findLoadedResult("1000")?.stockCode;
+  await client.loadIndex({ force: true });
+  await client.loadWindow("announced", "watch", 0);
+  console.log(JSON.stringify({ indexCalls, pageCalls, before, after: client.findLoadedResult("1000")?.stockCode }));
+})();
+"""
+    )
+
+    assert payload == {"indexCalls": 2, "pageCalls": 1, "before": "1000", "after": "1000"}
+
+
+def test_market_refresh_pagehide_abort_does_not_replace_app_warning():
+    payload = _run_node_json(
+        r"""
+const listeners = new Map();
+globalThis.addEventListener = (name, listener) => listeners.set(name, listener);
+globalThis.removeEventListener = (name) => listeners.delete(name);
+globalThis.StockScannerConfig = { apiMode: "same-origin", marketApiVersion: "v2" };
+globalThis.document = { querySelector: () => null, addEventListener() {} };
+const app = require("./frontend/app.js");
+app.state.marketIndex = { generationId: "a".repeat(24) };
+app.state.marketQueryWarning = "last-good-warning";
+let commandCalled;
+const called = new Promise((resolve) => { commandCalled = resolve; });
+const jobId = "a".repeat(32);
+globalThis.fetch = async (_url, options) => {
+  commandCalled();
+  return new Response(JSON.stringify({
+    jobId,
+    status: "queued",
+    requestId: "request-pagehide",
+    statusUrl: `/api/scan/market/refresh/${jobId}`,
+  }), { status: 202, headers: { "content-type": "application/json" } });
+};
+(async () => {
+  const pending = app.refreshMarketScan({ refreshMode: "force" });
+  await called;
+  listeners.get("pagehide")?.();
+  const result = await pending;
+  console.log(JSON.stringify({
+    sameIndex: result === app.state.marketIndex,
+    warning: app.state.marketQueryWarning,
+  }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+
+    assert payload == {"sameIndex": True, "warning": "last-good-warning"}
+
+
+def test_app_api_fetch_preserves_abort_instead_of_rewrapping_as_503():
+    payload = _run_node_json(
+        r"""
+const app = require("./frontend/app.js");
+const controller = new AbortController();
+app.API_CLIENT.request = async () => {
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  throw error;
+};
+controller.abort();
+(async () => {
+  let name = "";
+  try { await app.apiFetch("/api/scan/market/refresh/" + "a".repeat(32), { signal: controller.signal }); }
+  catch (error) { name = error.name; }
+  console.log(JSON.stringify({ name }));
+})();
+"""
+    )
+
+    assert payload == {"name": "AbortError"}

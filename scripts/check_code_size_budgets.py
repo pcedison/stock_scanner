@@ -19,6 +19,7 @@ DEFAULT_BUDGETS = {
     "frontend/market_scan.js": 200,
     "frontend/market_render.js": 220,
     "frontend/market_query.js": 520,
+    "frontend/market_refresh.js": 220,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
     "cloudflare/worker.py": 880,

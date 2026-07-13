@@ -7,7 +7,11 @@ from datetime import UTC, datetime
 
 FALLBACK_BUCKET_SECONDS = 600
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,80}\Z", re.ASCII)
+JOB_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+OWNER_RUN_ID_PATTERN = re.compile(r"[0-9]{1,20}\Z", re.ASCII)
 JOB_TYPE = "market_scan"
+JOB_STATUSES = frozenset({"queued", "running", "success", "failed"})
+JOB_REASONS = frozenset({"financial_report_window", "monthly_revenue_window", "routine_refresh"})
 
 INSERT_JOB_SQL = """
 INSERT OR IGNORE INTO refresh_jobs
@@ -25,6 +29,11 @@ SELECT id, status, reason, queued_at, owner_run_id
 FROM refresh_jobs
 WHERE job_type = ? AND cache_key = ? AND status IN ('queued', 'running')
 ORDER BY queued_at DESC, id DESC
+LIMIT 1
+"""
+READ_STATUS_SQL = """
+SELECT * FROM refresh_jobs
+WHERE id = ? AND job_type = ?
 LIMIT 1
 """
 
@@ -70,6 +79,70 @@ def _job_payload(api, row) -> dict:
     }
 
 
+def _safe_text(value, maximum, pattern=None):
+    text = str(value or "")
+    if not text or len(text) > maximum or not text.isprintable():
+        return None
+    return text if pattern is None or pattern.fullmatch(text) else None
+
+
+def _safe_timestamp(value):
+    text = _safe_text(value, 128, re.compile(r"[0-9T: +.Z-]+\Z", re.ASCII))
+    if text is None:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return text
+
+
+def refresh_command_payload(job, request_id) -> dict:
+    job_id = _safe_text(job.get("jobId"), 32, JOB_ID_PATTERN)
+    status = _safe_text(job.get("status"), 16)
+    safe_request_id = _safe_text(request_id, 80, IDEMPOTENCY_KEY_PATTERN)
+    if job_id is None or status not in JOB_STATUSES or safe_request_id is None:
+        raise RefreshJobReadBackError("Refresh job command payload invariant failed")
+    status_url = f"/api/scan/market/refresh/{job_id}"
+    return {"jobId": job_id, "status": status, "requestId": safe_request_id, "statusUrl": status_url}
+
+
+def _status_payload(api, row):
+    job_id = _safe_text(row.get("id"), 32, JOB_ID_PATTERN)
+    status = _safe_text(row.get("status"), 16)
+    if job_id is None or status not in JOB_STATUSES:
+        raise RefreshJobReadBackError("Refresh job status payload invariant failed")
+    payload = {"jobId": job_id, "status": status}
+    mappings = (("reason", "reason"), ("queuedAt", "queued_at"), ("startedAt", "started_at"),
+                ("finishedAt", "finished_at"), ("updatedAt", "updated_at"))
+    for public_key, row_key in mappings:
+        value = _safe_timestamp(row.get(row_key)) if public_key.endswith("At") else row.get(row_key)
+        if public_key == "reason" and value not in JOB_REASONS:
+            value = None
+        if value is not None:
+            payload[public_key] = value
+    owner_id = _safe_text(row.get("owner_run_id"), 20, OWNER_RUN_ID_PATTERN)
+    if owner_id is not None:
+        owner_url = str(api.github_actions_run_url(owner_id) or "")
+        expected = rf"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/{re.escape(owner_id)}\Z"
+        payload.update({"ownerRunId": owner_id, "ownerRunUrl": owner_url if re.fullmatch(expected, owner_url) else None})
+    payload["hasError"] = bool(str(row.get("error") or "").strip())
+    dispatch_status = _safe_text(row.get("dispatch_status"), 24)
+    if dispatch_status in {"pending", "dispatching", "dispatched", "failed", "unknown", "workflow_claimed"}:
+        payload["dispatchStatus"] = dispatch_status
+    dispatch_error = _safe_text(row.get("dispatch_error_code"), 80, re.compile(r"[A-Z0-9_:-]{1,80}\Z", re.ASCII))
+    if dispatch_error is not None:
+        payload["dispatchErrorCode"] = dispatch_error
+    return payload
+
+
+async def refresh_job_status(api, job_id):
+    if not isinstance(job_id, str) or JOB_ID_PATTERN.fullmatch(job_id) is None:
+        return None
+    row = await api.db_first(READ_STATUS_SQL, job_id, JOB_TYPE)
+    return None if not row else _status_payload(api, row)
+
+
 async def _read_back_job(api, idempotency_key, cache_key):
     row = await api.db_first(READ_IDEMPOTENCY_SQL, idempotency_key)
     if row:
@@ -111,5 +184,7 @@ __all__ = (
     "derive_refresh_idempotency_key",
     "enqueue_or_reuse_refresh_job",
     "normalize_idempotency_key",
+    "refresh_command_payload",
+    "refresh_job_status",
     "RefreshJobReadBackError",
 )

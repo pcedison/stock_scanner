@@ -318,7 +318,11 @@
     }
     async function loadIndex({ force = false } = {}) {
       if (currentIndex && !force) return currentIndex;
-      if (indexPromise) return indexPromise;
+      if (indexPromise && !force) return indexPromise;
+      if (indexPromise) {
+        indexEpoch += 1;
+        indexPromise = null;
+      }
       const request = requestIndex(indexEpoch).finally(() => {
         if (indexPromise === request) indexPromise = null;
       });
@@ -451,7 +455,7 @@
       await loadWindow();
       return index;
     }
-    return { loadWindow, refresh };
+    return { loadWindow, refresh, forceRefresh: () => refresh({ force: true }) };
   }
   function createMarketCountUi({ state, apiVersion, queryAll, labels, activeTab, activeColumn, groupScan, renderOps }) {
     function renderOverview(scan = state.marketScan, selectedTab = state.activeMarketDisclosureTab) {

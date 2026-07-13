@@ -15,6 +15,8 @@ const OPS_VIEW_RENDERER_HELPERS = _mod("StockScannerOpsViewRenderers", "./ops_vi
 const AUTH_HELPERS = _mod("StockScannerAuth", "./auth.js");
 const API_CLIENT_HELPERS = _mod("StockScannerApiClient", "./api_client.js");
 const MARKET_QUERY_HELPERS = _mod("StockScannerMarketQuery", "./market_query.js");
+const MARKET_REFRESH_HELPERS = _mod("StockScannerMarketRefresh", "./market_refresh.js");
+const { createMarketRefreshClient } = MARKET_REFRESH_HELPERS;
 const CSRF_HEADER_NAME = "X-Stock-Scanner-CSRF";
 const CSRF_HEADER_VALUE = "1";
 const safeRequestId = (value) => (typeof value === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(value) ? value : "");
@@ -290,6 +292,7 @@ const MARKET_QUERY_COORDINATOR = MARKET_QUERY_HELPERS.createMarketQueryCoordinat
   resetUi: resetMarketListUi,
   render: renderMarketResults,
 });
+const MARKET_REFRESH_CLIENT = createMarketRefreshClient({ apiJson, onSuccess: MARKET_QUERY_COORDINATOR.forceRefresh });
 
 function holdingScanResultByCode(stockCode, scan = state.holdingsScan) {
   const normalized = safeText(stockCode);
@@ -538,6 +541,7 @@ async function apiFetch(url, options = {}) {
   try {
     return await API_CLIENT.request(url, options);
   } catch {
+    if (options.signal?.aborted) throw options.signal.reason;
     throw new Error(apiErrorMessage({ status: 503, headers: { get: () => "" } }, ""));
   }
 }
@@ -1401,8 +1405,9 @@ async function refreshMarketQuery({ revealResults = false, refreshMode = "auto" 
     showTab("market");
   }
   try {
-    return await MARKET_QUERY_COORDINATOR.refresh({ force: refreshMode === "force" });
+    return await (refreshMode === "force" ? MARKET_REFRESH_CLIENT.refresh() : MARKET_QUERY_COORDINATOR.refresh());
   } catch (error) {
+    if (error?.name === "AbortError") return state.marketIndex;
     state.marketQueryWarning = error?.message || "市場索引暫時無法載入";
     if (state.marketIndex) {
       renderMarketResults();

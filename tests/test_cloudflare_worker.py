@@ -234,6 +234,7 @@ def test_worker_options_preflight_uses_cors_and_security_headers(monkeypatch):
     assert response.init["status"] == 204
     headers = response.headers
     assert headers["access-control-allow-origin"] == "http://localhost:8000"
+    assert "idempotency-key" in headers["access-control-allow-headers"].split(",")
     assert headers["strict-transport-security"].startswith("max-age=31536000")
     assert re.fullmatch(r"[0-9a-f]{24}", headers["x-request-id"])
 
@@ -1028,8 +1029,10 @@ class RoutingFakeD1:
         self.complete_active_after_idempotency_miss = False
         self.hide_refresh_job_reads = False
         self.refresh_insert_attempts = 0
+        self.prepare_calls = []
 
     def prepare(self, sql):
+        self.prepare_calls.append(" ".join(sql.split()))
         return RoutingFakeStatement(self, sql)
 
     async def batch(self, statements):
@@ -1079,6 +1082,14 @@ class RoutingFakeD1:
                     if job["status"] in {"queued", "running"}:
                         job["status"] = "success"
             return row
+        if "SELECT * FROM refresh_jobs" in sql and "WHERE id = ?" in sql:
+            if self.hide_refresh_job_reads:
+                return None
+            job_id, job_type = params
+            return next(
+                (dict(job) for job in self.refresh_jobs if job["id"] == job_id and job["job_type"] == job_type),
+                None,
+            )
         if "FROM refresh_jobs" in sql and "cache_key = ?" in sql and "status IN ('queued', 'running')" in sql:
             if self.hide_refresh_job_reads:
                 return None
@@ -2388,6 +2399,315 @@ def test_concurrent_ensure_refresh_job_keeps_one_active_row(monkeypatch):
 
     assert len({job["jobId"] for job in jobs}) == 1
     assert db.active_job_count("market_scan") == 1
+
+
+def test_refresh_command_returns_202_without_market_payload_and_reuses_same_key(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    def request():
+        return RouteRequest(
+            method="POST",
+            path="/api/scan/market/refresh",
+            headers={"idempotency-key": "refresh-command-1"},
+        )
+
+    first = asyncio.run(api.fetch(request()))
+    second = asyncio.run(api.fetch(request()))
+    first_payload = json.loads(first.body)
+    second_payload = json.loads(second.body)
+
+    assert first.init["status"] == second.init["status"] == 202
+    assert set(first_payload) == {"jobId", "status", "requestId", "statusUrl"}
+    assert not {"entry", "watch", "excluded"} & set(first_payload)
+    assert re.fullmatch(r"[0-9a-f]{32}", first_payload["jobId"])
+    assert first_payload["jobId"] == second_payload["jobId"]
+    assert first.headers["Location"] == first_payload["statusUrl"]
+    assert first_payload["statusUrl"] == f'/api/scan/market/refresh/{first_payload["jobId"]}'
+    assert first_payload["requestId"] == first.headers["x-request-id"]
+    assert first.headers["cache-control"] == "no-store"
+    assert len(db.refresh_jobs) == 1
+
+
+def test_refresh_command_requires_csrf_in_production_and_rejects_invalid_key(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker = load_worker_module(monkeypatch)
+    db = RoutingFakeD1()
+    api = worker.Api(
+        env=types.SimpleNamespace(
+            APP_ENV="production",
+            APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
+            SUPER_USER_USERNAME="admin@example.com",
+            DB=db,
+            CACHE=FakeR2Cache(r2_seed({"public/manifest.json": manifest})),
+        )
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+
+    missing = asyncio.run(
+        api.fetch(RouteRequest(method="POST", path="/api/scan/market/refresh", headers={"idempotency-key": "safe"}))
+    )
+    invalid = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market/refresh",
+                headers={"x-stock-scanner-csrf": "1", "idempotency-key": "invalid key"},
+            )
+        )
+    )
+
+    assert missing.init["status"] == 403
+    assert json.loads(missing.body)["detail"] == "CSRF header required"
+    assert invalid.init["status"] == 422
+    assert "Idempotency-Key" in json.loads(invalid.body)["detail"]
+    assert db.refresh_jobs == []
+
+
+def test_refresh_command_idempotent_enqueue_failure_is_safe_503_and_legacy_keeps_lkg(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    scan = {"entry": [{"stockCode": "2330", "summary": "last good"}], "watch": [], "excluded": []}
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+
+    async def fail_idempotent_insert(_sql, *_params):
+        failure = worker.DependencyFailure(
+            "d1_write",
+            False,
+            RuntimeError("Authorization: Bearer secret raw SQL /Users/private"),
+        )
+        failure.error_code = "NETWORK_LOST"
+        raise failure
+
+    api.db_run = fail_idempotent_insert
+    command = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market/refresh",
+                headers={"idempotency-key": "safe-command-key"},
+            )
+        )
+    )
+    command_payload = json.loads(command.body)
+    legacy = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}')))
+    legacy_payload = json.loads(legacy.body)
+
+    assert command.init["status"] == 503
+    assert command_payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert command_payload["retryable"] is True
+    assert command_payload["stage"] == "d1_write"
+    assert command_payload["requestId"] == command.headers["x-request-id"]
+    assert "Bearer secret" not in command.body
+    assert "/Users/private" not in command.body
+    assert legacy.init["status"] == 200
+    assert legacy_payload["entry"][0]["stockCode"] == "2330"
+    assert legacy_payload["cacheStatus"]["refreshStatus"] == "unavailable"
+    assert legacy_payload["cacheStatus"]["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_retryable"),
+    [
+        ("network connection lost private", 503, True),
+        ("connection reset private", 503, True),
+        ("transient issue on remote node private", 503, True),
+        ("database overloaded private", 500, False),
+        ("query timeout private", 500, False),
+        ("syntax or permission private", 500, False),
+    ],
+)
+def test_refresh_command_only_classifies_known_transient_idempotent_writes_retryable(
+    monkeypatch, message, expected_status, expected_retryable
+):
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": {"generatedAt": "2026-02-19T00:00:00+00:00"}},
+    )
+
+    class FailingStatement:
+        def bind(self, *_params):
+            return self
+
+        async def run(self):
+            raise RuntimeError(message)
+
+    api.env.DB = types.SimpleNamespace(prepare=lambda _sql: FailingStatement())
+    response = asyncio.run(
+        api.fetch(
+            RouteRequest(
+                method="POST",
+                path="/api/scan/market/refresh",
+                headers={"idempotency-key": "classified-write-key"},
+            )
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == expected_status
+    assert payload["retryable"] is expected_retryable
+    assert payload["stage"] == "d1_write"
+    assert "private" not in response.body
+
+
+def test_refresh_status_is_camel_case_no_store_and_redacts_internal_error(monkeypatch):
+    worker, api, db = build_router_api(monkeypatch, github_repo="pcedison/stock_scanner")
+    job_id = "a" * 32
+    db.refresh_jobs.append(
+        {
+            "id": job_id,
+            "job_type": "market_scan",
+            "cache_key": "private-cache-key",
+            "idempotency_key": "private-idempotency-hash",
+            "status": "failed",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-13T12:01:00+00:00",
+            "started_at": "2026-07-13 12:02:00",
+            "finished_at": "2026-07-13 12:03:00",
+            "updated_at": "2026-07-13 12:03:00",
+            "owner_run_id": "12345",
+            "error": "Authorization: Bearer secret raw SQL /Users/private",
+            "dispatch_status": "failed",
+            "dispatch_error_code": "GITHUB_HTTP_403",
+        }
+    )
+
+    response = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/refresh/{job_id}")))
+    payload = json.loads(response.body)
+    serialized = json.dumps(payload)
+
+    assert response.init["status"] == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert payload == {
+        "jobId": job_id,
+        "status": "failed",
+        "reason": "routine_refresh",
+        "queuedAt": "2026-07-13T12:01:00+00:00",
+        "startedAt": "2026-07-13 12:02:00",
+        "finishedAt": "2026-07-13 12:03:00",
+        "updatedAt": "2026-07-13 12:03:00",
+        "ownerRunId": "12345",
+        "ownerRunUrl": "https://github.com/pcedison/stock_scanner/actions/runs/12345",
+        "hasError": True,
+        "dispatchStatus": "failed",
+        "dispatchErrorCode": "GITHUB_HTTP_403",
+    }
+    assert not {"error", "idempotency_key", "cache_key", "job_type", "queued_at"} & set(payload)
+    assert "Bearer secret" not in serialized
+    assert "/Users/private" not in serialized
+
+
+def test_refresh_status_404_rejects_invalid_hex_before_query_and_handles_pre_dispatch_rows(monkeypatch):
+    _worker, api, db = build_router_api(monkeypatch)
+    job_id = "b" * 32
+    db.refresh_jobs.append(
+        {
+            "id": job_id,
+            "job_type": "market_scan",
+            "cache_key": "cache",
+            "status": "queued",
+            "reason": "Authorization: Bearer secret reason",
+            "queued_at": "2026-07-13T12:01:00+00:00",
+            "updated_at": "2026-07-13T12:01:00+00:00",
+            "owner_run_id": "../private",
+            "error": None,
+        }
+    )
+
+    before = len(db.prepare_calls)
+    invalid = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/refresh/{'A' * 32}")))
+    assert invalid.init["status"] == 404
+    assert invalid.headers["cache-control"] == "no-store"
+    assert len(db.prepare_calls) == before
+
+    missing = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/refresh/{'c' * 32}")))
+    assert missing.init["status"] == 404
+    existing = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/refresh/{job_id}")))
+    existing_payload = json.loads(existing.body)
+    assert existing_payload["status"] == "queued"
+    assert not {"reason", "ownerRunId", "ownerRunUrl", "dispatchStatus"} & set(existing_payload)
+    assert "Bearer secret" not in existing.body
+
+
+def test_refresh_status_unknown_main_status_is_safe_and_unknown_dispatch_fields_are_omitted(monkeypatch):
+    _worker, api, db = build_router_api(monkeypatch)
+    malformed_id = "d" * 32
+    safe_id = "e" * 32
+    base = {
+        "job_type": "market_scan",
+        "cache_key": "private-cache",
+        "reason": "routine_refresh",
+        "queued_at": "2026-07-13T12:01:00+00:00",
+        "updated_at": "2026-07-13T12:01:00+00:00",
+        "error": None,
+    }
+    db.refresh_jobs.extend(
+        [
+            {**base, "id": malformed_id, "status": "done-secret-value"},
+            {
+                **base,
+                "id": safe_id,
+                "status": "queued",
+                "dispatch_status": "evil-secret-dispatch",
+                "dispatch_error_code": "raw/error/secret",
+            },
+        ]
+    )
+
+    malformed = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/refresh/{malformed_id}")))
+    safe = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/refresh/{safe_id}")))
+    safe_payload = json.loads(safe.body)
+
+    assert malformed.init["status"] == 500
+    assert json.loads(malformed.body)["code"] == "INTERNAL_ERROR"
+    assert "done-secret-value" not in malformed.body
+    assert safe.init["status"] == 200
+    assert not {"dispatchStatus", "dispatchErrorCode"} & set(safe_payload)
+    assert "secret" not in safe.body
+
+
+def test_refresh_command_coalesced_loser_key_can_create_after_terminal(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+
+    def command(key):
+        response = asyncio.run(
+            api.fetch(
+                RouteRequest(method="POST", path="/api/scan/market/refresh", headers={"idempotency-key": key})
+            )
+        )
+        return json.loads(response.body)
+
+    winner = command("winner-key")
+    loser = command("loser-key")
+    assert loser["jobId"] == winner["jobId"]
+    db.refresh_jobs[0]["status"] = "success"
+    retried_loser = command("loser-key")
+
+    assert retried_loser["jobId"] != winner["jobId"]
+    assert len(db.refresh_jobs) == 2
+
+
+def test_legacy_market_post_keeps_payload_and_adds_refresh_successor_headers(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    scan = {"entry": [], "watch": [{"stockCode": "2330"}], "excluded": []}
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+
+    response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body="{}")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["watch"][0]["stockCode"] == "2330"
+    assert response.headers["Deprecation"] == "true"
+    assert response.headers["Link"] == '</api/scan/market/refresh>; rel="successor-version"'
 
 
 def test_refresh_job_request_path_has_no_cleanup_delete_and_worker_delegates():

@@ -92,7 +92,7 @@ def cors_headers(allowed_origins, request_origin, *, production, local_request_o
     return {
         "access-control-allow-origin": origin,
         "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-        "access-control-allow-headers": f"content-type,{csrf_header_name}",
+        "access-control-allow-headers": f"content-type,{csrf_header_name},idempotency-key",
         "access-control-allow-credentials": "true",
         "vary": "Origin",
     }

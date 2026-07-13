@@ -244,6 +244,20 @@ class Api:
         return error_response("Not found", status=404)
 
     async def _route_scan(self, request, method: str, path: str, query):
+        if path == "/api/scan/market/refresh" and method == "POST":
+            manifest = await self.r2_json("public/manifest.json", {})
+            try:
+                job = await self.ensure_refresh_job(
+                    manifest, force=True, client_key=request.headers.get("idempotency-key")
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from None
+            payload = worker_refresh_jobs.refresh_command_payload(job, self._request_id)
+            return json_response(payload, status=202, headers={"Location": payload["statusUrl"]})
+        refresh_status_prefix = "/api/scan/market/refresh/"
+        if path.startswith(refresh_status_prefix) and method == "GET":
+            payload = await worker_refresh_jobs.refresh_job_status(self, path.removeprefix(refresh_status_prefix))
+            return json_response(payload) if payload else error_response("Not found", status=404)
         if method == "GET" and path in worker_market_query.ROUTES:
             return await worker_market_query.route(
                 self, path, query, json_response, error_response, observability.dependency_call, DependencyFailure)
@@ -266,7 +280,10 @@ class Api:
                 dependency_failure_type=DependencyFailure)
             scan = compact_market_scan(scan)
             scan["cacheStatus"] = cache_status
-            return json_response(scan)
+            return json_response(
+                scan,
+                headers={"Deprecation": "true", "Link": '</api/scan/market/refresh>; rel="successor-version"'},
+            )
         if path == "/api/scan/holdings" and method == "POST":
             return await self.scan_holdings(request)
         if path.startswith("/api/analyze/") and method == "POST":
@@ -407,6 +424,10 @@ class Api:
         except worker_refresh_jobs.RefreshJobReadBackError as exc:
             failure = DependencyFailure("d1_read", True, exc)
             failure.error_code = "REFRESH_JOB_READ_BACK_INVARIANT"
+        except DependencyFailure as exc:
+            if exc.stage == "d1_write" and getattr(exc, "error_code", "") in observability.RETRYABLE_D1_READ_CODES:
+                exc.retryable = True
+            raise
         raise failure from None
 
     def github_actions_run_url(self, owner_run_id):

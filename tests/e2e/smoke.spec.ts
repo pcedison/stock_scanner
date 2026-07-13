@@ -482,12 +482,12 @@ test("authenticated holdings survive reload and market results expose evidence",
 
 const MARKET_V2_GENERATION = "a".repeat(24);
 
-function marketV2Index(entry = 205, watch = 3) {
+function marketV2Index(entry = 205, watch = 3, generationId = MARKET_V2_GENERATION) {
   const pages = (category: string, count: number) =>
     Array.from({ length: Math.ceil(count / 100) }, (_, page) => {
       const cursor = page * 100;
       return {
-        key: `public/market_scan/v2/${MARKET_V2_GENERATION}/announced/${category}/${cursor}.json`,
+        key: `public/market_scan/v2/${generationId}/announced/${category}/${cursor}.json`,
         cursor,
         count: Math.min(100, count - cursor),
         bytes: 256,
@@ -500,7 +500,7 @@ function marketV2Index(entry = 205, watch = 3) {
   });
   return {
     schemaVersion: 2,
-    generationId: MARKET_V2_GENERATION,
+    generationId,
     generatedAt: "2026-07-13T01:02:03+00:00",
     pageSize: 100,
     detailMode: "summary",
@@ -666,4 +666,83 @@ test("legacy market fallback uses v1 route only", async ({ page }) => {
   await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
   expect(legacyCalls).toBeGreaterThan(0);
   expect(indexCalls).toBe(0);
+});
+
+test("refresh command posts once and refresh polling preserves rows until generation changes", async ({
+  page,
+  isMobile,
+}) => {
+  await useMarketV2(page);
+  const firstIndex = marketV2Index(205, 0, "a".repeat(24));
+  const nextIndex = marketV2Index(12, 0, "b".repeat(24));
+  let activeIndex = firstIndex;
+  const jobId = "c".repeat(32);
+  const statusUrl = `/api/scan/market/refresh/${jobId}`;
+  const commandRequests: { method: string; key: string | null }[] = [];
+  const statusRequests: string[] = [];
+  let legacyCalls = 0;
+  let polls = 0;
+
+  await page.route("**/api/scan/market/index", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(activeIndex) }),
+  );
+  await page.route("**/api/scan/market/results?*", (route) => {
+    const url = new URL(route.request().url());
+    const category = url.searchParams.get("category") as "entry" | "watch" | "excluded";
+    const cursor = Number(url.searchParams.get("cursor"));
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(marketV2Page(activeIndex, category, cursor)),
+    });
+  });
+  await page.route("**/api/scan/market/refresh", (route) => {
+    commandRequests.push({
+      method: route.request().method(),
+      key: route.request().headers()["idempotency-key"] || null,
+    });
+    return route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      headers: { Location: statusUrl },
+      body: JSON.stringify({ jobId, status: "queued", requestId: "e2e-refresh-1", statusUrl }),
+    });
+  });
+  await page.route("**/api/scan/market", (route) => {
+    legacyCalls += 1;
+    return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+  });
+  await page.route(`**${statusUrl}`, (route) => {
+    statusRequests.push(new URL(route.request().url()).pathname);
+    polls += 1;
+    if (polls >= 2) activeIndex = nextIndex;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ jobId, status: polls >= 2 ? "success" : "running", hasError: false }),
+    });
+  });
+
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1000");
+  await page.locator('[data-market-page-column="entry"][data-market-page-dir="1"]').click();
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1006");
+  await page.locator("[data-market-result-toggle]").first().click();
+  await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
+
+  await page.locator("#refresh-market-scan-btn").click();
+  await page.locator("#refresh-market-scan-btn").click();
+  await expect.poll(() => commandRequests.length).toBe(1);
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1006");
+  await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(() => polls, { timeout: 8_000 }).toBe(2);
+  await expect(page.locator('[data-market-column-nav="entry"]')).toContainText("12");
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1000");
+
+  expect(commandRequests[0].method).toBe("POST");
+  expect(commandRequests[0].key).toMatch(/^[A-Za-z0-9._:-]{1,80}$/);
+  expect(statusRequests).toEqual([statusUrl, statusUrl]);
+  expect(legacyCalls).toBe(0);
 });

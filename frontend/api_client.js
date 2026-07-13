@@ -16,6 +16,7 @@ const PUBLIC_DIRECT_FALLBACK_ROUTES = [
   /^GET \/api\/companies(?:$|[/?])/,
   /^GET \/api\/scan\/market$/,
   /^GET \/api\/scan\/market\/(?:index|results)$/,
+  /^GET \/api\/scan\/market\/refresh\/[0-9a-f]{32}$/,
 ];
 
 function normalizeApiOrigin(value) {
