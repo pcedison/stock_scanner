@@ -18,10 +18,11 @@ except ModuleNotFoundError:
 
 try:
     import worker_health
+    import worker_market_query
     import worker_market_resilience as market_resilience
     import worker_observability as observability
 except ModuleNotFoundError:
-    from cloudflare import worker_health
+    from cloudflare import worker_health, worker_market_query
     from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
 
@@ -91,7 +92,7 @@ class Api:
         make_failure_response = observability.failure_response
         parsed = urlparse(request.url)
         path = parsed.path.rstrip("/") or "/"
-        query = parse_qs(parsed.query)
+        query = parse_qs(parsed.query, keep_blank_values=path in worker_market_query.ROUTES)
 
         if request.method == "OPTIONS":
             response = Response.new(
@@ -143,7 +144,7 @@ class Api:
         if path.startswith("/api/admin/"):
             return await self._route_admin(request, method, path)
         if path.startswith("/api/scan/") or path.startswith("/api/analyze/"):
-            return await self._route_scan(request, method, path)
+            return await self._route_scan(request, method, path, query)
         if path.startswith("/api/reports/"):
             return await self._route_reports(request, method, path, query)
         if path.startswith("/api/cache/"):
@@ -241,7 +242,10 @@ class Api:
             return json_response(await self.delete_admin_user(user_id))
         return error_response("Not found", status=404)
 
-    async def _route_scan(self, request, method: str, path: str):
+    async def _route_scan(self, request, method: str, path: str, query):
+        if method == "GET" and path in worker_market_query.ROUTES:
+            return await worker_market_query.route(
+                self, path, query, json_response, error_response, observability.dependency_call, DependencyFailure)
         if path == "/api/scan/market" and method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
@@ -257,11 +261,8 @@ class Api:
             manifest = await self.r2_json("public/manifest.json", {})
             scan = await self.r2_json("public/market_scan_summary.json", None)
             cache_status = await market_resilience.market_refresh_cache_status(
-                api=self, request=request,
-                manifest=manifest, scan=scan,
-                force=refresh_mode == "force",
-                dependency_failure_type=DependencyFailure,
-            )
+                api=self, request=request, manifest=manifest, scan=scan, force=refresh_mode == "force",
+                dependency_failure_type=DependencyFailure)
             scan = compact_market_scan(scan)
             scan["cacheStatus"] = cache_status
             return json_response(scan)

@@ -15,6 +15,7 @@ const PUBLIC_DIRECT_FALLBACK_ROUTES = [
   /^GET \/api\/calendar\//,
   /^GET \/api\/companies(?:$|[/?])/,
   /^GET \/api\/scan\/market$/,
+  /^GET \/api\/scan\/market\/(?:index|results)$/,
 ];
 
 function normalizeApiOrigin(value) {

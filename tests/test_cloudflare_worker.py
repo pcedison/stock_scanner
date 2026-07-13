@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from backend.models.settings import ScannerSettings
+from backend.services.market_query import build_market_generation
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,12 +106,29 @@ class CompleteFakeD1:
         return statement
 
 
+class FakeArrayBuffer:
+    def __init__(self, raw):
+        self._raw = raw
+
+    def to_py(self):
+        return memoryview(self._raw)
+
+
 class FakeR2Object:
-    def __init__(self, text):
+    def __init__(self, text, *, raw=None, size=None):
         self._text = text
+        self._raw = raw if raw is not None else str(text).encode("utf-8")
+        self.size = len(self._raw) if size is None else size
+        self.text_reads = 0
+        self.array_reads = 0
 
     async def text(self):
+        self.text_reads += 1
         return self._text
+
+    async def arrayBuffer(self):
+        self.array_reads += 1
+        return FakeArrayBuffer(self._raw)
 
 
 class FakeR2Cache:
@@ -1128,7 +1146,14 @@ class RoutingFakeD1:
 
 
 def r2_seed(mapping):
-    return {key: FakeR2Object(value if isinstance(value, str) else json.dumps(value)) for key, value in mapping.items()}
+    return {
+        key: FakeR2Object(
+            value
+            if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
+        for key, value in mapping.items()
+    }
 
 
 def build_router_api(monkeypatch, *, r2=None, super_user=None, github_repo=None):
@@ -1461,6 +1486,347 @@ def test_worker_scan_market_get_and_post_queue_refresh(monkeypatch):
     post = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body=""))).body)
     assert post["cacheStatus"]["refreshStatus"] == "queued"
     assert len(db.refresh_jobs) == 1
+
+
+def _worker_market_generation(prefix: str, size: int = 150):
+    return build_market_generation(
+        {
+            "generatedAt": f"2026-07-13T00:00:0{prefix}+00:00",
+            "filingContext": {},
+            "entry": [],
+            "watch": [
+                {
+                    "stockCode": f"{prefix}{index:03d}",
+                    "companyName": f"Company {prefix}-{index}",
+                    "status": "WATCH",
+                    "summary": "announced",
+                    "reasons": [],
+                    "detailsAvailable": True,
+                    "hasFullDetails": False,
+                }
+                for index in range(size)
+            ],
+            "excluded": [],
+        }
+    )
+
+
+def _worker_generation_r2(generation):
+    return {
+        key: value.decode("utf-8")
+        for key, value in generation.files.items()
+    }
+
+
+def test_worker_market_v2_index_uses_pointer_and_manifest_without_legacy_summary(monkeypatch):
+    generation = _worker_market_generation("1")
+    manifest = {"generatedAt": "2026-07-13T00:00:01+00:00", "counts": {"analysis": 150, "companies": 150}}
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/market_scan_index.json": generation.index, "public/manifest.json": manifest},
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T00:05:00+00:00")
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["generationId"] == generation.generation_id
+    assert payload["schemaVersion"] == 2
+    assert "cacheStatus" in payload
+    assert response.headers["cache-control"] == "no-store"
+    assert api.env.CACHE.calls == ["public/market_scan_index.json", "public/manifest.json"]
+    assert "public/market_scan_summary.json" not in api.env.CACHE.calls
+
+
+def test_worker_market_v2_results_reads_pinned_generation_across_pointer_switch(monkeypatch):
+    historical = _worker_market_generation("1")
+    current = _worker_market_generation("2")
+    r2 = {
+        "public/market_scan_index.json": current.index,
+        **_worker_generation_r2(historical),
+        **_worker_generation_r2(current),
+    }
+    _worker, api, _db = build_router_api(monkeypatch, r2=r2)
+    path = (
+        "/api/scan/market/results?disclosure=announced&category=watch&cursor=96&limit=10"
+        f"&generationId={historical.generation_id}"
+    )
+
+    response = asyncio.run(api.fetch(RouteRequest(path=path)))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["generationId"] == historical.generation_id
+    assert response.headers["cache-control"] == "no-store"
+    assert [item["stockCode"] for item in payload["items"]] == [f"1{index:03d}" for index in range(96, 106)]
+    assert api.env.CACHE.calls[0] == f"public/market_scan/v2/{historical.generation_id}/index.json"
+    assert "public/market_scan_index.json" not in api.env.CACHE.calls
+    assert "public/market_scan_summary.json" not in api.env.CACHE.calls
+    assert len(api.env.CACHE.calls) == 3
+
+
+def test_worker_market_v2_maps_invalid_query_missing_generation_and_page(monkeypatch):
+    generation = _worker_market_generation("1")
+    _worker, invalid_api, _db = build_router_api(monkeypatch, r2={"public/market_scan_index.json": generation.index})
+    invalid = asyncio.run(
+        invalid_api.fetch(
+            RouteRequest(path="/api/scan/market/results?disclosure=other&category=watch&cursor=0&limit=100")
+        )
+    )
+    assert invalid.init["status"] == 422
+    blank_generation = asyncio.run(
+        invalid_api.fetch(
+            RouteRequest(
+                path="/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1&generationId="
+            )
+        )
+    )
+    duplicate_blank_generation = asyncio.run(
+        invalid_api.fetch(
+            RouteRequest(
+                path=(
+                    "/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1"
+                    f"&generationId={generation.generation_id}&generationId="
+                )
+            )
+        )
+    )
+    assert blank_generation.init["status"] == duplicate_blank_generation.init["status"] == 422
+
+    for cursor, limit in (("0" * 5000, "1"), ("0", "0" * 5000)):
+        oversized_zeroes = asyncio.run(
+            invalid_api.fetch(
+                RouteRequest(
+                    path=(
+                        "/api/scan/market/results?disclosure=announced&category=watch"
+                        f"&cursor={cursor}&limit={limit}"
+                    )
+                )
+            )
+        )
+        assert oversized_zeroes.init["status"] == 422
+
+    _worker, missing_generation_api, _db = build_router_api(monkeypatch)
+    mismatch = asyncio.run(
+        missing_generation_api.fetch(
+            RouteRequest(
+                path=(
+                    "/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=100"
+                    f"&generationId={generation.generation_id}"
+                )
+            )
+        )
+    )
+    assert mismatch.init["status"] == 409
+    assert json.loads(mismatch.body)["code"] == "generation_mismatch"
+
+    other_generation = _worker_market_generation("2")
+    wrong_index_key = f"public/market_scan/v2/{generation.generation_id}/index.json"
+    _worker, wrong_index_api, _db = build_router_api(
+        monkeypatch,
+        r2={wrong_index_key: other_generation.index},
+    )
+    wrong_index = asyncio.run(
+        wrong_index_api.fetch(
+            RouteRequest(
+                path=(
+                    "/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1"
+                    f"&generationId={generation.generation_id}"
+                )
+            )
+        )
+    )
+    assert wrong_index.init["status"] == 409
+    assert json.loads(wrong_index.body)["code"] == "generation_mismatch"
+
+    broken_r2 = {"public/market_scan_index.json": generation.index}
+    _worker, missing_page_api, _db = build_router_api(monkeypatch, r2=broken_r2)
+    unavailable = asyncio.run(
+        missing_page_api.fetch(
+            RouteRequest(path="/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1")
+        )
+    )
+    assert unavailable.init["status"] == 503
+    body = json.loads(unavailable.body)
+    assert body["code"] == "market_query_unavailable"
+    assert body["requestId"] == unavailable.headers["x-request-id"]
+
+    _worker, missing_pointer_api, _db = build_router_api(monkeypatch)
+    missing_pointer = asyncio.run(missing_pointer_api.fetch(RouteRequest(path="/api/scan/market/index")))
+    assert missing_pointer.init["status"] == 503
+    missing_pointer_body = json.loads(missing_pointer.body)
+    assert missing_pointer_body["code"] == "market_query_unavailable"
+    assert missing_pointer_body["requestId"] == missing_pointer.headers["x-request-id"]
+
+    _worker, malformed_pointer_api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/market_scan_index.json": {"schemaVersion": True}},
+    )
+    malformed_pointer = asyncio.run(malformed_pointer_api.fetch(RouteRequest(path="/api/scan/market/index")))
+    malformed_pointer_body = json.loads(malformed_pointer.body)
+    assert malformed_pointer.init["status"] == 503
+    assert malformed_pointer_body["code"] == "market_query_unavailable"
+    assert malformed_pointer_body["requestId"] == malformed_pointer.headers["x-request-id"]
+
+    first_page_key = next(key for key in generation.files if key.endswith("/0.json"))
+    malformed_r2 = {
+        "public/market_scan_index.json": generation.index,
+        first_page_key: "{not-json",
+    }
+    _worker, malformed_page_api, _db = build_router_api(monkeypatch, r2=malformed_r2)
+    malformed = asyncio.run(
+        malformed_page_api.fetch(
+            RouteRequest(path="/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1")
+        )
+    )
+    assert malformed.init["status"] == 503
+    assert json.loads(malformed.body)["code"] == "market_query_unavailable"
+
+
+def test_worker_market_v2_rejects_oversized_noncanonical_raw_page(monkeypatch):
+    generation = _worker_market_generation("1", size=1)
+    page_key = next(key for key in generation.files if key.endswith("/0.json"))
+    padded_page = " " * (600 * 1024) + generation.files[page_key].decode("utf-8")
+    _worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/market_scan_index.json": generation.index, page_key: padded_page},
+    )
+
+    response = asyncio.run(
+        api.fetch(
+            RouteRequest(path="/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1")
+        )
+    )
+
+    assert response.init["status"] == 503
+    assert json.loads(response.body)["code"] == "market_query_unavailable"
+    assert api.env.CACHE.objects[page_key].text_reads == 0
+    assert api.env.CACHE.objects[page_key].array_reads == 0
+
+
+def test_worker_market_v2_reads_exact_r2_bytes_via_array_buffer(monkeypatch):
+    generation = _worker_market_generation("1", size=1)
+    _worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/market_scan_index.json": generation.index, "public/manifest.json": {}},
+    )
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+
+    assert response.init["status"] == 200
+    for key in ("public/market_scan_index.json", "public/manifest.json"):
+        assert api.env.CACHE.objects[key].array_reads == 1
+        assert api.env.CACHE.objects[key].text_reads == 0
+
+
+@pytest.mark.parametrize("invalid_size", [True, 1.0, -1, None])
+def test_worker_market_v2_rejects_invalid_r2_size(monkeypatch, invalid_size):
+    generation = _worker_market_generation("1", size=1)
+    _worker, api, _db = build_router_api(monkeypatch, r2={"public/market_scan_index.json": generation.index})
+    obj = api.env.CACHE.objects["public/market_scan_index.json"]
+    obj.size = invalid_size
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+
+    assert response.init["status"] == 503
+    assert json.loads(response.body)["code"] == "market_query_unavailable"
+
+
+@pytest.mark.parametrize("mutation", ["invalid_utf8", "size_mismatch", "missing_array_buffer"])
+def test_worker_market_v2_rejects_inexact_or_unreadable_r2_body(monkeypatch, mutation):
+    generation = _worker_market_generation("1", size=1)
+    _worker, api, _db = build_router_api(monkeypatch, r2={"public/market_scan_index.json": generation.index})
+    key = "public/market_scan_index.json"
+    original = api.env.CACHE.objects[key]
+    if mutation == "invalid_utf8":
+        api.env.CACHE.objects[key] = FakeR2Object(original._text, raw=b"\xff", size=1)
+    elif mutation == "size_mismatch":
+        api.env.CACHE.objects[key] = FakeR2Object(original._text, raw=original._raw, size=len(original._raw) + 1)
+    else:
+
+        class TextOnlyR2Body:
+            size = original.size
+
+            async def text(self):
+                return original._text
+
+        api.env.CACHE.objects[key] = TextOnlyR2Body()
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+
+    assert response.init["status"] == 503
+    assert json.loads(response.body)["code"] == "market_query_unavailable"
+
+
+def test_worker_market_v2_array_buffer_failure_is_structured_dependency_error(monkeypatch, capsys):
+    generation = _worker_market_generation("1", size=1)
+    _worker, api, _db = build_router_api(monkeypatch, r2={"public/market_scan_index.json": generation.index})
+    obj = api.env.CACHE.objects["public/market_scan_index.json"]
+
+    async def fail_array_buffer():
+        raise RuntimeError("Network connection lost. private-r2-sentinel")
+
+    obj.arrayBuffer = fail_array_buffer
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["retryable"] is True
+    assert payload["stage"] == "r2_read"
+    assert payload["requestId"] == response.headers["x-request-id"]
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert record["errorCode"] == "NETWORK_LOST"
+    assert "private-r2-sentinel" not in json.dumps({"payload": payload, "record": record})
+
+
+def test_worker_market_v2_rejects_wire_responses_over_budget(monkeypatch):
+    generation = _worker_market_generation("1", size=1)
+    r2 = {"public/market_scan_index.json": generation.index, **_worker_generation_r2(generation)}
+    worker, index_api, _db = build_router_api(monkeypatch, r2=r2)
+    index_api.cache_status_from_manifest = lambda *_args: {"padding": "x" * (50 * 1024)}
+
+    index_response = asyncio.run(index_api.fetch(RouteRequest(path="/api/scan/market/index")))
+    assert index_response.init["status"] == 503
+
+    _worker, results_api, _db = build_router_api(monkeypatch, r2=r2)
+    monkeypatch.setattr(
+        worker.worker_market_query,
+        "merge_market_pages",
+        lambda *_args: {
+            "schemaVersion": 2,
+            "generationId": generation.generation_id,
+            "disclosure": "announced",
+            "category": "watch",
+            "cursor": 0,
+            "limit": 1,
+            "total": 1,
+            "nextCursor": None,
+            "items": [{"stockCode": "1000", "summary": "x" * (500 * 1024)}],
+        },
+    )
+    results_response = asyncio.run(
+        results_api.fetch(
+            RouteRequest(path="/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=1")
+        )
+    )
+    assert results_response.init["status"] == 503
+
+
+def test_worker_market_v2_malformed_manifest_is_safe_503(monkeypatch):
+    generation = _worker_market_generation("1", size=1)
+    _worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={
+            "public/market_scan_index.json": generation.index,
+            "public/manifest.json": {"counts": {"companies": "invalid"}},
+        },
+    )
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+    assert response.init["status"] == 503
+    assert json.loads(response.body)["code"] == "market_query_unavailable"
 
 
 @pytest.mark.parametrize(

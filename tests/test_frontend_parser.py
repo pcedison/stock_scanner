@@ -286,6 +286,29 @@ const client = createApiClient({
     assert payload["activeOrigin"] == "https://worker.example"
 
 
+def test_api_client_allows_direct_fallback_for_v2_market_get_routes_only():
+    payload = _run_node_json(
+        r"""
+const { allowsDirectFallback } = require("./frontend/api_client.js");
+console.log(JSON.stringify({
+  indexGet: allowsDirectFallback("/api/scan/market/index", "GET"),
+  resultsGet: allowsDirectFallback("/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=100", "GET"),
+  resultsHead: allowsDirectFallback("/api/scan/market/results?disclosure=announced&category=watch&cursor=0&limit=100", "HEAD"),
+  indexPost: allowsDirectFallback("/api/scan/market/index", "POST"),
+  suffix: allowsDirectFallback("/api/scan/market/results/extra", "GET"),
+}));
+"""
+    )
+
+    assert payload == {
+        "indexGet": True,
+        "resultsGet": True,
+        "resultsHead": True,
+        "indexPost": False,
+        "suffix": False,
+    }
+
+
 def test_api_client_safe_reads_use_rounds_and_bounded_status_retries():
     payload = _run_node_json(
         r"""
