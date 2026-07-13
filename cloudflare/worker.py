@@ -165,6 +165,9 @@ class Api:
         if path.startswith("/api/companies"):
             return await self._route_companies(method, path, query)
 
+        if path == "/api/runtime-config" and method == "GET":
+            return json_response(self.runtime_config(), headers=self.runtime_config_cache_headers())
+
         if path == "/api/health" and method == "GET":
             manifest = await self.r2_json("public/manifest.json", {})
             payload = worker_health.health_payload(
@@ -275,7 +278,7 @@ class Api:
             scan["cacheStatus"] = self.cache_status_from_manifest(
                 manifest, {"status": "fresh", "reason": policy["reason"]}
             )
-            return json_response(scan, public_cache_seconds=policy["minIntervalSeconds"])
+            return json_response(scan)
         if path == "/api/scan/market" and method == "POST":
             payload = await self.request_json(request)
             refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()
@@ -394,6 +397,25 @@ class Api:
         if 8 <= now.day <= 15:
             return {"strategy": "stale_while_revalidate", "reason": "monthly_revenue_window", "minIntervalSeconds": 10800}
         return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
+
+    def market_api_version(self):
+        return "v2" if str(env_value(self.env, "MARKET_SCAN_API_VERSION", "v1")).strip().lower() == "v2" else "v1"
+
+    def edge_cache_enabled(self):
+        return env_flag(self.env, "EDGE_CACHE_ENABLED")
+
+    def runtime_config(self):
+        return {
+            "schemaVersion": 1,
+            "marketScanApiVersion": self.market_api_version(),
+            "edgeCacheEnabled": self.edge_cache_enabled(),
+        }
+
+    def runtime_config_cache_headers(self):
+        return public_edge_cache_headers(60, 60, 300)
+
+    def market_v2_cache_headers(self):
+        return public_edge_cache_headers(300, 60, 3600) if self.edge_cache_enabled() else {}
 
     def cache_status_from_manifest(self, manifest, refresh_status):
         policy = self.cache_policy()

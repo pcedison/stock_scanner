@@ -156,7 +156,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
 def test_market_query_module_has_a_focused_non_expanding_budget():
     assert DEFAULT_BUDGETS["frontend/market_query.js"] == 520
     assert DEFAULT_BUDGETS["frontend/market_refresh.js"] == 220
-    assert DEFAULT_BUDGETS["frontend/app.js"] == 2010
+    assert DEFAULT_BUDGETS["frontend/app.js"] == 2050
     assert DEFAULT_BUDGETS["frontend/market_render.js"] == 220
 
 

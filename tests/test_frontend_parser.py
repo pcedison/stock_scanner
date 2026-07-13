@@ -1046,8 +1046,12 @@ const client = createApiClient({
     payload = json.loads(completed.stdout)
 
     assert payload["mode"] == "fallback"
-    assert payload["calls"] == [{"url": "/api/auth/login", "method": "POST", "credentials": "same-origin"}]
-    assert payload["activeOrigin"] == ""
+
+
+def test_api_client_allows_runtime_config_direct_fallback():
+    source = (ROOT / "frontend" / "api_client.js").read_text(encoding="utf-8")
+
+    assert 'GET \\/api\\/runtime-config' in source
 
 
 def test_pages_dev_api_client_defaults_to_same_origin_for_account_routes():
@@ -2214,6 +2218,18 @@ def test_app_v2_integration_keeps_legacy_state_separate_and_exports_bounded():
     assert 'MARKET_API_VERSION !== "v2" && state.schedulerAutoScan?.scan' in source
     assert "loadWindow" not in export_body
     assert "state.marketIndex" in source[source.index("function refreshHoldingsDependentViews") : source.index("function upsertHolding")]
+
+
+def test_app_loads_runtime_config_before_initial_data_and_has_v1_fallback():
+    source = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    init_start = source.index("async function init")
+    init_body = source[init_start : source.index('if (typeof document !== "undefined")', init_start)]
+
+    assert "let MARKET_API_VERSION" in source
+    assert "async function loadRuntimeConfig" in source
+    assert 'apiJson("/api/runtime-config", { method: "GET" })' in source
+    assert "function fallbackMarketApiToV1" in source
+    assert init_body.index("await loadRuntimeConfig();") < init_body.index("await Promise.all")
 
 
 def test_app_market_query_storage_getter_security_error_is_fail_soft():

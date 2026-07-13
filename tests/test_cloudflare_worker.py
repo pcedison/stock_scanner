@@ -1584,13 +1584,31 @@ def test_worker_scan_market_get_and_post_queue_refresh(monkeypatch):
     worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan})
     pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
 
-    get = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
+    get_response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market")))
+    get = json.loads(get_response.body)
     assert get["detailMode"] == "summary"
     assert get["cacheStatus"]["isStale"] is True
+    assert get_response.headers["cache-control"] == "no-store"
 
     post = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body=""))).body)
     assert post["cacheStatus"]["refreshStatus"] == "queued"
     assert len(db.refresh_jobs) == 1
+
+
+def test_runtime_config_defaults_invalid_values_to_v1_and_has_short_edge_ttl(monkeypatch):
+    _worker, api, _db = build_router_api(monkeypatch)
+    api.env.MARKET_SCAN_API_VERSION = "future"
+    api.env.EDGE_CACHE_ENABLED = "true"
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/runtime-config")))
+    payload = json.loads(response.body)
+    edge_cache = response.headers["cloudflare-cdn-cache-control"]
+
+    assert response.init["status"] == 200
+    assert payload == {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": True}
+    assert response.headers["cache-control"] == "public, max-age=0"
+    assert "max-age=60" in edge_cache
+    assert "s-maxage" not in edge_cache
 
 
 def _worker_market_generation(prefix: str, size: int = 150):
@@ -1642,6 +1660,31 @@ def test_worker_market_v2_index_uses_pointer_and_manifest_without_legacy_summary
     assert response.headers["cache-control"] == "no-store"
     assert api.env.CACHE.calls == ["public/market_scan_index.json", "public/manifest.json"]
     assert "public/market_scan_summary.json" not in api.env.CACHE.calls
+
+
+def test_worker_market_v2_edge_cache_headers_are_opt_in_and_errors_stay_no_store(monkeypatch):
+    generation = _worker_market_generation("7")
+    worker, api, _db = build_router_api(
+        monkeypatch,
+        r2={"public/market_scan_index.json": generation.index, **_worker_generation_r2(generation)},
+    )
+    api.env.MARKET_SCAN_API_VERSION = "v2"
+    api.env.EDGE_CACHE_ENABLED = "true"
+    pin_worker_time(monkeypatch, worker, "2026-07-13T00:05:00+00:00")
+
+    index = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/index")))
+    query = f"?disclosure=announced&category=watch&cursor=0&limit=100&generationId={generation.generation_id}"
+    results = asyncio.run(api.fetch(RouteRequest(path=f"/api/scan/market/results{query}")))
+    invalid = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market/results?disclosure=x")))
+
+    for response in (index, results):
+        assert response.headers["cache-control"] == "public, max-age=0"
+        edge = response.headers["cloudflare-cdn-cache-control"]
+        assert "stale-while-revalidate=" in edge
+        assert "stale-if-error=" in edge
+        assert "s-maxage" not in edge
+    assert invalid.init["status"] == 422
+    assert invalid.headers["cache-control"] == "no-store"
 
 
 def test_worker_market_v2_results_reads_pinned_generation_across_pointer_switch(monkeypatch):

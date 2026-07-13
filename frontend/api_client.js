@@ -5,6 +5,7 @@ const IDEMPOTENT_API_METHODS = new Set(["GET", "HEAD"]);
 const DEFAULT_GET_RETRY_DELAYS_MS = [150, 450];
 const PUBLIC_DIRECT_FALLBACK_ROUTES = [
   /^GET \/api\/health$/,
+  /^GET \/api\/runtime-config$/,
   /^GET \/api\/app-status$/,
   /^GET \/api\/settings$/,
   /^GET \/api\/integrations\/status$/,

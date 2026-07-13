@@ -387,7 +387,7 @@ async def _market_index_response(api, json_response, error_response, dependency_
         _require(len(_wire_json_bytes(payload)) < MAX_INDEX_BYTES, "market index response exceeds wire budget")
     except (TypeError, ValueError):
         return _error(error_response, api, "Market query data is temporarily unavailable", 503, "market_query_unavailable")
-    return json_response(payload)
+    return json_response(payload, headers=api.market_v2_cache_headers())
 
 
 async def _market_results_response(
@@ -432,7 +432,7 @@ async def _market_results_response(
         _require(len(_wire_json_bytes(payload)) < MAX_PAGE_BYTES, "market results response exceeds wire budget")
     except ValueError:
         return _error(error_response, api, "Market query data is temporarily unavailable", 503, "market_query_unavailable")
-    return json_response(payload)
+    return json_response(payload, headers=api.market_v2_cache_headers())
 
 
 async def route(api, path: str, query, json_response, error_response, dependency_call, dependency_failure_type):

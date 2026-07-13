@@ -562,6 +562,13 @@ async function useMarketV2(page) {
     const config = globalThis.StockScannerConfig || {};
     globalThis.StockScannerConfig = { ...config, marketApiVersion: "v2" };
   });
+  await page.route("**/api/runtime-config", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ schemaVersion: 1, marketScanApiVersion: "v2", edgeCacheEnabled: false }),
+    }),
+  );
 }
 
 test("paged market and market index lazy load bounded windows", async ({ page, isMobile }) => {

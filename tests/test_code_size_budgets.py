@@ -18,7 +18,7 @@ def test_current_high_churn_files_stay_within_size_budgets():
     )
     worker_health_budget = next(item for item in report["files"] if item["path"] == "cloudflare/worker_health.py")
     assert worker_budget["lines"] < 1000
-    assert worker_budget["budget"] == 880
+    assert worker_budget["budget"] == 900
     assert worker_support_budget["lines"] <= worker_support_budget["budget"]
     assert worker_observability_budget["budget"] == 200
     assert worker_observability_budget["lines"] <= worker_observability_budget["budget"]

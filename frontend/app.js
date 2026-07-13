@@ -28,7 +28,8 @@ const API_CLIENT = API_CLIENT_HELPERS.createApiClient({
   csrfHeaderName: CSRF_HEADER_NAME,
   csrfHeaderValue: CSRF_HEADER_VALUE,
 });
-const MARKET_API_VERSION = MARKET_QUERY_HELPERS.marketApiVersion();
+let MARKET_API_VERSION = MARKET_QUERY_HELPERS.marketApiVersion();
+let marketApiVersionFallbackApplied = MARKET_API_VERSION !== "v2";
 const APP_STORAGE = STORAGE_HELPERS.safeStorage();
 const MARKET_QUERY_CLIENT = MARKET_QUERY_HELPERS.createMarketQueryClient({ apiJson, storage: APP_STORAGE });
 
@@ -536,6 +537,29 @@ async function apiJson(url, options = {}) {
     throw new Error(apiErrorMessage(response, text));
   }
   return text ? JSON.parse(text) : {};
+}
+function acceptRuntimeConfig(payload) {
+  const version = payload?.marketScanApiVersion === "v2" ? "v2" : "v1";
+  MARKET_API_VERSION = version;
+  marketApiVersionFallbackApplied = version !== "v2";
+  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: version };
+  return version;
+}
+async function loadRuntimeConfig() {
+  try {
+    return acceptRuntimeConfig(await apiJson("/api/runtime-config", { method: "GET" }));
+  } catch {
+    return acceptRuntimeConfig({ marketScanApiVersion: "v1" });
+  }
+}
+function fallbackMarketApiToV1(message) {
+  if (marketApiVersionFallbackApplied) return false;
+  marketApiVersionFallbackApplied = true;
+  MARKET_API_VERSION = "v1";
+  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: "v1" };
+  MARKET_QUERY_CLIENT.clearGeneration();
+  state.marketQueryWarning = message || state.marketQueryWarning;
+  return true;
 }
 async function apiFetch(url, options = {}) {
   try {
@@ -1409,10 +1433,12 @@ async function refreshMarketQuery({ revealResults = false, refreshMode = "auto" 
   } catch (error) {
     if (error?.name === "AbortError") return state.marketIndex;
     state.marketQueryWarning = error?.message || "市場索引暫時無法載入";
+    fallbackMarketApiToV1(state.marketQueryWarning);
     if (state.marketIndex) {
       renderMarketResults();
       return state.marketIndex;
     }
+    if (MARKET_API_VERSION === "v1") return refreshMarketScan({ revealResults, refreshMode: "auto" });
     if (revealResults && target) setFormError(target, state.marketQueryWarning);
     return null;
   }
@@ -1924,6 +1950,7 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  await loadRuntimeConfig();
   await Promise.all([loadSettings(), loadCompanies()]);
   await loadAccountState();
   await loadDataStatus();
@@ -1963,6 +1990,10 @@ if (typeof module !== "undefined") {
     apiFetch,
     apiJson,
     API_CLIENT,
+    acceptRuntimeConfig,
+    loadRuntimeConfig,
+    fallbackMarketApiToV1,
+    marketApiVersion: () => MARKET_API_VERSION,
     normalizeAuthUsername,
     normalizeAuthUser,
     isSuperUserIdentity,

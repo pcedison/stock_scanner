@@ -205,6 +205,17 @@ def json_response(payload, status=200, headers=None, public_cache_seconds=0):
     )
 
 
+def public_edge_cache_headers(max_age: int, stale_while_revalidate: int, stale_if_error: int) -> dict[str, str]:
+    return {
+        "cache-control": "public, max-age=0",
+        "cloudflare-cdn-cache-control": (
+            f"public, max-age={max(0, int(max_age))}, "
+            f"stale-while-revalidate={max(0, int(stale_while_revalidate))}, "
+            f"stale-if-error={max(0, int(stale_if_error))}"
+        ),
+    }
+
+
 def text_response(content, status=200, media_type="text/plain; charset=utf-8", headers=None):
     response_headers = {"content-type": media_type, "cache-control": "no-store", **SECURITY_HEADERS}
     if headers:
@@ -572,6 +583,7 @@ __all__ = (
     "parse_cookies",
     "parse_time",
     "prepare_holding_result",
+    "public_edge_cache_headers",
     "public_user",
     "report_response",
     "runtime_environment",
