@@ -18,7 +18,7 @@ from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, AuthService, AuthUser
 from backend.services.market_query import build_market_generation
-from tests.test_cloudflare_worker import build_router_api, load_worker_module
+from tests.test_cloudflare_worker import build_router_api, load_worker_module, pin_worker_time
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "api_worker_contracts.json").read_text(encoding="utf-8"))
 
@@ -574,10 +574,11 @@ def test_market_v2_success_validation_and_generation_status_contracts_match(monk
 
 
 def test_refresh_command_worker_contract_is_additive_and_payload_bounded(monkeypatch):
-    _worker, api, _db = build_router_api(
+    worker, api, _db = build_router_api(
         monkeypatch,
         r2={"public/manifest.json": {"generatedAt": "2026-07-13T00:00:00+00:00"}},
     )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
 
     response = run_worker_fetch(
         api,
