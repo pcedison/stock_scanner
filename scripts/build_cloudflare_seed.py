@@ -331,9 +331,34 @@ def inventory_turnover_from_history(record: dict) -> float | None:
     return (float(cost) * (4 / int(quarter))) / float(inventory)
 
 
+def cached_seed_company_lookup(path: Path | None = None) -> dict[str, Company]:
+    """Load stable company metadata when live profile endpoints are unavailable."""
+    path = path or SEED_CACHE_ZIP
+    if not path.exists():
+        return {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            payload = json.loads(archive.read(f"{OFFLINE_SEED_PREFIX}companies.json").decode("utf-8"))
+    except (OSError, KeyError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile):
+        return {}
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return {}
+    companies: dict[str, Company] = {}
+    for item in items:
+        try:
+            company = Company.model_validate(item)
+        except (TypeError, ValueError):
+            continue
+        companies[company.stockCode] = company
+    return companies
+
+
 def history_seed_snapshots(settings) -> list[FundamentalSnapshot]:
-    # Build company profile lookup to enrich history records with proper industry/name data
-    company_lookup: dict[str, Company] = {c.stockCode: c for c in official_provider.list_companies()}
+    # Preserve market/name metadata from the deterministic seed when either
+    # official company-profile endpoint is temporarily unavailable.
+    company_lookup = cached_seed_company_lookup()
+    company_lookup.update({c.stockCode: c for c in official_provider.list_companies()})
 
     payload = official_provider.history_store.load()
     quarters = payload.get("quarters", {})

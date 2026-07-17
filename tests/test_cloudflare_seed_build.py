@@ -551,6 +551,38 @@ def test_manifest_declares_all_required_official_artifacts():
     )
 
 
+def test_cached_seed_company_lookup_preserves_market_metadata(tmp_path):
+    seed_zip = tmp_path / "seed.zip"
+    with zipfile.ZipFile(seed_zip, "w") as archive:
+        archive.writestr(
+            "cloudflare_seed/companies.json",
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "stockCode": "6488",
+                            "name": "GlobalWafers",
+                            "market": "TPEX",
+                            "industryName": "Semiconductor",
+                        }
+                    ]
+                }
+            ),
+        )
+
+    companies = seed_build.cached_seed_company_lookup(seed_zip)
+
+    assert companies["6488"].market == "TPEX"
+    assert companies["6488"].name == "GlobalWafers"
+
+
+def test_cached_seed_company_lookup_ignores_invalid_archive(tmp_path):
+    invalid = tmp_path / "seed.zip"
+    invalid.write_text("not a zip", encoding="utf-8")
+
+    assert seed_build.cached_seed_company_lookup(invalid) == {}
+
+
 def test_compact_scan_result_encodes_objects_and_drops_non_objects():
     encoded = seed_build.compact_scan_result(
         ObjectResult(stockCode="1234", companyName="X", status="ENTRY", summary="s", reasons=[])
