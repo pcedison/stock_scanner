@@ -86,7 +86,7 @@ jobs:
 
       - name: Set up Node.js
         if: steps.early-check.outputs.run_refresh == 'true'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -204,7 +204,7 @@ jobs:
 
       - name: Preserve R2 publication backup
         if: steps.refresh-check.outputs.run_refresh == 'true'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: r2-publication-backup-${{ github.run_id }}
           path: .tmp/r2-backup
