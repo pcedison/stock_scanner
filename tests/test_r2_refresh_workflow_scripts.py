@@ -233,7 +233,7 @@ def test_r2_refresh_leaves_migrations_to_deploy_and_recovers_orphaned_jobs():
 def test_r2_refresh_backs_up_before_publish_and_rolls_back_before_failed_job_mutation():
     workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
     backup = "python scripts/r2_publication_backup.py backup"
-    artifact = "uses: actions/upload-artifact@v6"
+    artifact = "uses: actions/upload-artifact@v7"
     publish = "python scripts/r2_publication_backup.py publish"
     verify = "python scripts/check_cloudflare_health.py"
     restore = "python scripts/r2_publication_backup.py restore"
