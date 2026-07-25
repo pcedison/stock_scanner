@@ -433,8 +433,8 @@ class OfficialDataProvider:
     def _safe_refresh_companies(self) -> None:
         try:
             self.refresh_companies()
-        except Exception:  # pragma: no cover - depends on official network availability
-            self._last_error = "official company profile refresh failed"
+        except Exception as exc:  # pragma: no cover - depends on official network availability
+            self._last_error = f"official company profile refresh failed: {exc}"
             if not self._companies:
                 self._companies = []
                 self._source_status = {**self._source_status, "companyProfiles": 0}
@@ -442,8 +442,8 @@ class OfficialDataProvider:
     def _safe_refresh_snapshots(self) -> None:
         try:
             self.refresh()
-        except Exception:  # pragma: no cover - depends on official network availability
-            self._last_error = "official snapshot refresh failed"
+        except Exception as exc:  # pragma: no cover - depends on official network availability
+            self._last_error = f"official snapshot refresh failed: {exc}"
             if not self._snapshots:
                 self._snapshots = {}
 
