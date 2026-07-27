@@ -428,7 +428,7 @@ def test_early_refresh_decision_uses_proactive_refresh_boundary(now, expected):
     assert decision["staleRefresh"] is expected
 
 
-def test_early_refresh_decision_function_default_refreshes_55_minutes_ahead():
+def test_early_refresh_decision_function_default_refreshes_79_minutes_ahead():
     decision = r2.early_refresh_decision(
         force=False,
         pending_count=0,
@@ -436,20 +436,20 @@ def test_early_refresh_decision_function_default_refreshes_55_minutes_ahead():
         health_error="",
         health_url_configured=True,
         max_cache_age_hours=36,
-        now=datetime(2026, 7, 12, 1, 5, tzinfo=UTC),
+        now=datetime(2026, 7, 12, 0, 41, tzinfo=UTC),
     )
 
     assert decision["runRefresh"] is True
     assert decision["staleRefresh"] is True
 
 
-def test_early_refresh_decision_cli_default_refreshes_55_minutes_ahead(tmp_path, capsys):
+def test_early_refresh_decision_cli_default_refreshes_79_minutes_ahead(tmp_path, capsys):
     current = datetime.now(UTC)
     health = tmp_path / "health.json"
     health.write_text(
         json.dumps(
             _health_payload(
-                next_refresh_after=(current + timedelta(minutes=55)).isoformat(),
+                next_refresh_after=(current + timedelta(minutes=79)).isoformat(),
                 checked_at=current.isoformat(),
             )
         ),

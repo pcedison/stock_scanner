@@ -130,7 +130,7 @@ def early_refresh_decision(
     health_url_configured: bool,
     max_cache_age_hours: float,
     job_check_error: str = "",
-    refresh_ahead_minutes: float = 60,
+    refresh_ahead_minutes: float = 120,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if force:
@@ -268,7 +268,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     early.add_argument("--job-check-error", default="")
     early.add_argument("--health-url-configured", action="store_true")
     early.add_argument("--max-cache-age-hours", type=float, default=36)
-    early.add_argument("--refresh-ahead-minutes", type=float, default=60)
+    early.add_argument("--refresh-ahead-minutes", type=float, default=120)
     early.add_argument("--github-output", type=Path)
     early.add_argument("--github-step-summary", type=Path)
     early.set_defaults(func=run_early_check)

@@ -264,7 +264,7 @@ def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
 
     assert _workflow_schedule_crons(r2_path) == ["7,22,37,52 * * * *"]
     assert _workflow_schedule_crons(health_path) == ["11,41 * * * *"]
-    assert "--refresh-ahead-minutes 60" in r2_workflow
+    assert "--refresh-ahead-minutes 120" in r2_workflow
     assert "--job-check-error" in r2_workflow
     assert "--max-refresh-delay-minutes 15" in health_workflow
     assert "steps.early-check.outputs.stale_refresh" in r2_workflow
