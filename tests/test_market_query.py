@@ -5,17 +5,16 @@ import re
 
 import pytest
 
-import backend.services.market_query as market_query
-from backend.services.market_query import (
-    CATEGORIES,
-    DISCLOSURES,
-    MAX_INDEX_BYTES,
-    MAX_PAGE_BYTES,
-    PAGE_SIZE,
-    build_market_generation,
-    canonical_json_bytes,
-    query_market_generation,
-)
+from backend.services import market_query
+
+CATEGORIES = market_query.CATEGORIES
+DISCLOSURES = market_query.DISCLOSURES
+MAX_INDEX_BYTES = market_query.MAX_INDEX_BYTES
+MAX_PAGE_BYTES = market_query.MAX_PAGE_BYTES
+PAGE_SIZE = market_query.PAGE_SIZE
+build_market_generation = market_query.build_market_generation
+canonical_json_bytes = market_query.canonical_json_bytes
+query_market_generation = market_query.query_market_generation
 
 
 def _reason(code: str, message: str, *, severity: str = "INFO") -> dict:

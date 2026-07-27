@@ -68,8 +68,7 @@ class RefreshJobReadBackError(RuntimeError):
 
 class RefreshCooldownError(RateLimitError):
     def __init__(self, retry_after_seconds: int):
-        self.retry_after_seconds = max(1, int(retry_after_seconds))
-        Exception.__init__(self, "Market refresh is cooling down; try again later.")
+        super().__init__(max(1, int(retry_after_seconds)), "Market refresh is cooling down; try again later.")
 
 
 def normalize_idempotency_key(value: str | None) -> str | None:
