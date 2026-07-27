@@ -9,16 +9,19 @@ from pathlib import Path
 
 import pytest
 
-import scripts.validate_cloudflare_seed_inputs as validator_module
-from backend.services.market_query import MAX_INDEX_BYTES, MAX_PAGE_BYTES, build_market_generation, canonical_json_bytes
-from scripts.validate_cloudflare_seed_inputs import (
-    _load_json_from_zip,
-    failed_company_summary,
-    main,
-    render_seed_summary,
-    validate_seed_freshness,
-    validate_seed_zip,
-)
+from backend.services import market_query
+from scripts import validate_cloudflare_seed_inputs as validator_module
+
+MAX_INDEX_BYTES = market_query.MAX_INDEX_BYTES
+MAX_PAGE_BYTES = market_query.MAX_PAGE_BYTES
+build_market_generation = market_query.build_market_generation
+canonical_json_bytes = market_query.canonical_json_bytes
+_load_json_from_zip = validator_module._load_json_from_zip
+failed_company_summary = validator_module.failed_company_summary
+main = validator_module.main
+render_seed_summary = validator_module.render_seed_summary
+validate_seed_freshness = validator_module.validate_seed_freshness
+validate_seed_zip = validator_module.validate_seed_zip
 
 TEST_SEED_COMPANIES = 1700
 _SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")

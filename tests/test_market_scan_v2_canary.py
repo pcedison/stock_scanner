@@ -120,7 +120,7 @@ class FakeClient:
 
 
 def test_canary_validates_v1_v2_parity_hashes_generations_and_no_store(monkeypatch):
-    monkeypatch.setattr(canary, "PublicClient", lambda base_url, timeout_seconds: FakeClient(base_url, timeout_seconds))
+    monkeypatch.setattr(canary, "PublicClient", FakeClient)
 
     summary = canary.run_canary(base_url="https://worker.example")
 

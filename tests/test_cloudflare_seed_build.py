@@ -33,7 +33,7 @@ def _market_companies(twse: int = 1000, tpex: int = 700) -> list[Company]:
     ]
 
 
-def _v2_scan_fixture() -> dict:
+def _v2_scan_fixture(_settings=None) -> dict:
     announced_reason = {
         "code": "OFFICIAL_Q",
         "title": "official quarter",
@@ -525,7 +525,7 @@ def test_live_seed_main_writes_v2_generation_and_manifest_fields(tmp_path, monke
     monkeypatch.setattr(seed_build, "HOLDING_ANALYSIS_SHARD_DIR", output / "holding_analysis_shards")
     monkeypatch.setattr(seed_build, "SEED_CACHE_ZIP", no_cache)
     monkeypatch.setattr(seed_build, "load_settings", lambda: SimpleNamespace())
-    monkeypatch.setattr(seed_build, "_scan_market_payload", lambda settings: _v2_scan_fixture())
+    monkeypatch.setattr(seed_build, "_scan_market_payload", _v2_scan_fixture)
     monkeypatch.setattr(seed_build, "refresh_policy", lambda: {"minIntervalSeconds": 3600})
     monkeypatch.setattr(seed_build, "official_provider", EmptyOfficialProvider())
     monkeypatch.setattr(seed_build, "history_seed_snapshots", lambda settings: [])

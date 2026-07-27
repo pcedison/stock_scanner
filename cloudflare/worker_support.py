@@ -115,9 +115,9 @@ class ValidationError(Exception):
 
 
 class RateLimitError(Exception):
-    def __init__(self, retry_after_seconds: int):
+    def __init__(self, retry_after_seconds: int, message: str = "登入嘗試過多，請稍後再試。"):
         self.retry_after_seconds = retry_after_seconds
-        super().__init__("登入嘗試過多，請稍後再試。")
+        super().__init__(message)
 
 
 def utc_now() -> str:
