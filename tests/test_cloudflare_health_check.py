@@ -83,6 +83,26 @@ def test_validate_health_payload_accepts_policy_stale_inside_grace():
     assert summary["refreshDelayMinutes"] == pytest.approx(7.2)
 
 
+def test_deployment_grace_accepts_delayed_refresh_below_hard_age_ceiling():
+    payload = _healthy_health_payload()
+    payload["status"] = "degraded"
+    payload["cache"]["generatedAt"] = "2026-07-26T21:22:00+00:00"
+    payload["cache"]["sourceLastCheckedAt"] = "2026-07-26T21:22:00+00:00"
+    payload["cacheStatus"] = {
+        "isStale": True,
+        "nextRefreshAfter": "2026-07-27T06:48:04+00:00",
+    }
+
+    summary = validate_health_payload(
+        payload,
+        max_cache_age_hours=36,
+        max_refresh_delay_minutes=1440,
+        now=datetime(2026, 7, 27, 8, 7, 22, tzinfo=UTC),
+    )
+
+    assert summary["refreshDelayMinutes"] == pytest.approx(79.3)
+
+
 def test_validate_health_payload_accepts_exact_grace_boundary():
     payload = _healthy_health_payload()
     payload["status"] = "degraded"
