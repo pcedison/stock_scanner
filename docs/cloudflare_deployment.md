@@ -54,14 +54,17 @@ The committed production config is intentionally conservative. Cron dispatch, v2
 4. Run Worker dry-run to validate the Cloudflare Python Worker bundle boundary.
 5. Run local Worker runtime smoke.
 6. Install the Playwright Chromium browser and run browser smoke tests.
-7. Export a D1 backup artifact before migrations.
-8. Apply pending D1 migrations from `cloudflare/migrations/`.
-9. Deploy Worker and Pages.
-10. Verify deployed `/api/health` freshness.
-11. Verify Worker CORS for `https://stock-scanner-beta.pages.dev`, including the POST preflight used by the browser fallback.
-12. Run deployed public smoke against the Worker `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
-13. Verify `https://stock-scanner-beta.pages.dev/api/health` returns the healthy Worker JSON through the status-preserving Pages proxy.
-14. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
+7. Before any production mutation, reject bad-quality, offline, financially blocked, or more than 36-hour-old production cache data.
+8. Export a D1 backup artifact before migrations.
+9. Apply pending D1 migrations from `cloudflare/migrations/`.
+10. Deploy Worker and Pages.
+11. Verify deployed `/api/health` data safety.
+12. Verify Worker CORS for `https://stock-scanner-beta.pages.dev`, including the POST preflight used by the browser fallback.
+13. Run deployed public smoke against the Worker `/api/health`, `/api/app-status`, and `/api/data-sources/status`.
+14. Verify `https://stock-scanner-beta.pages.dev/api/health` returns the healthy Worker JSON through the status-preserving Pages proxy.
+15. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
+
+Deployment and refresh use different failure budgets. The R2 refresh workflow and health monitor enforce the routine refresh deadline (including the monitor's 15-minute delay limit). Deployment allows up to 1,440 minutes after `nextRefreshAfter`, while independently enforcing the 36-hour absolute cache-age ceiling and all quality gates. Since the routine cache interval is 12 hours, these limits converge at the same 36-hour hard ceiling. This prevents delayed GitHub scheduled runs from rolling back unrelated application releases without allowing truly stale production data.
 
 D1 restore remains an operator-reviewed recovery action. Generate a non-destructive plan with:
 

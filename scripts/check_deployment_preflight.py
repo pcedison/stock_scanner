@@ -119,6 +119,7 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "post-deploy remote smoke": r"scripts/run_remote_smoke\.py",
         "Pages API redirect check": r"scripts/check_pages_api_redirect\.py[\s\S]*https://\$\{CF_PAGES_PROJECT\}\.pages\.dev/api/health",
         "post-deploy freshness gate": r"--max-cache-age-hours",
+        "deployment refresh-delay isolation": r"--max-refresh-delay-minutes\s+1440",
         "offline seed rejection": r"--reject-offline-seed",
         "Worker super user secret check": r"check_cloudflare_worker_secrets\.py.*SUPER_USER_USERNAME",
         "rollback": r"wrangler rollback",
@@ -128,6 +129,11 @@ def validate_deploy_workflow(workflow_path: Path = DEFAULT_DEPLOY_WORKFLOW) -> l
         "medium static security scan": r"bandit .*--severity-level medium",
         "Pages production metadata guard": r"check_pages_frontend\.py[\s\S]*--project[\s\S]*--expected-branch[\s\S]*--expected-source",
         "Pages API proxy check": r"scripts/check_pages_api_redirect\.py[\s\S]*\.pages\.dev/api/health",
+        "pre-mutation production data safety gate": (
+            r"Verify production data safety before mutations[\s\S]*"
+            r"check_cloudflare_health\.py[\s\S]*"
+            r"Export D1 backup before migrations"
+        ),
     }
     for label, pattern in required_patterns.items():
         if not re.search(pattern, text):

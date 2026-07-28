@@ -111,6 +111,18 @@ jobs:
       - name: Verify Worker secret bindings
         run: python scripts/check_cloudflare_worker_secrets.py --config cloudflare/wrangler.toml SUPER_USER_USERNAME
 
+      - name: Verify production data safety before mutations
+        run: |
+          if [ -z "$CF_WORKER_HEALTH_URL" ]; then
+            echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
+            exit 1
+          fi
+          python scripts/check_cloudflare_health.py \
+            --url "$CF_WORKER_HEALTH_URL" \
+            --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 1440 \
+            --reject-offline-seed
+
       - name: Export D1 backup before migrations
         run: |
           mkdir -p .tmp/d1-backups
@@ -158,6 +170,7 @@ jobs:
           python scripts/check_cloudflare_health.py \
             --url "$CF_WORKER_HEALTH_URL" \
             --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 1440 \
             --reject-offline-seed
 
       - name: Verify deployed Worker CORS for Pages fallback
@@ -171,6 +184,7 @@ jobs:
           python scripts/run_remote_smoke.py \
             --health-url "$CF_WORKER_HEALTH_URL" \
             --max-cache-age-hours 36 \
+            --max-refresh-delay-minutes 1440 \
             --reject-offline-seed
 
       - name: Verify deployed Pages API proxy
