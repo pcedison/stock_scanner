@@ -4,7 +4,7 @@
 #
 #    pip-compile --output-file=constraints.txt --strip-extras requirements.txt
 #
-annotated-doc==0.0.4
+annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
@@ -29,7 +29,7 @@ colorama==0.4.6
     #   click
     #   pytest
     #   uvicorn
-fastapi==0.140.0
+fastapi==0.141.1
     # via -r requirements.txt
 h11==0.16.0
     # via
@@ -88,9 +88,9 @@ urllib3==2.7.0
     # via requests
 uvloop==0.22.1 ; sys_platform != "win32" and sys_platform != "cygwin"
     # via uvicorn
-uvicorn==0.51.0
+uvicorn==0.52.0
     # via -r requirements.txt
 watchfiles==1.2.0
     # via uvicorn
-websockets==16.1.1
+websockets==17.0
     # via uvicorn
