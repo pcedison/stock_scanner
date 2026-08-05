@@ -21,6 +21,8 @@ permissions:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
+    # Private repository scans run only after GitHub Code Security is licensed and enabled.
+    if: ${{ github.event.repository.private == false || vars.CODEQL_PRIVATE_ANALYSIS_LICENSED == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
