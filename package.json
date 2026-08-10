@@ -10,9 +10,9 @@
     "@playwright/test": "^1.62.1",
     "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.8.0",
+    "globals": "^17.9.0",
     "prettier": "^3.9.6",
-    "wrangler": "^4.116.0"
+    "wrangler": "^4.119.0"
   },
   "overrides": {
     "ws": "8.21.0",
