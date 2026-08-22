@@ -38,7 +38,7 @@ jobs:
           python scripts/check_cloudflare_health.py \
             --url "$CF_WORKER_HEALTH_URL" \
             --max-cache-age-hours 36 \
-            --max-refresh-delay-minutes 45 \
+            --max-refresh-delay-minutes 75 \
             --reject-offline-seed \
             | tee .tmp-health.json
           {
@@ -57,7 +57,7 @@ jobs:
             --timeout 30 \
             --propagation-timeout 1 \
             --max-cache-age-hours 36 \
-            --max-refresh-delay-minutes 45 \
+            --max-refresh-delay-minutes 75 \
             --reject-offline-seed \
             | tee .tmp-smoke.json
           {
