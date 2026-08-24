@@ -1,6 +1,6 @@
 # 開發/CI 用工具依賴（非執行期）。執行期依賴仍由 requirements.txt + constraints.txt 管理。
 # 版本釘死以確保本地與 CI 的 lint/型別檢查結果一致。
-ruff==0.16.3
-mypy==2.3.0
+ruff==0.16.4
+mypy==2.3.1
 pytest-cov==7.1.0
-types-PyYAML==6.0.12.20260724
+types-PyYAML==6.0.12.20260815

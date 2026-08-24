@@ -20,7 +20,7 @@ certifi==2026.7.22
     #   httpcore
     #   httpx
     #   requests
-charset-normalizer==3.5.0
+charset-normalizer==3.5.1
     # via requests
 click==8.4.2
     # via uvicorn
@@ -41,7 +41,7 @@ httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via -r requirements.txt
-idna==3.18
+idna==3.19
     # via
     #   anyio
     #   httpx
@@ -58,11 +58,11 @@ pydantic==2.13.4
     #   fastapi
 pydantic-core==2.46.4
     # via pydantic
-pygments==2.20.0
+pygments==2.21.0
     # via pytest
 pytest==9.1.1
     # via -r requirements.txt
-python-dotenv==1.2.2
+python-dotenv==1.2.3
     # via uvicorn
 pyyaml==6.0.3
     # via uvicorn
@@ -88,7 +88,7 @@ urllib3==2.7.0
     # via requests
 uvloop==0.22.1 ; sys_platform != "win32" and sys_platform != "cygwin"
     # via uvicorn
-uvicorn==0.52.3
+uvicorn==0.52.4
     # via -r requirements.txt
 watchfiles==1.2.0
     # via uvicorn
