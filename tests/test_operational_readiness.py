@@ -18,6 +18,12 @@ REQUIRED_HEALTH_OPTIONS = (
     ("--max-refresh-delay-minutes", "15"),
     ("--max-cache-age-hours", "36"),
 )
+# The standalone monitor polls every 4 hours, so it tolerates a longer refresh delay
+# than the R2 refresh workflow, which enforces the routine 15-minute SLA itself.
+HEALTH_MONITOR_OPTIONS = (
+    ("--max-refresh-delay-minutes", "75"),
+    ("--max-cache-age-hours", "36"),
+)
 
 
 def _workflow_python_commands(workflow_text: str) -> list[list[str]]:
@@ -45,10 +51,10 @@ def _workflow_python_commands(workflow_text: str) -> list[list[str]]:
     return commands
 
 
-def _assert_health_command_options(command: list[str]) -> None:
+def _assert_health_command_options(command: list[str], required_options=REQUIRED_HEALTH_OPTIONS) -> None:
     assert command[:1] == ["python"]
     assert command[1] in HEALTH_CHECK_PATHS
-    for option, value in REQUIRED_HEALTH_OPTIONS:
+    for option, value in required_options:
         option_indexes = [index for index, token in enumerate(command) if token == option]
         assert len(option_indexes) == 1
         option_index = option_indexes[0]
@@ -154,15 +160,15 @@ def test_local_operational_readiness_accepts_current_guardrails():
 
 def test_health_workflows_configure_refresh_grace_and_cache_age_ceiling():
     workflows = (
-        (Path(".github/workflows/cloudflare-health-monitor.yml"), 2),
-        (Path(".github/workflows/cloudflare-r2-seed-refresh.yml"), 3),
+        (Path(".github/workflows/cloudflare-health-monitor.yml"), 2, HEALTH_MONITOR_OPTIONS),
+        (Path(".github/workflows/cloudflare-r2-seed-refresh.yml"), 3, REQUIRED_HEALTH_OPTIONS),
     )
 
-    for path, expected_count in workflows:
+    for path, expected_count, required_options in workflows:
         commands = _workflow_python_commands(path.read_text(encoding="utf-8"))
         assert len(commands) == expected_count
         for command in commands:
-            _assert_health_command_options(command)
+            _assert_health_command_options(command, required_options)
 
 
 def test_authoritative_refresh_check_carries_early_stale_evidence_into_final_or():

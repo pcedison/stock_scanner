@@ -90,3 +90,66 @@ def test_hydration_rejects_non_consecutive_latest_history_without_clobbering_che
         hydration.hydrate_seed_inputs(data_dir, None, min_consecutive_companies=1)
 
     assert json.loads((data_dir / "monthly_revenue_history.json").read_text(encoding="utf-8")) == checkout
+
+
+def test_hydration_keeps_r2_persisted_fundamentals_history_over_zip_snapshot(tmp_path):
+    data_dir = tmp_path / "data"
+    _write_seed_zip(
+        data_dir / "official_cache_seed_2026-05-14.zip",
+        _history("2026-05-25T00:00:00+00:00", {"1101": {"2026-04": {}, "2026-05": {}}}),
+    )
+    r2_fundamentals = tmp_path / "r2-fundamentals.json"
+    _write_json(r2_fundamentals, {"quarters": {"1101": {"2026Q1": {}, "2025Q2": {"eps": 0.07}, "2026Q2": {}}}})
+    r2_progress = tmp_path / "r2-progress.json"
+    _write_json(r2_progress, {"runKey": "2026Q2:5:strategy", "completedCompanies": ["1101"]})
+
+    summary = hydration.hydrate_seed_inputs(
+        data_dir,
+        None,
+        min_consecutive_companies=1,
+        r2_fundamentals_history_path=r2_fundamentals,
+        r2_backfill_progress_path=r2_progress,
+    )
+
+    history = json.loads((data_dir / "official_fundamentals_history.json").read_text(encoding="utf-8"))
+    assert history["quarters"]["1101"]["2025Q2"]["eps"] == 0.07
+    progress = json.loads((data_dir / "official_history_backfill_progress.json").read_text(encoding="utf-8"))
+    assert progress["runKey"] == "2026Q2:5:strategy"
+    assert summary["officialSources"] == {
+        "official_fundamentals_history.json": "r2",
+        "official_history_backfill_progress.json": "r2",
+    }
+
+
+def test_hydration_falls_back_to_zip_when_r2_fundamentals_missing_or_smaller(tmp_path):
+    data_dir = tmp_path / "data"
+    _write_seed_zip(
+        data_dir / "official_cache_seed_2026-05-14.zip",
+        _history("2026-05-25T00:00:00+00:00", {"1101": {"2026-04": {}, "2026-05": {}}}),
+    )
+    missing = hydration.hydrate_seed_inputs(
+        data_dir,
+        None,
+        min_consecutive_companies=1,
+        r2_fundamentals_history_path=tmp_path / "nope.json",
+        r2_backfill_progress_path=tmp_path / "nope-progress.json",
+    )
+    assert missing["officialSources"]["official_fundamentals_history.json"] == "zip"
+
+    truncated = tmp_path / "r2-truncated.json"
+    _write_json(truncated, {"quarters": {}})
+    corrupt_progress = tmp_path / "r2-progress.json"
+    corrupt_progress.write_text("{not json", encoding="utf-8")
+    smaller = hydration.hydrate_seed_inputs(
+        data_dir,
+        None,
+        min_consecutive_companies=1,
+        r2_fundamentals_history_path=truncated,
+        r2_backfill_progress_path=corrupt_progress,
+    )
+    assert smaller["officialSources"] == {
+        "official_fundamentals_history.json": "zip",
+        "official_history_backfill_progress.json": "zip",
+    }
+    history = json.loads((data_dir / "official_fundamentals_history.json").read_text(encoding="utf-8"))
+    assert history["quarters"]["1101"] == {"2026Q1": {}}

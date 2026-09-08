@@ -1994,7 +1994,6 @@ def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(
                 "stockCode": "2330",
                 "status": "ENTRY",
                 "summary": "last good",
-                "internalOnly": "must be compacted",
             }
         ],
         "watch": [{"stockCode": "2454", "status": "WATCH", "summary": "observe"}],
@@ -2027,7 +2026,7 @@ def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(
     assert response.init["status"] == 200
     for category in ("entry", "watch", "excluded"):
         assert payload[category] == expected_get[category]
-    assert "internalOnly" not in payload["entry"][0]
+    assert payload["detailMode"] == "summary"
     assert payload["cacheStatus"]["refreshStatus"] == "unavailable"
     assert payload["cacheStatus"]["retryable"] is retryable
     assert payload["cacheStatus"]["requestId"] == response.headers["x-request-id"]
@@ -3271,3 +3270,57 @@ def test_worker_require_auth_attempt_allowed_clears_expired_lock(monkeypatch):
     })
     asyncio.run(api.require_auth_attempt_allowed("u@example.com", request))
     assert db.auth_attempts == []
+
+
+def test_worker_scan_market_get_streams_summary_without_reparsing(monkeypatch):
+    """The legacy v1 payload must not be JSON-decoded inside the Worker (resource limits)."""
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    raw = '{"generatedAt":"2026-02-19T00:00:00+00:00","entry":[{"stockCode":"2330","status":"ENTRY"}],"watch":[],"excluded":[]}'
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    api.env.CACHE.objects["public/market_scan_summary.json"] = FakeR2Object(raw)
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("market summary must not be JSON-decoded in the Worker")
+
+    monkeypatch.setattr(worker, "compact_market_scan", explode)
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert payload["entry"][0]["stockCode"] == "2330"
+    assert payload["detailMode"] == "summary"
+    assert payload["cacheStatus"]["source"] == "cloudflare_r2"
+
+
+def test_worker_scan_market_get_falls_back_when_summary_missing_or_malformed(monkeypatch):
+    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    missing = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
+    assert missing["entry"] == [] and missing["detailMode"] == "summary"
+    assert missing["cacheStatus"]["source"] == "cloudflare_r2"
+
+    api.env.CACHE.objects["public/market_scan_summary.json"] = FakeR2Object("not json at all")
+    api._r2_cache.clear()
+    malformed = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
+    assert malformed["entry"] == [] and malformed["detailMode"] == "summary"
+
+
+def test_splice_market_summary_helper():
+    from cloudflare.worker_market_legacy import looks_like_market_scan_text, splice_market_summary
+
+    status = {"isStale": False}
+    assert json.loads(splice_market_summary('{"entry":[]}', status)) == {
+        "entry": [],
+        "detailMode": "summary",
+        "cacheStatus": status,
+    }
+    assert json.loads(splice_market_summary("{}", status)) == {"detailMode": "summary", "cacheStatus": status}
+    assert json.loads(splice_market_summary('  {"a":1}\n', status))["a"] == 1
+    assert splice_market_summary(None, status) is None
+    assert splice_market_summary("[]", status) is None
+    assert splice_market_summary('{"entry":[]}', status, max_bytes=4) is None
+    assert looks_like_market_scan_text('{"entry":[],"watch":[],"excluded":[]}') is True
+    assert looks_like_market_scan_text('{"entry":[]}') is False
+    assert looks_like_market_scan_text('{"entry":[],"watch":[],"excluded":"not-a-list"}') is False
+    assert looks_like_market_scan_text(None) is False

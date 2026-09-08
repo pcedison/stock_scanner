@@ -112,6 +112,61 @@ def monthly_history_coverage(history: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _quarter_row_count(history: Any) -> int:
+    quarters = history.get("quarters") if isinstance(history, dict) else None
+    if not isinstance(quarters, dict):
+        return -1
+    return sum(len(records) for records in quarters.values() if isinstance(records, dict))
+
+
+def _read_json_bytes(path: Path | None) -> bytes | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def select_official_fundamentals_payloads(
+    zip_payloads: dict[str, bytes],
+    r2_fundamentals: Path | None,
+    r2_progress: Path | None,
+) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Prefer the R2-persisted quarterly fundamentals history over the committed zip snapshot.
+
+    Every scheduled refresh used to re-extract the committed seed zip, which reset the
+    quarterly history to the snapshot date and discarded any backfilled prior-year
+    quarters, so EPS/net-income YoY rules never had the comparison period after the
+    filing window advanced. The R2 copy is only used when it parses and covers at
+    least as many quarter rows as the zip snapshot.
+    """
+    selected = dict(zip_payloads)
+    sources = dict.fromkeys(zip_payloads, "zip")
+    history_name, progress_name = REQUIRED_OFFICIAL_ENTRIES
+    zip_history_rows = _quarter_row_count(_parse_json(zip_payloads.get(history_name)))
+    r2_history_raw = _read_json_bytes(r2_fundamentals)
+    r2_history = _parse_json(r2_history_raw)
+    if r2_history_raw is not None and _quarter_row_count(r2_history) >= max(zip_history_rows, 0):
+        selected[history_name] = r2_history_raw
+        sources[history_name] = "r2"
+        progress_raw = _read_json_bytes(r2_progress)
+        progress = _parse_json(progress_raw)
+        if progress_raw is not None and isinstance(progress, dict) and progress.get("runKey"):
+            selected[progress_name] = progress_raw
+            sources[progress_name] = "r2"
+    return selected, sources
+
+
+def _parse_json(raw: bytes | None) -> Any:
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+
+
 def _atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -131,6 +186,8 @@ def hydrate_seed_inputs(
     *,
     min_consecutive_companies: int = 1000,
     extract_official: bool = True,
+    r2_fundamentals_history_path: Path | None = None,
+    r2_backfill_progress_path: Path | None = None,
 ) -> dict[str, Any]:
     seed_zip = resolve_seed_zip(data_dir)
     checkout_history = _read_history(data_dir / MONTHLY_HISTORY_ENTRY)
@@ -163,8 +220,12 @@ def hydrate_seed_inputs(
             f"minimum is {min_consecutive_companies}"
         )
 
+    official_sources: dict[str, str] = {}
     if extract_official:
-        for name, raw in required_payloads.items():
+        selected, official_sources = select_official_fundamentals_payloads(
+            required_payloads, r2_fundamentals_history_path, r2_backfill_progress_path
+        )
+        for name, raw in selected.items():
             _atomic_write(data_dir / name, raw)
     encoded = json.dumps(merged, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     _atomic_write(data_dir / MONTHLY_HISTORY_ENTRY, encoded)
@@ -173,6 +234,7 @@ def hydrate_seed_inputs(
         "seedZip": seed_zip.name,
         "historySources": len(histories),
         "ignoredOptionalCandidates": ignored_optional,
+        "officialSources": official_sources,
     }
 
 
@@ -180,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Hydrate and merge persistent Cloudflare seed inputs")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--r2-history", type=Path)
+    parser.add_argument("--r2-fundamentals-history", type=Path)
+    parser.add_argument("--r2-backfill-progress", type=Path)
     parser.add_argument("--min-consecutive-companies", type=int, default=1000)
     parser.add_argument("--skip-official-extract", action="store_true")
     args = parser.parse_args(argv)
@@ -188,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
         args.r2_history,
         min_consecutive_companies=args.min_consecutive_companies,
         extract_official=not args.skip_official_extract,
+        r2_fundamentals_history_path=args.r2_fundamentals_history,
+        r2_backfill_progress_path=args.r2_backfill_progress,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0

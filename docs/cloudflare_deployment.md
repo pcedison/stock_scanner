@@ -34,15 +34,15 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 
 - `APP_ENV = "production"`
 - `APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"`
-- `MARKET_SCAN_API_VERSION = "v1"`
-- `EDGE_CACHE_ENABLED = "false"`
+- `MARKET_SCAN_API_VERSION = "v2"`
+- `EDGE_CACHE_ENABLED = "true"`
 - `[cache].enabled = false`
 - `[triggers].crons = []`
 - `GITHUB_DISPATCH_ENABLED = "false"`
 
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
 
-The committed production config is intentionally conservative. Cron dispatch, v2 market reads, and Worker cache are enabled only through generated full configs from `scripts/render_wrangler_release_config.py`; do not hand-edit production release switches in `cloudflare/wrangler.toml`.
+The committed production config serves paginated v2 market reads with edge cache headers: the legacy v1 `GET /api/scan/market` payload (several MB) exhausted Python Worker resource limits in production (2026-09), so v1 is kept only as a streamed pass-through fallback for stale clients. Cron dispatch and the Worker `[cache]` binding are still enabled only through generated full configs from `scripts/render_wrangler_release_config.py`; do not hand-edit production release switches in `cloudflare/wrangler.toml`.
 
 ## Deploy Flow
 
@@ -97,13 +97,14 @@ This keeps production deploys deterministic while preventing the committed seed 
 1. Poll D1 `refresh_jobs` for queued or running `market_scan` jobs and check deployed `/api/health` freshness.
 2. Stop without touching R2 when no job is queued and the production seed is fresh, unless the workflow is manually forced.
 3. Mark queued jobs as `running`.
-4. Download the previous R2 `official/monthly_revenue_history.json`, then merge it atomically with the committed seed through `scripts/hydrate_cloudflare_seed_inputs.py`.
-5. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
-6. Reject publication when fewer than 1,000 companies have consecutive revenue months or when more than 10% of scan rows lack the X2 previous-month signal.
-7. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with freshness, monthly-history, universe, and analysis gates.
-8. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and required official cache artifacts to R2.
-9. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
-10. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
+4. Download the previous R2 `official/monthly_revenue_history.json`, `official/official_fundamentals_history.json`, and `official/official_history_backfill_progress.json`, then merge them with the committed seed through `scripts/hydrate_cloudflare_seed_inputs.py` (the R2 quarterly history wins over the zip snapshot so backfilled prior-year quarters persist across runs).
+5. Backfill prior-year same-quarter fundamentals from MOPS with `python -m backend.services.official_history_backfill --retry-failed` (bounded by `OFFICIAL_HISTORY_BACKFILL_LIMIT`, 400 on schedule / `backfill_limit` input on manual runs). This supplies the EPS and net-income YoY inputs for the X3–X5 rules; a MOPS outage degrades those rules to INSUFFICIENT_DATA instead of blocking the refresh.
+6. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
+7. Reject publication when fewer than 1,000 companies have consecutive revenue months or when more than 10% of scan rows lack the X2 previous-month signal.
+8. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with freshness, monthly-history, universe, and analysis gates.
+9. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and required official cache artifacts to R2.
+10. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
+11. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
 
 The workflow shares the `cloudflare-production` concurrency group with production deploys so R2 seed uploads do not race with a deploy. When the Worker queues a D1 `market_scan` refresh job, this workflow performs the actual seed rebuild and R2 update on the next run.
 Seed artifact Git policy is documented in `docs/seed_artifact_policy.md`; routine refresh output belongs in R2, and new committed seed zips require an explicit forced add and review note.

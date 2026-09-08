@@ -82,7 +82,11 @@ def make_worker_api(worker):
     async def fake_get_settings():
         return ScannerSettings(use_mock_data=True).model_dump()
 
+    async def fake_r2_text(key):
+        return None
+
     api.r2_json = fake_r2_json
+    api.r2_text = fake_r2_text
     api.get_settings = fake_get_settings
     return api
 

@@ -178,7 +178,7 @@ def test_r2_refresh_restores_persisted_monthly_history_before_build():
     assert hydrate_command in workflow
     assert workflow.index(get_command) < workflow.index(hydrate_command) < workflow.index(build_command)
     assert "unzip -o" not in workflow
-    assert len(workflow.splitlines()) <= 260
+    assert len(workflow.splitlines()) <= 300
 
 
 def test_production_workflows_restrict_release_refs_and_r2_uses_environment():
@@ -760,3 +760,35 @@ def test_exact_cloudflare_zero_pending_response_remains_a_successful_skip(tmp_pa
     assert decision["runRefresh"] is False
     assert decision["staleRefresh"] is False
     assert "run_refresh=false" in output.read_text(encoding="utf-8")
+
+
+def test_r2_refresh_persists_quarterly_fundamentals_and_backfills_before_build():
+    workflow = Path(".github/workflows/cloudflare-r2-seed-refresh.yml").read_text(encoding="utf-8")
+    history_get = 'r2 object get "$CF_R2_BUCKET/official/official_fundamentals_history.json"'
+    progress_get = 'r2 object get "$CF_R2_BUCKET/official/official_history_backfill_progress.json"'
+    hydrate_command = "python scripts/hydrate_cloudflare_seed_inputs.py"
+    backfill_command = "python -m backend.services.official_history_backfill"
+    build_command = "CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py"
+
+    assert history_get in workflow and progress_get in workflow
+    assert "--r2-fundamentals-history" in workflow and "--r2-backfill-progress" in workflow
+    assert "--retry-failed" in workflow
+    assert workflow.index(history_get) < workflow.index(hydrate_command)
+    assert workflow.index(hydrate_command) < workflow.index(backfill_command) < workflow.index(build_command)
+    # A MOPS outage must degrade the scan, not block publication of fresh revenue data.
+    backfill_block = workflow[workflow.index(backfill_command) : workflow.index(build_command)]
+    assert "|| echo" in backfill_block
+    assert "OFFICIAL_HISTORY_BACKFILL_LIMIT" in workflow
+
+
+def test_backfill_summary_markdown_handles_missing_and_complete_payloads(tmp_path, capsys):
+    assert r2.backfill_summary_markdown(None) == "Official history backfill: no result recorded."
+    text = r2.backfill_summary_markdown(
+        {"requestedCompanies": 3, "backfilledCompanies": 2, "failedCompanies": 1, "periods": ["2026Q2", "2025Q2"], "completed": True}
+    )
+    assert text.startswith("Official history backfill (complete; periods 2026Q2, 2025Q2)")
+    assert "requested 3" in text and "failed 1" in text
+
+    missing = tmp_path / "missing.json"
+    assert r2.main(["backfill-summary", "--json-file", str(missing)]) == 0
+    assert "no result recorded" in capsys.readouterr().out

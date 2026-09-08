@@ -250,6 +250,39 @@ def run_early_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def backfill_summary_markdown(payload: object) -> str:
+    """Render a short Markdown summary of an official history backfill result."""
+    if not isinstance(payload, dict):
+        return "Official history backfill: no result recorded."
+    counts = ", ".join(
+        f"{label} {int(payload.get(key) or 0)}"
+        for key, label in (
+            ("requestedCompanies", "requested"),
+            ("backfilledCompanies", "backfilled"),
+            ("skippedCompanies", "skipped"),
+            ("failedCompanies", "failed"),
+            ("pendingCompanies", "pending"),
+            ("incomeRows", "income rows"),
+            ("balanceRows", "balance rows"),
+        )
+    )
+    periods = payload.get("periods")
+    period_text = ", ".join(str(item) for item in periods) if isinstance(periods, list) and periods else "n/a"
+    status = "complete" if payload.get("completed") else "in progress"
+    return f"Official history backfill ({status}; periods {period_text}): {counts}."
+
+
+def run_backfill_summary(args: argparse.Namespace) -> int:
+    payload = None
+    if args.json_file is not None and args.json_file.exists():
+        try:
+            payload = json.loads(args.json_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+    print(backfill_summary_markdown(payload))
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Make testable decisions for the Cloudflare R2 seed refresh workflow.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -272,6 +305,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     early.add_argument("--github-output", type=Path)
     early.add_argument("--github-step-summary", type=Path)
     early.set_defaults(func=run_early_check)
+
+    backfill = subparsers.add_parser("backfill-summary", help="Summarize an official history backfill result as Markdown.")
+    backfill.add_argument("--json-file", type=Path)
+    backfill.set_defaults(func=run_backfill_summary)
 
     return parser.parse_args(argv)
 

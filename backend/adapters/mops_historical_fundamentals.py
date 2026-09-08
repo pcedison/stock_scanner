@@ -79,6 +79,15 @@ def _parse_mops_income_title(text: str) -> tuple[int, int] | None:
     return _parse_income_period(normalized)
 
 
+def _is_single_quarter_income_title(text: str) -> bool:
+    """MOPS Q2/Q3 statements carry both a 3-month "第N季" column and a year-to-date
+    "MM月DD日至MM月DD日" column for the same period. The scanner's history (Q1 ranges,
+    annual "年度" columns, and the TWSE OpenAPI current-quarter feed) is cumulative
+    year-to-date, so single-quarter columns must yield to the cumulative ones."""
+    normalized = _normalize_label(text)
+    return re.search(r"(\d{2,3})年第([1-4])季", normalized) is not None and "年度" not in normalized
+
+
 def _parse_mops_balance_title(text: str) -> tuple[int, int] | None:
     normalized = _normalize_label(text)
     date_match = re.search(r"(\d{2,3})年(\d{2})月\d{2}日", normalized)
@@ -275,11 +284,19 @@ class OfficialMopsHistoricalFundamentalsAdapter:
         if not isinstance(rows, list) or not isinstance(titles, list):
             return []
         company_name = str(payload.get("companyAbbreviation") or company_name).strip() or company_name
-        periods = [_parse_mops_income_title(str(item.get("main", ""))) for item in titles[1:] if isinstance(item, dict)]
+        title_texts = [str(item.get("main", "")) for item in titles[1:] if isinstance(item, dict)]
+        periods = [_parse_mops_income_title(text) for text in title_texts]
+        cumulative_periods = {
+            period for period, text in zip(periods, title_texts, strict=True)
+            if period is not None and not _is_single_quarter_income_title(text)
+        }
         parsed: list[OfficialIncomeStatementRow] = []
         seen: set[tuple[int, int]] = set()
-        for offset, period in enumerate(periods):
+        for offset, (period, text) in enumerate(zip(periods, title_texts, strict=True)):
             if period is None or period in seen:
+                continue
+            if _is_single_quarter_income_title(text) and period in cumulative_periods:
+                # Prefer the year-to-date column for the same period (see _is_single_quarter_income_title).
                 continue
             seen.add(period)
             column = 1 + offset * 2

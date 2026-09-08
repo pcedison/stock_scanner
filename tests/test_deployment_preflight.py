@@ -136,8 +136,8 @@ def test_production_wrangler_keeps_dispatch_and_cron_disabled_until_release_conf
     config = tomllib.loads(Path("cloudflare/wrangler.toml").read_text(encoding="utf-8"))
 
     assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "false"
-    assert config["vars"]["MARKET_SCAN_API_VERSION"] == "v1"
-    assert config["vars"]["EDGE_CACHE_ENABLED"] == "false"
+    assert config["vars"]["MARKET_SCAN_API_VERSION"] == "v2"
+    assert config["vars"]["EDGE_CACHE_ENABLED"] == "true"
     assert config["cache"]["enabled"] is False
     assert config["triggers"]["crons"] == []
     assert "cloudflare/wrangler.*.generated.toml" in Path(".gitignore").read_text(encoding="utf-8")
@@ -149,8 +149,8 @@ def test_validate_worker_release_defaults_rejects_committed_release_switches(tmp
         """
 [vars]
 GITHUB_DISPATCH_ENABLED = "true"
-MARKET_SCAN_API_VERSION = "v2"
-EDGE_CACHE_ENABLED = "true"
+MARKET_SCAN_API_VERSION = "v1"
+EDGE_CACHE_ENABLED = "false"
 
 [cache]
 enabled = true
@@ -275,11 +275,13 @@ def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
     r2_workflow = r2_path.read_text(encoding="utf-8")
     health_workflow = health_path.read_text(encoding="utf-8")
 
-    assert _workflow_schedule_crons(r2_path) == ["7,22,37,52 * * * *"]
-    assert _workflow_schedule_crons(health_path) == ["11,41 * * * *"]
+    # Schedules were reduced to stop burning the Actions quota: 20-minute polling during
+    # Taipei business hours on weekdays, hourly otherwise; the monitor polls every 4 hours.
+    assert _workflow_schedule_crons(r2_path) == ["7,27,47 0-10 * * 1-5", "7 11-23 * * *"]
+    assert _workflow_schedule_crons(health_path) == ["11 */4 * * *"]
     assert "--refresh-ahead-minutes 120" in r2_workflow
     assert "--job-check-error" in r2_workflow
-    assert "--max-refresh-delay-minutes 15" in health_workflow
+    assert "--max-refresh-delay-minutes 75" in health_workflow
     assert "steps.early-check.outputs.stale_refresh" in r2_workflow
 
 

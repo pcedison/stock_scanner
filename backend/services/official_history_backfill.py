@@ -154,6 +154,7 @@ class OfficialHistoryBackfillService:
         resume: bool = True,
         reset_progress: bool = False,
         throttle_seconds: float = 0.15,
+        retry_failed: bool = False,
     ) -> OfficialHistoryBackfillResult:
         context = filing_context()
         active = context.get("activeFinancialReport") or {}
@@ -231,7 +232,10 @@ class OfficialHistoryBackfillService:
             if company.stockCode in completed_codes:
                 skipped += 1
                 continue
-            if resume and (company.stockCode in previously_failed_codes or company.stockCode in previously_pending_codes):
+            if resume and company.stockCode in previously_pending_codes:
+                skipped += 1
+                continue
+            if resume and not retry_failed and company.stockCode in previously_failed_codes:
                 skipped += 1
                 continue
             if not self._needs_backfill(company, fiscal_year, quarter, years=years):
@@ -367,6 +371,11 @@ def _main() -> None:
     parser.add_argument("--mode", choices=["strategy", "full_quarterly"], default="strategy")
     parser.add_argument("--throttle", type=float, default=0.15, help="Seconds to sleep between official MOPS requests.")
     parser.add_argument("--reset-progress", action="store_true", help="Start a fresh progress file for the current run key.")
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Re-request companies recorded as failed in a previous run instead of skipping them.",
+    )
     args = parser.parse_args()
 
     provider = OfficialDataProvider()
@@ -379,6 +388,7 @@ def _main() -> None:
         mode=args.mode,
         throttle_seconds=max(0.0, args.throttle),
         reset_progress=args.reset_progress,
+        retry_failed=args.retry_failed,
     )
     print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 

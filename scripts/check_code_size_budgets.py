@@ -28,9 +28,10 @@ DEFAULT_BUDGETS = {
     "cloudflare/worker_refresh_jobs.py": 260,
     "cloudflare/worker_refresh_control.py": 180,
     "cloudflare/worker_market_resilience.py": 160,
+    "cloudflare/worker_market_legacy.py": 120,
     "cloudflare/worker_observability.py": 200,
     "cloudflare/worker_support.py": 600,
-    ".github/workflows/cloudflare-r2-seed-refresh.yml": 260,
+    ".github/workflows/cloudflare-r2-seed-refresh.yml": 290,
 }
 
 

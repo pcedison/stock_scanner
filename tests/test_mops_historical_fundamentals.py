@@ -431,6 +431,11 @@ def test_backfill_records_annual_period_failures(monkeypatch, tmp_path):
     assert resumed.requestedCompanies == 0
     assert resumed.skippedCompanies == 1
 
+    # Scheduled refreshes opt into retrying failures so transient MOPS errors heal over time.
+    retried = service.backfill([_company("1111")], limit=1, throttle_seconds=0, retry_failed=True)
+    assert retried.requestedCompanies == 1
+    assert retried.skippedCompanies == 0
+
 
 def test_backfill_skips_when_all_target_periods_present(monkeypatch, tmp_path):
     _patch_filing_context(
@@ -543,3 +548,35 @@ def test_backfill_main_runs_service_and_prints_json(monkeypatch, capsys):
     _main()
 
     assert _json.loads(capsys.readouterr().out) == {"ok": True}
+
+
+def test_parse_income_payload_prefers_cumulative_columns_for_q2_reports():
+    """Q2/Q3 MOPS statements list a 3-month "第N季" column before the year-to-date
+    column; the history store is cumulative, so the year-to-date value must win."""
+    adapter = OfficialMopsHistoricalFundamentalsAdapter()
+    payload = {
+        "companyAbbreviation": "測試",
+        "titles": [
+            {"main": "會計項目", "sub": []},
+            {"main": "115年第2季", "sub": []},
+            {"main": "114年第2季", "sub": []},
+            {"main": "115年01月01日至115年06月30日", "sub": []},
+            {"main": "114年01月01日至114年06月30日", "sub": []},
+        ],
+        "reportList": [
+            ["營業收入合計", "100", "100.00", "90", "100.00", "210", "100.00", "180", "100.00"],
+            ["營業毛利（毛損）淨額", "20", "20.00", "18", "20.00", "42", "20.00", "36", "20.00"],
+            ["營業利益（損失）", "10", "10.00", "9", "10.00", "21", "10.00", "18", "10.00"],
+            ["母公司業主（淨利∕損）", "8", "8.00", "7", "7.78", "17", "8.10", "14", "7.78"],
+            ["　基本每股盈餘", "0.29", "", "0.00", "", "0.38", "", "0.07", ""],
+        ],
+    }
+    rows = {(row.fiscalYear, row.quarter): row for row in adapter.parse_income_payload(payload, "9999", "測試", "TWSE")}
+    assert set(rows) == {(2026, 2), (2025, 2)}
+    assert rows[(2026, 2)].eps == 0.38 and rows[(2026, 2)].revenue == 210 and rows[(2026, 2)].netIncome == 17
+    assert rows[(2025, 2)].eps == 0.07 and rows[(2025, 2)].revenue == 180 and rows[(2025, 2)].netIncome == 14
+
+    # A statement without cumulative columns still falls back to the single-quarter column.
+    single_only = {**payload, "titles": payload["titles"][:3], "reportList": [row[:5] for row in payload["reportList"]]}
+    fallback = {(row.fiscalYear, row.quarter): row for row in adapter.parse_income_payload(single_only, "9999", "測試", "TWSE")}
+    assert fallback[(2026, 2)].eps == 0.29 and fallback[(2025, 2)].eps == 0.0

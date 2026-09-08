@@ -94,10 +94,13 @@ def validate_worker_release_defaults(wrangler_path: Path = DEFAULT_WRANGLER) -> 
     problems: list[str] = []
     if vars_config.get("GITHUB_DISPATCH_ENABLED") != "false":
         problems.append("committed production wrangler must keep GITHUB_DISPATCH_ENABLED=false")
-    if vars_config.get("MARKET_SCAN_API_VERSION") != "v1":
-        problems.append("committed production wrangler must keep MARKET_SCAN_API_VERSION=v1")
-    if vars_config.get("EDGE_CACHE_ENABLED") != "false":
-        problems.append("committed production wrangler must keep EDGE_CACHE_ENABLED=false")
+    # The legacy v1 market read loads the multi-megabyte scan summary inside the
+    # Python Worker and exhausted Cloudflare resource limits in production, so the
+    # committed config must serve paginated v2 market reads with edge caching.
+    if vars_config.get("MARKET_SCAN_API_VERSION") != "v2":
+        problems.append("committed production wrangler must keep MARKET_SCAN_API_VERSION=v2")
+    if vars_config.get("EDGE_CACHE_ENABLED") != "true":
+        problems.append("committed production wrangler must keep EDGE_CACHE_ENABLED=true")
     if (config.get("cache") or {}).get("enabled") is not False:
         problems.append("committed production wrangler must keep [cache].enabled=false")
     if (config.get("triggers") or {}).get("crons") != []:
