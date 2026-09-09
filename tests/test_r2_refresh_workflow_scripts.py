@@ -779,6 +779,8 @@ def test_r2_refresh_persists_quarterly_fundamentals_and_backfills_before_build()
     backfill_block = workflow[workflow.index(backfill_command) : workflow.index(build_command)]
     assert "|| echo" in backfill_block
     assert "OFFICIAL_HISTORY_BACKFILL_LIMIT" in workflow
+    assert "--max-seconds" in backfill_block
+    assert "timeout --kill-after" in workflow[workflow.index(hydrate_command) : workflow.index(backfill_command)]
 
 
 def test_backfill_summary_markdown_handles_missing_and_complete_payloads(tmp_path, capsys):
