@@ -580,3 +580,72 @@ def test_parse_income_payload_prefers_cumulative_columns_for_q2_reports():
     single_only = {**payload, "titles": payload["titles"][:3], "reportList": [row[:5] for row in payload["reportList"]]}
     fallback = {(row.fiscalYear, row.quarter): row for row in adapter.parse_income_payload(single_only, "9999", "測試", "TWSE")}
     assert fallback[(2026, 2)].eps == 0.29 and fallback[(2025, 2)].eps == 0.0
+
+
+def test_backfill_stops_when_time_budget_is_exhausted(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    service = OfficialHistoryBackfillService(
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        adapter=AllEmptyAdapter(),
+        progress_store=BackfillProgressStore(tmp_path / "progress.json"),
+    )
+    import itertools
+
+    clock = itertools.chain([0.0, 0.0], itertools.repeat(100.0))
+    monkeypatch.setattr("backend.services.official_history_backfill.time.monotonic", lambda: next(clock))
+
+    result = service.backfill(
+        [_company("1111"), _company("2222"), _company("3333")],
+        limit=10,
+        throttle_seconds=0,
+        reset_progress=True,
+        max_seconds=30,
+    )
+
+    # Only the first company is requested before the budget runs out; the rest wait for the next run.
+    assert result.requestedCompanies == 1
+    assert result.completed is False
+    assert BackfillProgressStore(tmp_path / "progress.json").load()["runKey"] == "2026Q1:5:strategy"
+
+
+def test_backfill_fetches_companies_concurrently_with_bounded_workers(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+
+    class SlowAdapter(AllEmptyAdapter):
+        def __init__(self):
+            self.active = 0
+            self.peak = 0
+            self.lock = threading.Lock()
+
+        def fetch_company_period(self, *args, **kwargs):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.02)
+                return super().fetch_company_period(*args, **kwargs)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    adapter = SlowAdapter()
+    service = OfficialHistoryBackfillService(
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        adapter=adapter,
+        progress_store=BackfillProgressStore(tmp_path / "progress.json"),
+    )
+    companies = [_company(str(1000 + index)) for index in range(9)]
+    result = service.backfill(companies, limit=9, throttle_seconds=0, reset_progress=True, workers=3)
+
+    assert result.requestedCompanies == 9
+    assert 1 < adapter.peak <= 3
+    assert len(BackfillProgressStore(tmp_path / "progress.json").load()["failedCompanies"]) == 9
