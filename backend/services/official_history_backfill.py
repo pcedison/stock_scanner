@@ -4,7 +4,8 @@ import argparse
 import json
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,14 @@ def _backfill_periods(fiscal_year: int, quarter: int, years: int = 5, mode: str 
 
 def _period_label(year: int, quarter: int) -> str:
     return f"{year}Q{quarter}"
+
+
+@dataclass
+class _CompanyFetch:
+    incomes: list = field(default_factory=list)
+    balances: list = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    pending: list[dict[str, Any]] = field(default_factory=list)
 
 
 class BackfillProgressStore:
@@ -155,6 +164,8 @@ class OfficialHistoryBackfillService:
         reset_progress: bool = False,
         throttle_seconds: float = 0.15,
         retry_failed: bool = False,
+        max_seconds: float | None = None,
+        workers: int = 1,
     ) -> OfficialHistoryBackfillResult:
         context = filing_context()
         active = context.get("activeFinancialReport") or {}
@@ -226,39 +237,38 @@ class OfficialHistoryBackfillService:
         previously_failed_codes = set(failed_companies)
         previously_pending_codes = set(pending_companies)
 
-        for company in company_list:
-            if requested >= limit:
-                break
+        deadline = time.monotonic() + max_seconds if max_seconds is not None and max_seconds > 0 else None
+        worker_count = max(1, int(workers))
+
+        def eligible_periods(company: Company) -> list[tuple[int, int]] | None:
+            nonlocal skipped
             if company.stockCode in completed_codes:
                 skipped += 1
-                continue
+                return None
             if resume and company.stockCode in previously_pending_codes:
                 skipped += 1
-                continue
+                return None
             if resume and not retry_failed and company.stockCode in previously_failed_codes:
                 skipped += 1
-                continue
+                return None
             if not self._needs_backfill(company, fiscal_year, quarter, years=years):
                 completed_codes.add(company.stockCode)
                 skipped += 1
-                continue
-
-            pending_periods = [
+                return None
+            company_periods = [
                 (year, period_quarter)
                 for year, period_quarter in periods
                 if self._period_needs_backfill(company, year, period_quarter)
             ]
-            if not pending_periods:
+            if not company_periods:
                 completed_codes.add(company.stockCode)
                 skipped += 1
-                continue
+                return None
+            return company_periods
 
-            requested += 1
-            company_incomes = []
-            company_balances = []
-            company_errors = []
-            company_pending = []
-            for year, period_quarter in pending_periods:
+        def fetch_company(company: Company, company_periods: list[tuple[int, int]]) -> _CompanyFetch:
+            fetched = _CompanyFetch()
+            for year, period_quarter in company_periods:
                 try:
                     bundle = self.adapter.fetch_company_period(
                         company.stockCode,
@@ -268,49 +278,73 @@ class OfficialHistoryBackfillService:
                         period_quarter,
                     )
                 except Exception as exc:  # pragma: no cover - network-dependent safety net
-                    company_errors.append({"period": _period_label(year, period_quarter), "error": str(exc)})
+                    fetched.errors.append({"period": _period_label(year, period_quarter), "error": str(exc)})
                     continue
-                company_incomes.extend(bundle.incomes)
-                company_balances.extend(bundle.balances)
-                income_rows += len(bundle.incomes)
-                balance_rows += len(bundle.balances)
+                fetched.incomes.extend(bundle.incomes)
+                fetched.balances.extend(bundle.balances)
                 if not bundle.incomes and not bundle.balances:
                     missing = {"period": _period_label(year, period_quarter), "error": "no official rows returned"}
                     if year == fiscal_year and period_quarter == quarter:
-                        company_pending.append(missing)
+                        fetched.pending.append(missing)
                     else:
-                        company_errors.append(missing)
+                        fetched.errors.append(missing)
                 if throttle_seconds > 0:
                     time.sleep(throttle_seconds)
+            return fetched
 
-            if company_incomes or company_balances:
-                self.history_store.merge_rows(company_incomes, company_balances)
-            if company_errors:
-                failed += 1
-                failed_companies[company.stockCode] = company_errors
-            else:
-                failed_companies.pop(company.stockCode, None)
-                if company_pending:
-                    pending += 1
-                    pending_companies[company.stockCode] = company_pending
-                else:
-                    pending_companies.pop(company.stockCode, None)
-                completed_codes.add(company.stockCode)
-            progress["completedCompanies"] = sorted(completed_codes)
-            progress["failedCompanies"] = failed_companies
-            progress["pendingCompanies"] = pending_companies
-            progress["lastCompany"] = company.stockCode
-            progress["lastStats"] = {
-                "requestedCompanies": requested,
-                "skippedCompanies": skipped,
-                "pendingCompanies": pending,
-                "incomeRows": income_rows,
-                "balanceRows": balance_rows,
-            }
-            _saves_since_last += 1
-            if _saves_since_last >= self._PROGRESS_SAVE_INTERVAL:
-                self.progress_store.save(progress)
-                _saves_since_last = 0
+        company_iter = iter(company_list)
+        exhausted = False
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            while not exhausted and requested < limit:
+                if deadline is not None and time.monotonic() >= deadline:
+                    # Time budget exhausted (e.g. slow MOPS responses inside a CI job): stop
+                    # gracefully so progress persists and the next run resumes from here.
+                    break
+                batch: list[tuple[Company, list[tuple[int, int]]]] = []
+                while len(batch) < worker_count and requested + len(batch) < limit:
+                    company = next(company_iter, None)
+                    if company is None:
+                        exhausted = True
+                        break
+                    company_periods = eligible_periods(company)
+                    if company_periods is not None:
+                        batch.append((company, company_periods))
+                if not batch:
+                    continue
+                requested += len(batch)
+                futures = [executor.submit(fetch_company, company, company_periods) for company, company_periods in batch]
+                for (company, _company_periods), future in zip(batch, futures, strict=True):
+                    fetched = future.result()
+                    income_rows += len(fetched.incomes)
+                    balance_rows += len(fetched.balances)
+                    if fetched.incomes or fetched.balances:
+                        self.history_store.merge_rows(fetched.incomes, fetched.balances)
+                    if fetched.errors:
+                        failed += 1
+                        failed_companies[company.stockCode] = fetched.errors
+                    else:
+                        failed_companies.pop(company.stockCode, None)
+                        if fetched.pending:
+                            pending += 1
+                            pending_companies[company.stockCode] = fetched.pending
+                        else:
+                            pending_companies.pop(company.stockCode, None)
+                        completed_codes.add(company.stockCode)
+                    progress["completedCompanies"] = sorted(completed_codes)
+                    progress["failedCompanies"] = failed_companies
+                    progress["pendingCompanies"] = pending_companies
+                    progress["lastCompany"] = company.stockCode
+                    progress["lastStats"] = {
+                        "requestedCompanies": requested,
+                        "skippedCompanies": skipped,
+                        "pendingCompanies": pending,
+                        "incomeRows": income_rows,
+                        "balanceRows": balance_rows,
+                    }
+                    _saves_since_last += 1
+                    if _saves_since_last >= self._PROGRESS_SAVE_INTERVAL:
+                        self.progress_store.save(progress)
+                        _saves_since_last = 0
 
         progress["completedCompanies"] = sorted(completed_codes)
         progress["failedCompanies"] = failed_companies
@@ -376,6 +410,18 @@ def _main() -> None:
         action="store_true",
         help="Re-request companies recorded as failed in a previous run instead of skipping them.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Companies fetched concurrently (keep small to stay polite to MOPS).",
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=None,
+        help="Stop requesting new companies after this many seconds; progress is saved for the next run.",
+    )
     args = parser.parse_args()
 
     provider = OfficialDataProvider()
@@ -389,6 +435,8 @@ def _main() -> None:
         throttle_seconds=max(0.0, args.throttle),
         reset_progress=args.reset_progress,
         retry_failed=args.retry_failed,
+        max_seconds=args.max_seconds,
+        workers=args.workers,
     )
     print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 
