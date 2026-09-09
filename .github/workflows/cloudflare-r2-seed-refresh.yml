@@ -36,6 +36,8 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
       OFFICIAL_HISTORY_BACKFILL_LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_limit || '400' }}
+      # Keep the whole refresh comfortably inside the job timeout even when MOPS is slow.
+      OFFICIAL_HISTORY_BACKFILL_BUDGET_SECONDS: ${{ github.event_name == 'workflow_dispatch' && '2400' || '600' }}
       CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
       CF_D1_DATABASE_ID: c29c7b4a-4a2d-4711-badd-1aaad43ce3b6
@@ -194,7 +196,9 @@ jobs:
             --r2-backfill-progress .tmp/r2-official-history-backfill-progress.json
           # Fetch prior-year same-quarter fundamentals (EPS / net income YoY inputs) from MOPS.
           # Failures here must not block the refresh; the scan degrades to INSUFFICIENT_DATA instead.
-          python -m backend.services.official_history_backfill --limit "$OFFICIAL_HISTORY_BACKFILL_LIMIT" --retry-failed --throttle 0.15 \
+          timeout --kill-after=60 "${OFFICIAL_HISTORY_BACKFILL_BUDGET_SECONDS}s" \
+            python -m backend.services.official_history_backfill --limit "$OFFICIAL_HISTORY_BACKFILL_LIMIT" --retry-failed --throttle 0.15 \
+              --max-seconds "$OFFICIAL_HISTORY_BACKFILL_BUDGET_SECONDS" --workers 3 \
             > .tmp/official-history-backfill.json || echo "Official history backfill degraded; continuing with existing history." >> "$GITHUB_STEP_SUMMARY"
           python scripts/r2_refresh_decision.py backfill-summary --json-file .tmp/official-history-backfill.json >> "$GITHUB_STEP_SUMMARY" || true
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
