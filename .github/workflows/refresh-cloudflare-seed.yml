@@ -16,9 +16,13 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    environment: production
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_R2_BUCKET: stock-scanner-beta-cache
 
     steps:
       - name: Check out repository
@@ -26,6 +30,15 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -39,7 +52,16 @@ jobs:
 
       - name: Rebuild seed from official sources
         run: |
-          python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data
+          mkdir -p .tmp
+          # The committed zip only carries history up to its snapshot date; the production
+          # R2 copies hold the continuously refreshed monthly revenue and quarterly
+          # fundamentals history, without which the X2/X3-X5 quality gates reject the build.
+          for name in monthly_revenue_history official_fundamentals_history official_history_backfill_progress; do
+            npx wrangler r2 object get "$CF_R2_BUCKET/official/${name}.json" --remote --file ".tmp/r2-${name}.json" </dev/null || rm -f ".tmp/r2-${name}.json"
+          done
+          python scripts/hydrate_cloudflare_seed_inputs.py --data-dir data --r2-history .tmp/r2-monthly_revenue_history.json \
+            --r2-fundamentals-history .tmp/r2-official_fundamentals_history.json \
+            --r2-backfill-progress .tmp/r2-official_history_backfill_progress.json
           CLOUDFLARE_SEED_MODE=online python scripts/build_cloudflare_seed.py
           python scripts/package_cloudflare_seed_cache.py
           python scripts/generate_official_failed_report.py
