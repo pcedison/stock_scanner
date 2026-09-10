@@ -177,7 +177,7 @@ def test_dispatch_disabled_leaves_pending_job_unclaimed_and_never_enqueues():
 def test_dispatch_claims_pending_job_once_and_marks_2xx_dispatched():
     api = FakeApi(enabled=True)
     api.rows.append(queued_job("job-2"))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -230,7 +230,7 @@ def test_unknown_dispatch_is_retried_after_the_retry_delay():
     api = FakeApi(enabled=True)
     stale_update = _iso(FIXED_TIME - timedelta(seconds=worker_refresh_schedule.DISPATCH_RETRY_SECONDS + 60))
     api.rows.append(queued_job("job-5", dispatch_status="unknown", updated_at=stale_update))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -244,7 +244,7 @@ def test_unknown_dispatch_is_retried_after_the_retry_delay():
 def test_recent_unknown_dispatch_waits_for_the_retry_delay():
     api = FakeApi(enabled=True, next_refresh_after=_iso(FIXED_TIME + timedelta(hours=6)))
     api.rows.append(queued_job("job-6", dispatch_status="unknown", updated_at=_iso(FIXED_TIME - timedelta(minutes=5))))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -257,7 +257,7 @@ def test_dispatched_job_never_claimed_by_a_workflow_run_is_redispatched():
     api = FakeApi(enabled=True)
     old = _iso(FIXED_TIME - timedelta(hours=1))
     api.rows.append(queued_job("job-7", dispatch_status="dispatched", updated_at=old))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -271,7 +271,7 @@ def test_orphaned_running_job_is_recovered_and_redispatched():
     row["started_at"] = _iso(FIXED_TIME - timedelta(seconds=worker_refresh_schedule.ORPHANED_RUNNING_SECONDS + 60))
     row["owner_run_id"] = "123"
     api.rows.append(row)
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -295,7 +295,7 @@ def test_recently_started_running_job_is_left_alone():
 
 def test_fresh_seed_outside_refresh_ahead_window_stays_idle():
     api = FakeApi(enabled=True, next_refresh_after=_iso(FIXED_TIME + timedelta(hours=6)))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -312,7 +312,7 @@ def test_fresh_seed_outside_refresh_ahead_window_stays_idle():
 
 def test_seed_inside_refresh_ahead_window_is_enqueued_and_dispatched():
     api = FakeApi(enabled=True, next_refresh_after=_iso(FIXED_TIME + timedelta(minutes=90)))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -325,7 +325,7 @@ def test_seed_inside_refresh_ahead_window_is_enqueued_and_dispatched():
 
 def test_stale_seed_is_enqueued_and_dispatched():
     api = FakeApi(enabled=True, is_stale=True, next_refresh_after=_iso(FIXED_TIME - timedelta(hours=1)))
-    calls = []
+    calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
@@ -339,7 +339,7 @@ def test_enqueue_cooldown_keeps_tick_idle():
     async def ensure_refresh_job(*_args, **_kwargs):
         raise RuntimeError("cooldown")
 
-    api.ensure_refresh_job = ensure_refresh_job
+    setattr(api, "ensure_refresh_job", ensure_refresh_job)
 
     result = _run(api, _ok_dispatch([]))
 
