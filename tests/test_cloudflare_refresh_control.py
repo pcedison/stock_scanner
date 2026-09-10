@@ -19,7 +19,9 @@ class FakeApi:
     def __init__(self, *, enabled=False, token="token", next_refresh_after=None, is_stale=False):
         self.env = types.SimpleNamespace(
             GITHUB_DISPATCH_ENABLED="true" if enabled else "false",
-            GITHUB_ACTIONS_DISPATCH_TOKEN=token,
+            GITHUB_APP_ID="123456",
+            GITHUB_APP_INSTALLATION_ID="7891011",
+            GITHUB_APP_PRIVATE_KEY=token,
             GITHUB_REPOSITORY="pcedison/stock_scanner",
             GITHUB_REFRESH_WORKFLOW_FILE="cloudflare-r2-seed-refresh.yml",
             GITHUB_REFRESH_WORKFLOW_REF="main",
@@ -224,6 +226,36 @@ def test_client_error_marks_dispatch_failed_with_http_code():
     assert result["errorCode"] == "GITHUB_HTTP_401"
     assert api.rows[0]["dispatch_status"] == "failed"
     assert api.rows[0]["dispatch_error_code"] == "GITHUB_HTTP_401"
+
+
+def test_github_app_credential_fault_fails_the_job_instead_of_retrying():
+    # No http_status at all: the dispatch never left the Worker because the app
+    # credentials could not mint a token. Retrying cannot fix that, so the job is
+    # failed at once and the monitor reports it on its next run.
+    api = FakeApi(enabled=True)
+    api.rows.append(queued_job("job-app"))
+
+    async def dispatch(_env, _payload):
+        return worker_refresh_control.DispatchResult(error_code="GITHUB_APP_SIGN_FAILED")
+
+    result = _run(api, dispatch)
+
+    assert result["status"] == "failed"
+    assert result["errorCode"] == "GITHUB_APP_SIGN_FAILED"
+    assert api.rows[0]["dispatch_status"] == "failed"
+
+
+def test_transport_fault_stays_unknown_so_the_next_tick_retries():
+    api = FakeApi(enabled=True)
+    api.rows.append(queued_job("job-net"))
+
+    async def dispatch(_env, _payload):
+        return worker_refresh_control.DispatchResult(error_code="GITHUB_APP_TOKEN_NETWORK")
+
+    result = _run(api, dispatch)
+
+    assert result["status"] == "unknown"
+    assert result["errorCode"] == "GITHUB_APP_TOKEN_NETWORK"
 
 
 def test_unknown_dispatch_is_retried_after_the_retry_delay():

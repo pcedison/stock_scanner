@@ -354,11 +354,23 @@ def test_validate_health_payload_ignores_dispatch_state_unless_required():
     assert summary["refreshDispatch"]["dispatchErrorCode"] == "GITHUB_HTTP_401"
 
 
-def test_validate_health_payload_fails_fast_on_expired_dispatch_token():
+def test_validate_health_payload_fails_fast_on_a_rejected_installation_token():
     payload = _healthy_health_payload()
     payload["refreshDispatch"] = _dispatch(jobStatus="queued", dispatchStatus="failed", dispatchErrorCode="GITHUB_HTTP_401")
 
-    with pytest.raises(RuntimeError, match=r"refresh dispatch failed: GITHUB_HTTP_401 - rotate GITHUB_ACTIONS_DISPATCH_TOKEN"):
+    with pytest.raises(RuntimeError, match=r"refresh dispatch failed: GITHUB_HTTP_401 - GitHub rejected the app"):
+        validate_health_payload(payload, now=datetime(2026, 7, 12, 0, 0, tzinfo=UTC), require_dispatch_healthy=True)
+
+
+def test_validate_health_payload_fails_fast_on_a_github_app_credential_fault():
+    # A GitHub App key does not expire, but it can still be revoked or mis-copied; the
+    # monitor has to name the secret to fix rather than report a stale seed.
+    payload = _healthy_health_payload()
+    payload["refreshDispatch"] = _dispatch(
+        jobStatus="queued", dispatchStatus="failed", dispatchErrorCode="GITHUB_APP_SIGN_FAILED"
+    )
+
+    with pytest.raises(RuntimeError, match=r"GITHUB_APP_SIGN_FAILED - GITHUB_APP_PRIVATE_KEY is not a readable"):
         validate_health_payload(payload, now=datetime(2026, 7, 12, 0, 0, tzinfo=UTC), require_dispatch_healthy=True)
 
 

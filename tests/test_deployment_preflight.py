@@ -128,8 +128,8 @@ def test_dispatch_secret_requirement_follows_wrangler_flag(tmp_path):
 
     wrangler.write_text('[vars]\nGITHUB_DISPATCH_ENABLED = "true"\n', encoding="utf-8")
     assert dispatch_enabled(wrangler) is True
-    required = ["SUPER_USER_USERNAME", "GITHUB_ACTIONS_DISPATCH_TOKEN"]
-    assert missing_secret_names({"SUPER_USER_USERNAME"}, required) == ["GITHUB_ACTIONS_DISPATCH_TOKEN"]
+    required = ["SUPER_USER_USERNAME", "GITHUB_APP_PRIVATE_KEY"]
+    assert missing_secret_names({"SUPER_USER_USERNAME"}, required) == ["GITHUB_APP_PRIVATE_KEY"]
 
 
 def test_production_wrangler_runs_the_refresh_schedule_from_worker_cron():

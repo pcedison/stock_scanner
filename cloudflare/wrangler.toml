@@ -30,8 +30,10 @@ EDGE_CACHE_ENABLED = "true"
 
 # Worker cron is the scheduled trigger for the R2 seed refresh. Each tick queues a
 # refresh when the seed is stale or within the refresh-ahead window and dispatches
-# .github/workflows/cloudflare-r2-seed-refresh.yml through the GitHub API using the
-# GITHUB_ACTIONS_DISPATCH_TOKEN secret. Cron times are UTC.
+# .github/workflows/cloudflare-r2-seed-refresh.yml through the GitHub API, signing in
+# as a GitHub App so no credential here has to be rotated before it expires.
+# GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PRIVATE_KEY are all Worker
+# secrets rather than vars: this repository is public. Cron times are UTC.
 [triggers]
 crons = [
   "*/20 0-10 * * MON-FRI", # Taipei 08:00-18:59 weekdays, every 20 minutes

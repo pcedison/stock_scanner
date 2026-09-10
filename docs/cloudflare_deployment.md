@@ -23,7 +23,7 @@ GitHub Actions secrets:
 Cloudflare Worker secrets (`npx wrangler secret put <NAME> --config cloudflare/wrangler.toml`):
 
 - `SUPER_USER_USERNAME`
-- `GITHUB_ACTIONS_DISPATCH_TOKEN`: a GitHub fine-grained personal access token scoped to this repository with **Actions: Read and write** only. The Worker cron uses it to `POST /repos/{owner}/{repo}/actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches`. Deploys fail preflight (`scripts/check_cloudflare_worker_secrets.py`) while it is missing, and the health monitor fails with `refresh dispatch failed: GITHUB_HTTP_401 - rotate GITHUB_ACTIONS_DISPATCH_TOKEN` once it expires, so give it a long expiry and rotate it before that date.
+- `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`: credentials for a GitHub App that can `POST /repos/{owner}/{repo}/actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches`. See [Dispatch credentials](#dispatch-credentials-github-app) for how to create them. A personal access token would also work, but every fine-grained token expires within 366 days and the seed silently stops refreshing when it does; an App private key has no expiry. All three are secrets rather than vars because this repository is public. Deploys fail preflight (`scripts/check_cloudflare_worker_secrets.py`) while any is missing.
 
 GitHub Actions repository variables:
 
@@ -48,6 +48,43 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
 
 The committed production config serves paginated v2 market reads with edge cache headers: the legacy v1 `GET /api/scan/market` payload (several MB) exhausted Python Worker resource limits in production (2026-09), so v1 is kept only as a streamed pass-through fallback for stale clients. The Worker cron and GitHub dispatch are enabled in the committed config (see "Server-Side R2 Seed Rebuild"); `scripts/check_deployment_preflight.py` rejects a config that turns either of them off. The Worker `[cache]` binding is still enabled only through generated full configs from `scripts/render_wrangler_release_config.py`.
+
+## Dispatch credentials (GitHub App)
+
+The Worker cron triggers the refresh workflow through the GitHub API, which needs a
+credential. A GitHub App is used rather than a personal access token because every
+fine-grained PAT expires within 366 days and the seed stops refreshing the moment it
+does; an App private key has no expiry, and the token actually used on the wire is a
+one-hour installation token the Worker mints for itself on each dispatch.
+
+One-time setup:
+
+1. Create the App at <https://github.com/settings/apps/new>.
+   - **GitHub App name**: anything unique, e.g. `stock-scanner-seed-refresh`.
+   - **Homepage URL**: this repository's URL.
+   - **Webhook**: untick **Active**. The Worker calls GitHub, never the reverse.
+   - **Repository permissions -> Actions**: **Read and write**. Leave everything else
+     at *No access*; `Metadata: Read-only` is added automatically.
+   - **Where can this GitHub App be installed?**: *Only on this account*.
+2. On the App's page note the **App ID** -> `GITHUB_APP_ID`.
+3. **Generate a private key** at the bottom of the same page. A `.pem` downloads; it is
+   shown only once. It is already PKCS#8, which is what WebCrypto imports.
+4. **Install App** -> this account -> **Only select repositories** -> this repository.
+   After installing, the URL ends in `/installations/<id>`; that number is
+   `GITHUB_APP_INSTALLATION_ID`.
+5. Store all three as Worker secrets:
+
+   ```bash
+   npx wrangler secret put GITHUB_APP_ID --config cloudflare/wrangler.toml
+   npx wrangler secret put GITHUB_APP_INSTALLATION_ID --config cloudflare/wrangler.toml
+   npx wrangler secret put GITHUB_APP_PRIVATE_KEY --config cloudflare/wrangler.toml < app.private-key.pem
+   ```
+
+   The private key is multi-line, so pipe the `.pem` in rather than pasting it. Delete
+   the local `.pem` afterwards; it never belongs in the repository.
+
+Rotation is only needed if the key is exposed: generate a new one on the App page,
+`wrangler secret put` it, then delete the old key in GitHub.
 
 ## Deploy Flow
 
@@ -104,7 +141,7 @@ Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes on 
 1. Re-queues a `running` job whose workflow run started more than 2 hours ago (cancelled or timed-out run) - `worker_refresh_schedule.ORPHANED_RUNNING_SECONDS`.
 2. Resets a `failed` / `unknown` / never-claimed `dispatched` job back to `pending` after 20 minutes so the dispatch is retried - `DISPATCH_RETRY_SECONDS`.
 3. Queues a new `market_scan` job when the deployed seed is stale or will be stale within 2 hours (`REFRESH_AHEAD_SECONDS`); the terminal-job cooldown is shortened by the same window so the rebuild lands before `cacheStatus.nextRefreshAfter`.
-4. Dispatches the pending job with `POST .../actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches` (`inputs.force=false`) using `GITHUB_ACTIONS_DISPATCH_TOKEN`, recording `dispatch_status` / `dispatch_error_code` on the job. `/api/health` exposes this as `refreshDispatch`.
+4. Dispatches the pending job with `POST .../actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches` (`inputs.force=false`), authenticating as the GitHub App: it signs a short-lived RS256 JWT with `GITHUB_APP_PRIVATE_KEY` through WebCrypto, exchanges it for a one-hour installation token, and uses that for the dispatch. A token is minted per dispatch, so nothing is cached and nothing expires between runs. The job records `dispatch_status` / `dispatch_error_code`, and `/api/health` exposes this as `refreshDispatch`.
 
 The workflow can still be dispatched manually; `force=true` bypasses the D1/freshness guards and unlocks the larger MOPS backfill budget. On each run it:
 
@@ -169,7 +206,7 @@ Before each Worker rollout that depends on a new D1 migration, apply and verify 
 
 ## Monitoring
 
-`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 4 hours (GitHub may deliver it late). It fails when the seed is more than 75 minutes past `cacheStatus.nextRefreshAfter`, and - via `--require-dispatch-healthy` - as soon as `/api/health` `refreshDispatch` reports a `failed` dispatch (expired or revoked `GITHUB_ACTIONS_DISPATCH_TOKEN`, renamed workflow) or three unacknowledged attempts, before the seed itself goes stale. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
+`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 4 hours (GitHub may deliver it late). It fails when the seed is more than 75 minutes past `cacheStatus.nextRefreshAfter`, and - via `--require-dispatch-healthy` - as soon as `/api/health` `refreshDispatch` reports a `failed` dispatch or three unacknowledged attempts, before the seed itself goes stale. A revoked App key, a wrong installation id, or a renamed workflow all land there; `scripts/check_cloudflare_health.py` names the secret to fix in the failure message. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
 
 ## Local Verification
 

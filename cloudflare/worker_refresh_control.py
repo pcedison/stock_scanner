@@ -5,6 +5,11 @@ import re
 from dataclasses import dataclass
 
 try:
+    import worker_github_app as github_app
+except ModuleNotFoundError:
+    from cloudflare import worker_github_app as github_app
+
+try:
     import worker_refresh_schedule as schedule
 except ModuleNotFoundError:
     from cloudflare import worker_refresh_schedule as schedule
@@ -76,24 +81,32 @@ def workflow_dispatch_payload(env) -> dict:
 
 
 async def github_workflow_dispatch(env, payload) -> DispatchResult:
-    token = str(env_value(env, "GITHUB_ACTIONS_DISPATCH_TOKEN", "") or "").strip()
     repository = str(env_value(env, "GITHUB_REPOSITORY", "") or "").strip()
     workflow_file = str(env_value(env, "GITHUB_REFRESH_WORKFLOW_FILE", "cloudflare-r2-seed-refresh.yml") or "").strip()
-    if not token or not repository or "/" not in repository or not workflow_file:
+    if not repository or "/" not in repository or not workflow_file:
         return DispatchResult(error_code="GITHUB_DISPATCH_NOT_CONFIGURED")
+    # A GitHub App installation token is minted per dispatch and lasts an hour, so
+    # there is no long-lived credential here for anyone to rotate or leak.
+    token, token_error = await github_app.installation_access_token(
+        env_value(env, "GITHUB_APP_ID", ""),
+        env_value(env, "GITHUB_APP_INSTALLATION_ID", ""),
+        env_value(env, "GITHUB_APP_PRIVATE_KEY", ""),
+    )
+    if not token:
+        return DispatchResult(error_code=token_error)
     try:
         import js
 
         response = await js.fetch(
-            f"https://api.github.com/repos/{repository}/actions/workflows/{workflow_file}/dispatches",
+            f"{github_app.GITHUB_API_ROOT}/repos/{repository}/actions/workflows/{workflow_file}/dispatches",
             {
                 "method": "POST",
                 "headers": {
                     "authorization": f"Bearer {token}",
                     "accept": "application/vnd.github+json",
                     "content-type": "application/json",
-                    "user-agent": "stock-scanner-worker-cron/1.0",
-                    "x-github-api-version": "2022-11-28",
+                    "user-agent": github_app.USER_AGENT,
+                    "x-github-api-version": github_app.GITHUB_API_VERSION,
                 },
                 "body": json.dumps(payload),
             },
@@ -137,6 +150,13 @@ async def run_scheduled_refresh(api, scheduled_time=None, *, dispatch=github_wor
         code = f"GITHUB_HTTP_{int(response.http_status)}"
         await _finish_dispatch(api, job_id, "failed", code, now)
         return {"status": "failed", "jobId": job_id, "dispatchStatus": "failed", "errorCode": code}
+
+    # A credential fault never clears on retry, so record it as failed immediately;
+    # the health monitor fails the next run instead of waiting out three attempts.
+    if github_app.is_permanent_error(response.error_code):
+        permanent = _safe_error_code(response.error_code) or "GITHUB_DISPATCH_ERROR"
+        await _finish_dispatch(api, job_id, "failed", permanent, now)
+        return {"status": "failed", "jobId": job_id, "dispatchStatus": "failed", "errorCode": permanent}
 
     code = response.error_code or (
         f"GITHUB_HTTP_{int(response.http_status)}" if response.http_status is not None else "GITHUB_DISPATCH_UNKNOWN"

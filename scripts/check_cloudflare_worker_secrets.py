@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
     required = list(args.names)
     if dispatch_enabled(args.config):
-        required.append("GITHUB_ACTIONS_DISPATCH_TOKEN")
+        required.extend(("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY"))
     missing = missing_secret_names(available, required)
     if missing:
         print(f"Missing {len(missing)} required Cloudflare Worker secret binding(s).", file=sys.stderr)

@@ -35,7 +35,7 @@ jobs:
             echo "CF_WORKER_HEALTH_URL repository variable must point to the deployed /api/health endpoint." >&2
             exit 1
           fi
-          # --require-dispatch-healthy surfaces an expired GITHUB_ACTIONS_DISPATCH_TOKEN
+          # --require-dispatch-healthy surfaces a broken GitHub App credential
           # (Worker cron -> GitHub 401/403) on the next monitor run, before the seed goes stale.
           python scripts/check_cloudflare_health.py \
             --url "$CF_WORKER_HEALTH_URL" \

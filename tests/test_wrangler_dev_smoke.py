@@ -44,7 +44,8 @@ def test_wrangler_dev_command_enables_scheduled_smoke_and_disables_dispatch(tmp_
     assert "--persist-to" in command
     assert str(tmp_path / "state") in command
     assert "GITHUB_DISPATCH_ENABLED:false" in command
-    assert "GITHUB_ACTIONS_DISPATCH_TOKEN" not in " ".join(command)
+    # The smoke never carries a real dispatch credential of any kind.
+    assert "GITHUB_APP_PRIVATE_KEY" not in " ".join(command)
 
 
 def test_refresh_smoke_uses_csrf_header_for_production_worker(monkeypatch):

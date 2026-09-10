@@ -67,12 +67,28 @@ def _parse_timestamp(value: Any) -> datetime | None:
 DISPATCH_UNHEALTHY_ATTEMPTS = 3
 
 
+# What to actually do about a failed dispatch, keyed by the code the Worker reports.
+DISPATCH_FAILURE_HINTS = {
+    "GITHUB_APP_NOT_CONFIGURED": " - set the GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID"
+    " and GITHUB_APP_PRIVATE_KEY Worker secrets",
+    "GITHUB_APP_SIGN_FAILED": " - GITHUB_APP_PRIVATE_KEY is not a readable PKCS#8 PEM",
+    "GITHUB_APP_TOKEN_HTTP_401": " - the GitHub App private key was revoked or does not match GITHUB_APP_ID",
+    "GITHUB_APP_TOKEN_HTTP_403": " - the GitHub App is suspended or blocked from this repository",
+    "GITHUB_APP_TOKEN_HTTP_404": " - GITHUB_APP_INSTALLATION_ID is wrong or the app was uninstalled",
+    "GITHUB_APP_TOKEN_MALFORMED": " - GitHub returned no token; check the app installation",
+    "GITHUB_HTTP_401": " - GitHub rejected the app installation token; check GITHUB_APP_ID"
+    " and GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_HTTP_403": " - the GitHub App installation is missing Actions: read and write",
+    "GITHUB_HTTP_404": " - the refresh workflow file was renamed or the app cannot see the repository",
+}
+
+
 def dispatch_problems(refresh_dispatch: Any) -> list[str]:
     """Problems with the Worker-cron -> GitHub dispatch path reported by /api/health.
 
-    A ``failed`` dispatch is a 4xx from GitHub (expired/revoked
-    ``GITHUB_ACTIONS_DISPATCH_TOKEN`` -> 401/403, renamed workflow -> 404, bad
-    inputs -> 422) and will never succeed on retry without human action, so it fails
+    A ``failed`` dispatch is either a 4xx from GitHub (renamed workflow -> 404, bad
+    inputs -> 422, installation missing Actions write -> 403) or a GitHub App credential
+    fault. Neither ever succeeds on retry without human action, so it fails
     the monitor at once instead of waiting for the seed to go stale.
     """
     if not isinstance(refresh_dispatch, dict):
@@ -83,7 +99,7 @@ def dispatch_problems(refresh_dispatch: Any) -> list[str]:
     code = refresh_dispatch.get("dispatchErrorCode") or "unknown"
     attempts = int(refresh_dispatch.get("dispatchAttempts") or 0)
     if status == "failed":
-        hint = " - rotate GITHUB_ACTIONS_DISPATCH_TOKEN" if code in {"GITHUB_HTTP_401", "GITHUB_HTTP_403"} else ""
+        hint = DISPATCH_FAILURE_HINTS.get(code, "")
         return [f"refresh dispatch failed: {code}{hint}"]
     if status == "unknown" and attempts >= DISPATCH_UNHEALTHY_ATTEMPTS:
         return [f"refresh dispatch has not been acknowledged after {attempts} attempts: {code}"]
