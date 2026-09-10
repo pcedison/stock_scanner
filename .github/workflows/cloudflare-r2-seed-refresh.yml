@@ -1,9 +1,10 @@
 name: Refresh Cloudflare R2 Seed
 
+# Scheduling lives in the Cloudflare Worker (cloudflare/wrangler.toml [triggers].crons):
+# each cron tick queues a refresh job in D1 when the seed is stale or inside the
+# refresh-ahead window and dispatches this workflow through the GitHub API. GitHub's
+# own `schedule` event was delayed or dropped for hours at a time and is no longer used.
 on:
-  schedule:
-    - cron: "7,27,47 0-10 * * 1-5"  # 台北 08:00-18:59 平日，每 20 分鐘
-    - cron: "7 11-23 * * *"          # 其餘時段每小時一次（含週末）
   workflow_dispatch:
     inputs:
       force:
@@ -26,7 +27,7 @@ concurrency:
 
 jobs:
   refresh:
-    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -34,10 +35,12 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      FORCE_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
-      OFFICIAL_HISTORY_BACKFILL_LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_limit || '400' }}
+      FORCE_REFRESH: ${{ inputs.force || false }}
+      # Worker-cron dispatches send force=false and get the bounded automatic budget;
+      # a manual force run may spend the larger backfill budget.
+      OFFICIAL_HISTORY_BACKFILL_LIMIT: ${{ inputs.force && inputs.backfill_limit || '400' }}
       # Keep the whole refresh comfortably inside the job timeout even when MOPS is slow.
-      OFFICIAL_HISTORY_BACKFILL_BUDGET_SECONDS: ${{ github.event_name == 'workflow_dispatch' && '2400' || '600' }}
+      OFFICIAL_HISTORY_BACKFILL_BUDGET_SECONDS: ${{ inputs.force && '2400' || '600' }}
       CF_R2_BUCKET: stock-scanner-beta-cache
       CF_D1_DATABASE: stock-scanner-beta-db
       CF_D1_DATABASE_ID: c29c7b4a-4a2d-4711-badd-1aaad43ce3b6

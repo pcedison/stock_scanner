@@ -27,6 +27,7 @@ DEFAULT_BUDGETS = {
     "cloudflare/worker_market_query.py": 450,
     "cloudflare/worker_refresh_jobs.py": 260,
     "cloudflare/worker_refresh_control.py": 180,
+    "cloudflare/worker_refresh_schedule.py": 170,
     "cloudflare/worker_market_resilience.py": 160,
     "cloudflare/worker_market_legacy.py": 120,
     "cloudflare/worker_observability.py": 200,

@@ -14,7 +14,9 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 CLOUDFLARE_DIR = ROOT_DIR / "cloudflare"
 PRODUCTION_CONFIG = CLOUDFLARE_DIR / "wrangler.toml"
 STAGING_TEMPLATE = CLOUDFLARE_DIR / "wrangler.staging.template.toml"
-PRODUCTION_CRON = "2,17,32,47 * * * *"
+# Committed production crons (cloudflare/wrangler.toml) are the source of truth; the
+# release profiles keep them and only guarantee dispatch stays enabled alongside them.
+PRODUCTION_CRONS = ["*/20 0-10 * * MON-FRI", "0 11-23 * * *"]
 SENTINEL_PATTERN = re.compile(r"__[A-Z0-9_]+__")
 UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 ALLOWED_PRODUCTION_SWITCHES = {
@@ -189,7 +191,7 @@ def render_production_profile(
 
     base = _load_toml(production_config)
     rendered = copy.deepcopy(base)
-    rendered.setdefault("triggers", {})["crons"] = [PRODUCTION_CRON]
+    rendered.setdefault("triggers", {})["crons"] = list(PRODUCTION_CRONS)
     rendered.setdefault("vars", {})["GITHUB_DISPATCH_ENABLED"] = "true"
     rendered.setdefault("cache", {})["enabled"] = profile == "production-v2"
     rendered["vars"]["MARKET_SCAN_API_VERSION"] = "v2" if profile == "production-v2" else "v1"

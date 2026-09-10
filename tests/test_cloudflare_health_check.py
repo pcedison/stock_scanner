@@ -337,3 +337,57 @@ def test_validate_health_url_rejects_non_https_or_wrong_path():
         validate_health_url("https://stock-scanner-beta-api.pcedison.workers.dev/api/health")
         == "https://stock-scanner-beta-api.pcedison.workers.dev/api/health"
     )
+
+
+def _dispatch(**overrides) -> dict:
+    payload = {"enabled": True, "jobStatus": None, "dispatchStatus": None, "dispatchErrorCode": None, "dispatchAttempts": 0}
+    payload.update(overrides)
+    return payload
+
+
+def test_validate_health_payload_ignores_dispatch_state_unless_required():
+    payload = _healthy_health_payload()
+    payload["refreshDispatch"] = _dispatch(jobStatus="queued", dispatchStatus="failed", dispatchErrorCode="GITHUB_HTTP_401")
+
+    summary = validate_health_payload(payload, now=datetime(2026, 7, 12, 0, 0, tzinfo=UTC))
+
+    assert summary["refreshDispatch"]["dispatchErrorCode"] == "GITHUB_HTTP_401"
+
+
+def test_validate_health_payload_fails_fast_on_expired_dispatch_token():
+    payload = _healthy_health_payload()
+    payload["refreshDispatch"] = _dispatch(jobStatus="queued", dispatchStatus="failed", dispatchErrorCode="GITHUB_HTTP_401")
+
+    with pytest.raises(RuntimeError, match=r"refresh dispatch failed: GITHUB_HTTP_401 - rotate GITHUB_ACTIONS_DISPATCH_TOKEN"):
+        validate_health_payload(payload, now=datetime(2026, 7, 12, 0, 0, tzinfo=UTC), require_dispatch_healthy=True)
+
+
+def test_validate_health_payload_requires_dispatch_enabled_and_reported():
+    now = datetime(2026, 7, 12, 0, 0, tzinfo=UTC)
+    missing = _healthy_health_payload()
+    with pytest.raises(RuntimeError, match="refreshDispatch is missing"):
+        validate_health_payload(missing, now=now, require_dispatch_healthy=True)
+
+    disabled = _healthy_health_payload()
+    disabled["refreshDispatch"] = _dispatch(enabled=False)
+    with pytest.raises(RuntimeError, match="refresh dispatch is disabled"):
+        validate_health_payload(disabled, now=now, require_dispatch_healthy=True)
+
+
+def test_validate_health_payload_tolerates_transient_dispatch_states():
+    now = datetime(2026, 7, 12, 0, 0, tzinfo=UTC)
+    for state in (
+        _dispatch(),
+        _dispatch(jobStatus="queued", dispatchStatus="pending"),
+        _dispatch(jobStatus="queued", dispatchStatus="dispatched", dispatchAttempts=1),
+        _dispatch(jobStatus="running", dispatchStatus="workflow_claimed", dispatchAttempts=1),
+        _dispatch(jobStatus="queued", dispatchStatus="unknown", dispatchErrorCode="GITHUB_HTTP_503", dispatchAttempts=2),
+    ):
+        payload = _healthy_health_payload()
+        payload["refreshDispatch"] = state
+        validate_health_payload(payload, now=now, require_dispatch_healthy=True)
+
+    stuck = _healthy_health_payload()
+    stuck["refreshDispatch"] = _dispatch(jobStatus="queued", dispatchStatus="unknown", dispatchErrorCode="GITHUB_DISPATCH_NETWORK", dispatchAttempts=3)
+    with pytest.raises(RuntimeError, match="not been acknowledged after 3 attempts"):
+        validate_health_payload(stuck, now=now, require_dispatch_healthy=True)

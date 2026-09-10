@@ -92,8 +92,10 @@ def validate_worker_release_defaults(wrangler_path: Path = DEFAULT_WRANGLER) -> 
     config = tomllib.loads(wrangler_path.read_text(encoding="utf-8"))
     vars_config = config.get("vars") or {}
     problems: list[str] = []
-    if vars_config.get("GITHUB_DISPATCH_ENABLED") != "false":
-        problems.append("committed production wrangler must keep GITHUB_DISPATCH_ENABLED=false")
+    # The Worker cron is the only scheduled trigger for the R2 seed refresh, so the
+    # committed config must keep cron and GitHub dispatch enabled together.
+    if vars_config.get("GITHUB_DISPATCH_ENABLED") != "true":
+        problems.append("committed production wrangler must keep GITHUB_DISPATCH_ENABLED=true (Worker cron dispatches the R2 refresh)")
     # The legacy v1 market read loads the multi-megabyte scan summary inside the
     # Python Worker and exhausted Cloudflare resource limits in production, so the
     # committed config must serve paginated v2 market reads with edge caching.
@@ -103,8 +105,9 @@ def validate_worker_release_defaults(wrangler_path: Path = DEFAULT_WRANGLER) -> 
         problems.append("committed production wrangler must keep EDGE_CACHE_ENABLED=true")
     if (config.get("cache") or {}).get("enabled") is not False:
         problems.append("committed production wrangler must keep [cache].enabled=false")
-    if (config.get("triggers") or {}).get("crons") != []:
-        problems.append("committed production wrangler must keep Worker crons disabled")
+    crons = (config.get("triggers") or {}).get("crons")
+    if not isinstance(crons, list) or not crons or not all(isinstance(item, str) and item.strip() for item in crons):
+        problems.append("committed production wrangler must define [triggers].crons for the Worker-scheduled R2 seed refresh")
     return problems
 
 

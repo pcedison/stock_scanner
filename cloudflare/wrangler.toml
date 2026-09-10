@@ -22,14 +22,21 @@ persist = true
 APP_ENV = "production"
 APP_CORS_ALLOW_ORIGINS = "https://stock-scanner-beta.pages.dev"
 GITHUB_REPOSITORY = "pcedison/stock_scanner"
-GITHUB_DISPATCH_ENABLED = "false"
+GITHUB_DISPATCH_ENABLED = "true"
 GITHUB_REFRESH_WORKFLOW_FILE = "cloudflare-r2-seed-refresh.yml"
 GITHUB_REFRESH_WORKFLOW_REF = "main"
 MARKET_SCAN_API_VERSION = "v2"
 EDGE_CACHE_ENABLED = "true"
 
+# Worker cron is the scheduled trigger for the R2 seed refresh. Each tick queues a
+# refresh when the seed is stale or within the refresh-ahead window and dispatches
+# .github/workflows/cloudflare-r2-seed-refresh.yml through the GitHub API using the
+# GITHUB_ACTIONS_DISPATCH_TOKEN secret. Cron times are UTC.
 [triggers]
-crons = []
+crons = [
+  "*/20 0-10 * * MON-FRI", # Taipei 08:00-18:59 weekdays, every 20 minutes
+  "0 11-23 * * *",         # otherwise hourly (weekends included)
+]
 
 [cache]
 enabled = false

@@ -64,6 +64,32 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+DISPATCH_UNHEALTHY_ATTEMPTS = 3
+
+
+def dispatch_problems(refresh_dispatch: Any) -> list[str]:
+    """Problems with the Worker-cron -> GitHub dispatch path reported by /api/health.
+
+    A ``failed`` dispatch is a 4xx from GitHub (expired/revoked
+    ``GITHUB_ACTIONS_DISPATCH_TOKEN`` -> 401/403, renamed workflow -> 404, bad
+    inputs -> 422) and will never succeed on retry without human action, so it fails
+    the monitor at once instead of waiting for the seed to go stale.
+    """
+    if not isinstance(refresh_dispatch, dict):
+        return ["refreshDispatch is missing from health payload (Worker is not reporting cron dispatch state)"]
+    if refresh_dispatch.get("enabled") is not True:
+        return ["refresh dispatch is disabled on the deployed Worker (GITHUB_DISPATCH_ENABLED is not true)"]
+    status = refresh_dispatch.get("dispatchStatus")
+    code = refresh_dispatch.get("dispatchErrorCode") or "unknown"
+    attempts = int(refresh_dispatch.get("dispatchAttempts") or 0)
+    if status == "failed":
+        hint = " - rotate GITHUB_ACTIONS_DISPATCH_TOKEN" if code in {"GITHUB_HTTP_401", "GITHUB_HTTP_403"} else ""
+        return [f"refresh dispatch failed: {code}{hint}"]
+    if status == "unknown" and attempts >= DISPATCH_UNHEALTHY_ATTEMPTS:
+        return [f"refresh dispatch has not been acknowledged after {attempts} attempts: {code}"]
+    return []
+
+
 def validate_health_payload(
     payload: dict[str, Any],
     expected_manifest: dict[str, Any] | None = None,
@@ -72,6 +98,7 @@ def validate_health_payload(
     max_refresh_delay_minutes: float | None = None,
     now: datetime | None = None,
     reject_offline_seed: bool = False,
+    require_dispatch_healthy: bool = False,
 ) -> dict[str, Any]:
     problems: list[str] = []
     cache_quality = payload.get("cacheQuality")
@@ -163,11 +190,16 @@ def validate_health_payload(
                     f"({cache_age_hours:.1f}h old, limit {max_cache_age_hours:g}h)"
                 )
 
+    refresh_dispatch = payload.get("refreshDispatch")
+    if require_dispatch_healthy:
+        problems.extend(dispatch_problems(refresh_dispatch))
+
     if problems:
         raise RuntimeError("; ".join(problems))
 
     return {
         "status": payload.get("status"),
+        "refreshDispatch": refresh_dispatch,
         "runtime": payload.get("runtime"),
         "counts": deployed_counts,
         "cacheQuality": cache_quality,
@@ -197,6 +229,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fail when the deployed manifest reports qualityGates.buildMode=offline",
     )
+    parser.add_argument(
+        "--require-dispatch-healthy",
+        action="store_true",
+        help="Fail when the Worker reports a failed or repeatedly unacknowledged GitHub workflow dispatch",
+    )
     parser.add_argument("--timeout", type=int, default=20)
     args = parser.parse_args(argv)
 
@@ -208,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             max_cache_age_hours=args.max_cache_age_hours,
             max_refresh_delay_minutes=args.max_refresh_delay_minutes,
             reject_offline_seed=args.reject_offline_seed,
+            require_dispatch_healthy=args.require_dispatch_healthy,
         )
     except RuntimeError as exc:
         print(f"Cloudflare health check failed: {exc}", file=sys.stderr)

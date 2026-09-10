@@ -6,8 +6,10 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 try:
+    from worker_refresh_schedule import refresh_is_due
     from worker_support import RateLimitError, parse_time
 except ModuleNotFoundError:
+    from cloudflare.worker_refresh_schedule import refresh_is_due
     from cloudflare.worker_support import RateLimitError, parse_time
 
 FALLBACK_BUCKET_SECONDS = 600
@@ -193,11 +195,12 @@ def _terminal_retry_after(row, policy, now) -> int:
     return _retry_after_until(allowed_at, now)
 
 
-async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now) -> dict:
+async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now, *, refresh_ahead_seconds=0) -> dict:
     normalized_client_key = normalize_idempotency_key(client_key)
     policy = api.cache_policy()
     status = api.cache_status_from_manifest(manifest, {"status": "checking", "reason": policy["reason"]})
-    if not force and not status["isStale"]:
+    due = refresh_is_due(status, now, refresh_ahead_seconds)
+    if not force and not due:
         return {"status": "fresh", "reason": policy["reason"]}
 
     cache_key = status["cacheKey"]
@@ -208,20 +211,18 @@ async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now) ->
     active = await api.db_first(READ_ACTIVE_SQL, JOB_TYPE)
     if active:
         return _job_payload(api, active)
-    if force and not status["isStale"]:
+    if force and not due:
         next_refresh = parse_time(status.get("nextRefreshAfter"))
         raise RefreshCooldownError(_retry_after_until(next_refresh, now))
-    recent_terminal = await api.db_first(
-        READ_RECENT_TERMINAL_SQL,
-        JOB_TYPE,
-        (_utc_datetime(now) - timedelta(seconds=int(policy["minIntervalSeconds"]))).isoformat(),
-    )
+    # Terminal-job cooldown is the policy interval minus the refresh-ahead window.
+    cooldown_seconds = max(int(policy["minIntervalSeconds"]) - int(refresh_ahead_seconds or 0), 0)
+    terminal_cutoff = (_utc_datetime(now) - timedelta(seconds=cooldown_seconds)).isoformat()
+    recent_terminal = await api.db_first(READ_RECENT_TERMINAL_SQL, JOB_TYPE, terminal_cutoff)
     if recent_terminal:
         raise RefreshCooldownError(_terminal_retry_after(recent_terminal, policy, now))
 
     queued_at = _utc_datetime(now).isoformat()
     candidate_id = secrets.token_hex(16)
-    terminal_cutoff = (_utc_datetime(now) - timedelta(seconds=int(policy["minIntervalSeconds"]))).isoformat()
 
     for _attempt in range(2):
         await api.db_run(
@@ -252,6 +253,7 @@ __all__ = (
     "enqueue_or_reuse_refresh_job",
     "normalize_idempotency_key",
     "refresh_command_payload",
+    "refresh_is_due",
     "refresh_job_status",
     "RefreshCooldownError",
     "RefreshJobReadBackError",

@@ -3,18 +3,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+
+try:
+    import worker_refresh_schedule as schedule
+except ModuleNotFoundError:
+    from cloudflare import worker_refresh_schedule as schedule
 
 JOB_TYPE = "market_scan"
 SAFE_ERROR_CODE = re.compile(r"[A-Z0-9_:-]{1,80}\Z", re.ASCII)
 
-READ_PENDING_DISPATCH_SQL = """
-SELECT id, status, dispatch_status
-FROM refresh_jobs
-WHERE job_type = ? AND status = 'queued' AND dispatch_status = 'pending'
-ORDER BY queued_at ASC, id ASC
-LIMIT 1
-"""
+READ_PENDING_DISPATCH_SQL = schedule.READ_PENDING_DISPATCH_SQL
 CLAIM_DISPATCH_SQL = """
 UPDATE refresh_jobs
 SET dispatch_status = 'dispatching',
@@ -44,25 +42,8 @@ class DispatchResult:
     error_code: str | None = None
 
 
-def _utc_datetime(value) -> datetime:
-    if isinstance(value, datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
-    if isinstance(value, (int, float)):
-        timestamp = value / 1000 if value > 10_000_000_000 else value
-        return datetime.fromtimestamp(timestamp, tz=UTC)
-    return datetime.now(UTC)
-
-
 def _iso(value) -> str:
-    return _utc_datetime(value).isoformat()
-
-
-def _changes(result) -> int:
-    if isinstance(result, dict):
-        return int((result.get("meta") or {}).get("changes") or result.get("changes") or 0)
-    return 0
+    return schedule.utc_datetime(value).isoformat()
 
 
 def _safe_error_code(value: str | None) -> str | None:
@@ -89,7 +70,9 @@ def dispatch_enabled(env) -> bool:
 
 def workflow_dispatch_payload(env) -> dict:
     ref = str(env_value(env, "GITHUB_REFRESH_WORKFLOW_REF", "main") or "main").strip()
-    return {"ref": ref, "inputs": {"force": "true"}}
+    # force=false keeps the workflow's own D1/freshness guards active, so a duplicate
+    # dispatch (retry after an ambiguous response) skips instead of rebuilding twice.
+    return {"ref": ref, "inputs": {"force": "false"}}
 
 
 async def github_workflow_dispatch(env, payload) -> DispatchResult:
@@ -109,6 +92,7 @@ async def github_workflow_dispatch(env, payload) -> DispatchResult:
                     "authorization": f"Bearer {token}",
                     "accept": "application/vnd.github+json",
                     "content-type": "application/json",
+                    "user-agent": "stock-scanner-worker-cron/1.0",
                     "x-github-api-version": "2022-11-28",
                 },
                 "body": json.dumps(payload),
@@ -124,17 +108,23 @@ async def _finish_dispatch(api, job_id: str, status: str, error_code: str | None
 
 
 async def run_scheduled_refresh(api, scheduled_time=None, *, dispatch=github_workflow_dispatch) -> dict:
-    now = _iso(scheduled_time)
-    pending = await api.db_first(READ_PENDING_DISPATCH_SQL, JOB_TYPE)
+    now_dt = schedule.utc_datetime(scheduled_time)
+    now = now_dt.isoformat()
+    enabled = dispatch_enabled(api.env)
+    summary: dict = {}
+    if enabled:
+        pending, summary = await schedule.prepare_pending_dispatch(api, now_dt)
+    else:
+        pending = await schedule.read_pending_dispatch(api)
     if not pending:
-        return {"status": "idle"}
+        return {"status": "idle", **summary}
 
     job_id = str(pending["id"])
-    if not dispatch_enabled(api.env):
+    if not enabled:
         return {"status": "disabled", "jobId": job_id, "dispatchStatus": "pending"}
 
     result = await api.db_run(CLAIM_DISPATCH_SQL, now, job_id, JOB_TYPE)
-    if _changes(result) != 1:
+    if schedule.changes(result) != 1:
         row = await api.db_first(READ_JOB_SQL, job_id, JOB_TYPE)
         return {"status": "coalesced", "jobId": job_id, "dispatchStatus": (row or {}).get("dispatch_status", "unknown")}
 
@@ -142,17 +132,23 @@ async def run_scheduled_refresh(api, scheduled_time=None, *, dispatch=github_wor
     response = await dispatch(api.env, payload)
     if response.http_status is not None and 200 <= int(response.http_status) < 300:
         await _finish_dispatch(api, job_id, "dispatched", None, now)
-        return {"status": "dispatched", "jobId": job_id, "dispatchStatus": "dispatched"}
+        return {"status": "dispatched", "jobId": job_id, "dispatchStatus": "dispatched", **summary}
     if response.http_status is not None and 400 <= int(response.http_status) < 500:
         code = f"GITHUB_HTTP_{int(response.http_status)}"
         await _finish_dispatch(api, job_id, "failed", code, now)
-        return {"status": "failed", "jobId": job_id, "dispatchStatus": "failed"}
+        return {"status": "failed", "jobId": job_id, "dispatchStatus": "failed", "errorCode": code}
 
     code = response.error_code or (
         f"GITHUB_HTTP_{int(response.http_status)}" if response.http_status is not None else "GITHUB_DISPATCH_UNKNOWN"
     )
     await _finish_dispatch(api, job_id, "unknown", code, now)
-    return {"status": "unknown", "jobId": job_id, "dispatchStatus": "unknown"}
+    return {"status": "unknown", "jobId": job_id, "dispatchStatus": "unknown", "errorCode": _safe_error_code(code)}
 
 
-__all__ = ("DispatchResult", "dispatch_enabled", "github_workflow_dispatch", "run_scheduled_refresh")
+__all__ = (
+    "DispatchResult",
+    "dispatch_enabled",
+    "github_workflow_dispatch",
+    "run_scheduled_refresh",
+    "workflow_dispatch_payload",
+)

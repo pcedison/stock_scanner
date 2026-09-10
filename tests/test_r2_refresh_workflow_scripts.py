@@ -189,7 +189,8 @@ def test_production_workflows_restrict_release_refs_and_r2_uses_environment():
     assert deploy.count(main_only) >= 2
     assert "      - master" not in deploy
     assert "environment: production" in refresh
-    assert "github.event_name == 'schedule' || github.ref == 'refs/heads/main'" in refresh
+    assert "if: github.ref == 'refs/heads/main'" in refresh
+    assert "github.event_name == 'schedule'" not in refresh
 
 
 def test_r2_refresh_leaves_migrations_to_deploy_and_recovers_orphaned_jobs():
