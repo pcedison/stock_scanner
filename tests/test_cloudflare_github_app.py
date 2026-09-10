@@ -161,12 +161,22 @@ def test_no_error_code_leaks_key_material_or_a_github_body():
         assert code == code.upper()
 
 
-def test_credential_faults_are_permanent_and_transport_faults_are_not():
-    # The Worker records a permanent fault as a failed dispatch straight away, so the
-    # monitor reports it on its next run rather than after three silent retries.
+def test_unambiguous_configuration_faults_are_permanent():
+    # A permanent fault is failed straight away, so the monitor names the broken secret
+    # on its next run rather than waiting out three retries.
     assert github_app.is_permanent_error("GITHUB_APP_NOT_CONFIGURED")
     assert github_app.is_permanent_error("GITHUB_APP_SIGN_FAILED")
     assert github_app.is_permanent_error("GITHUB_APP_TOKEN_HTTP_401")
+    assert github_app.is_permanent_error("GITHUB_APP_TOKEN_HTTP_404")
+
+
+def test_ambiguous_and_transport_faults_take_the_slower_retry_path():
+    # GitHub returns 403 both for a suspended app and for a secondary rate limit, and a
+    # 2xx with an unreadable body is usually a blip; alerting instantly on either would
+    # reintroduce the false alarms this change set exists to remove. They still surface,
+    # just through `unknown` after three attempts.
+    assert not github_app.is_permanent_error("GITHUB_APP_TOKEN_HTTP_403")
+    assert not github_app.is_permanent_error("GITHUB_APP_TOKEN_MALFORMED")
     assert not github_app.is_permanent_error("GITHUB_APP_TOKEN_NETWORK")
     assert not github_app.is_permanent_error("GITHUB_APP_TOKEN_HTTP_500")
     assert not github_app.is_permanent_error(None)

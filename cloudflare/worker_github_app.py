@@ -24,16 +24,19 @@ GITHUB_API_ROOT = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 USER_AGENT = "stock-scanner-worker-cron/1.0"
 
-# Credential faults that retrying cannot clear: a missing secret, an unreadable key, or
-# GitHub rejecting the app JWT. They are reported as a failed dispatch straight away so
-# the health monitor surfaces them on its next run instead of after three silent retries.
+# Unambiguously broken configuration: a missing secret, an unreadable key, a key GitHub
+# rejects, an installation that is not there. These fail the dispatch at once so the
+# monitor names the broken secret on its next run instead of waiting out three retries.
+#
+# Ambiguous codes are left out on purpose and take the slower `unknown` path, which still
+# alerts after three attempts. Notably 403, which GitHub returns both for a suspended app
+# and for a secondary rate limit. Either way nothing stalls: worker_refresh_schedule
+# returns failed and unknown dispatches to `pending` alike after DISPATCH_RETRY_SECONDS.
 PERMANENT_ERROR_CODES = frozenset(
     {
         "GITHUB_APP_NOT_CONFIGURED",
         "GITHUB_APP_SIGN_FAILED",
-        "GITHUB_APP_TOKEN_MALFORMED",
         "GITHUB_APP_TOKEN_HTTP_401",
-        "GITHUB_APP_TOKEN_HTTP_403",
         "GITHUB_APP_TOKEN_HTTP_404",
         "GITHUB_APP_TOKEN_HTTP_422",
     }
@@ -77,6 +80,11 @@ async def sign_rs256(private_key_pem: str, message: str) -> bytes:
 
     Python's standard library has no RSA and the Worker runs without external
     packages, so the runtime's own WebCrypto is the only signer available.
+
+    No test covers this: it needs the Worker runtime and pytest has no `js`. It was
+    checked against `wrangler dev`, which produced a signature byte-identical to
+    python-cryptography's over the same input (RSASSA-PKCS1-v1_5 is deterministic, so
+    that is a real check). Redo it if you change this; CI will not catch you.
     """
     import js
     from pyodide.ffi import to_js
