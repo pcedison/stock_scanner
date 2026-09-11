@@ -106,21 +106,38 @@ async def build_app_jwt(app_id: str, private_key_pem: str, now_epoch: float, *, 
     return f"{message}.{b64url(signature)}"
 
 
+def js_fetch_options(options: dict):
+    """Build a real JS options object for `js.fetch`.
+
+    Handing `js.fetch` a plain Python dict passes a PyProxy through to workerd, which
+    reads it as a Sequence and kills the interpreter: "Pyodide has suffered a fatal
+    error". That is not a Python exception, so no `except` around the call catches it and
+    the whole invocation is lost mid-flight. Verified against a deployed Worker, where it
+    wedged the cron for three hours. `worker.py` already builds JS objects this way.
+    """
+    import js
+    from pyodide.ffi import to_js
+
+    return to_js(options, dict_converter=js.Object.fromEntries)
+
+
 async def post_installation_token(url: str, app_jwt: str) -> tuple[int, str]:
     import js
 
     response = await js.fetch(
         url,
-        {
-            "method": "POST",
-            "headers": {
-                "authorization": f"Bearer {app_jwt}",
-                "accept": "application/vnd.github+json",
-                "content-type": "application/json",
-                "user-agent": USER_AGENT,
-                "x-github-api-version": GITHUB_API_VERSION,
-            },
-        },
+        js_fetch_options(
+            {
+                "method": "POST",
+                "headers": {
+                    "authorization": f"Bearer {app_jwt}",
+                    "accept": "application/vnd.github+json",
+                    "content-type": "application/json",
+                    "user-agent": USER_AGENT,
+                    "x-github-api-version": GITHUB_API_VERSION,
+                },
+            }
+        ),
     )
     return int(response.status), str(await response.text())
 

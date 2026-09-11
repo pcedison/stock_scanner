@@ -99,17 +99,19 @@ async def github_workflow_dispatch(env, payload) -> DispatchResult:
 
         response = await js.fetch(
             f"{github_app.GITHUB_API_ROOT}/repos/{repository}/actions/workflows/{workflow_file}/dispatches",
-            {
-                "method": "POST",
-                "headers": {
-                    "authorization": f"Bearer {token}",
-                    "accept": "application/vnd.github+json",
-                    "content-type": "application/json",
-                    "user-agent": github_app.USER_AGENT,
-                    "x-github-api-version": github_app.GITHUB_API_VERSION,
-                },
-                "body": json.dumps(payload),
-            },
+            github_app.js_fetch_options(
+                {
+                    "method": "POST",
+                    "headers": {
+                        "authorization": f"Bearer {token}",
+                        "accept": "application/vnd.github+json",
+                        "content-type": "application/json",
+                        "user-agent": github_app.USER_AGENT,
+                        "x-github-api-version": github_app.GITHUB_API_VERSION,
+                    },
+                    "body": json.dumps(payload),
+                }
+            ),
         )
         return DispatchResult(http_status=int(response.status))
     except Exception:
