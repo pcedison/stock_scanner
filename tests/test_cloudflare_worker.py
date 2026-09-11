@@ -3324,3 +3324,105 @@ def test_splice_market_summary_helper():
     assert looks_like_market_scan_text('{"entry":[]}') is False
     assert looks_like_market_scan_text('{"entry":[],"watch":[],"excluded":"not-a-list"}') is False
     assert looks_like_market_scan_text(None) is False
+
+
+def test_worker_health_reports_refresh_dispatch_state(monkeypatch):
+    manifest = _healthy_worker_manifest()
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    api.env.GITHUB_DISPATCH_ENABLED = "true"
+    db.refresh_jobs.append(
+        {
+            "id": "a" * 32,
+            "job_type": "market_scan",
+            "cache_key": "cache",
+            "status": "queued",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-12T00:00:00+00:00",
+            "updated_at": "2026-07-12T00:05:00+00:00",
+            "dispatch_status": "failed",
+            "dispatch_error_code": "GITHUB_HTTP_401",
+            "dispatch_attempts": 2,
+        }
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-12T00:10:00+00:00")
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert payload["refreshDispatch"] == {
+        "enabled": True,
+        "jobStatus": "queued",
+        "dispatchStatus": "failed",
+        "dispatchErrorCode": "GITHUB_HTTP_401",
+        "dispatchAttempts": 2,
+        "queuedAt": "2026-07-12T00:00:00+00:00",
+        "updatedAt": "2026-07-12T00:05:00+00:00",
+    }
+
+
+def test_worker_health_survives_d1_outage_when_reading_dispatch_state(monkeypatch):
+    manifest = _healthy_worker_manifest()
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-07-12T00:10:00+00:00")
+
+    async def failing_db_first(*_args, **_kwargs):
+        raise RuntimeError("D1 unavailable")
+
+    api.db_first = failing_db_first
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload["status"] == "ok"
+    assert payload["refreshDispatch"]["enabled"] is False
+    assert payload["refreshDispatch"]["dispatchStatus"] == "unavailable"
+
+
+def test_refresh_job_ahead_window_enqueues_before_policy_staleness(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-07-13T10:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    # 13th -> monthly revenue window, minIntervalSeconds=10800 -> stale at 13:00.
+    now = pin_worker_time(monkeypatch, worker, "2026-07-13T11:30:00+00:00")
+
+    fresh = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now))
+    assert fresh["status"] == "fresh"
+    assert db.refresh_jobs == []
+
+    queued = asyncio.run(
+        refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now, refresh_ahead_seconds=7200)
+    )
+    assert queued["status"] == "queued"
+    assert len(db.refresh_jobs) == 1
+
+
+def test_refresh_job_ahead_window_shortens_terminal_cooldown(monkeypatch):
+    refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
+    manifest = {"generatedAt": "2026-07-13T10:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    db.refresh_jobs.append(
+        {
+            "id": "b" * 32,
+            "job_type": "market_scan",
+            "cache_key": "cache",
+            "idempotency_key": "earlier",
+            "status": "success",
+            "reason": "monthly_revenue_window",
+            "queued_at": "2026-07-13T10:00:00+00:00",
+            "updated_at": "2026-07-13T10:20:00+00:00",
+            "finished_at": "2026-07-13T10:20:00+00:00",
+            "dispatch_status": "workflow_claimed",
+        }
+    )
+    now = pin_worker_time(monkeypatch, worker, "2026-07-13T11:30:00+00:00")
+
+    # Full 3h cooldown: a terminal job at 10:20 still blocks at 11:30 ...
+    with pytest.raises(refresh_jobs.RefreshCooldownError):
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "manual", now))
+    # ... but the cron caller's cooldown is 3h - 2h = 1h, so 11:30 may queue again.
+    queued = asyncio.run(
+        refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now, refresh_ahead_seconds=7200)
+    )
+    assert queued["status"] == "queued"
+    assert len(db.refresh_jobs) == 2

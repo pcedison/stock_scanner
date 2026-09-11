@@ -128,18 +128,22 @@ def test_dispatch_secret_requirement_follows_wrangler_flag(tmp_path):
 
     wrangler.write_text('[vars]\nGITHUB_DISPATCH_ENABLED = "true"\n', encoding="utf-8")
     assert dispatch_enabled(wrangler) is True
-    required = ["SUPER_USER_USERNAME", "GITHUB_ACTIONS_DISPATCH_TOKEN"]
-    assert missing_secret_names({"SUPER_USER_USERNAME"}, required) == ["GITHUB_ACTIONS_DISPATCH_TOKEN"]
+    required = ["SUPER_USER_USERNAME", "GITHUB_APP_PRIVATE_KEY"]
+    assert missing_secret_names({"SUPER_USER_USERNAME"}, required) == ["GITHUB_APP_PRIVATE_KEY"]
 
 
-def test_production_wrangler_keeps_dispatch_and_cron_disabled_until_release_config():
+def test_production_wrangler_runs_the_refresh_schedule_from_worker_cron():
     config = tomllib.loads(Path("cloudflare/wrangler.toml").read_text(encoding="utf-8"))
 
-    assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "false"
+    # GitHub `schedule` events were delayed/dropped for hours, so the Worker cron is the
+    # only scheduled trigger and must ship with GitHub dispatch enabled.
+    assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "true"
     assert config["vars"]["MARKET_SCAN_API_VERSION"] == "v2"
     assert config["vars"]["EDGE_CACHE_ENABLED"] == "true"
     assert config["cache"]["enabled"] is False
-    assert config["triggers"]["crons"] == []
+    # Cloudflare cron day-of-week is 1=Sunday (not 0), so weekdays are spelled by name.
+    assert config["triggers"]["crons"] == ["*/20 0-10 * * MON-FRI", "0 11-23 * * *"]
+    assert validate_worker_release_defaults(Path("cloudflare/wrangler.toml")) == []
     assert "cloudflare/wrangler.*.generated.toml" in Path(".gitignore").read_text(encoding="utf-8")
 
 
@@ -148,7 +152,7 @@ def test_validate_worker_release_defaults_rejects_committed_release_switches(tmp
     wrangler.write_text(
         """
 [vars]
-GITHUB_DISPATCH_ENABLED = "true"
+GITHUB_DISPATCH_ENABLED = "false"
 MARKET_SCAN_API_VERSION = "v1"
 EDGE_CACHE_ENABLED = "false"
 
@@ -156,7 +160,7 @@ EDGE_CACHE_ENABLED = "false"
 enabled = true
 
 [triggers]
-crons = ["* * * * *"]
+crons = []
 """.strip(),
         encoding="utf-8",
     )
@@ -275,13 +279,20 @@ def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
     r2_workflow = r2_path.read_text(encoding="utf-8")
     health_workflow = health_path.read_text(encoding="utf-8")
 
-    # Schedules were reduced to stop burning the Actions quota: 20-minute polling during
-    # Taipei business hours on weekdays, hourly otherwise; the monitor polls every 4 hours.
-    assert _workflow_schedule_crons(r2_path) == ["7,27,47 0-10 * * 1-5", "7 11-23 * * *"]
+    # The R2 refresh is scheduled by the Worker cron (wrangler.toml) and reached only via
+    # workflow_dispatch: GitHub `schedule` events were delayed/dropped for hours and are gone.
+    r2_triggers = yaml.safe_load(r2_workflow)
+    r2_on = r2_triggers.get("on", r2_triggers.get(True))
+    assert "schedule" not in r2_on
+    assert "workflow_dispatch" in r2_on
+    assert "github.event_name == 'schedule'" not in r2_workflow
+    # The monitor still polls from GitHub every 4 hours and now also fails fast on a dead
+    # dispatch token, before the seed itself goes stale.
     assert _workflow_schedule_crons(health_path) == ["11 */4 * * *"]
     assert "--refresh-ahead-minutes 120" in r2_workflow
     assert "--job-check-error" in r2_workflow
     assert "--max-refresh-delay-minutes 75" in health_workflow
+    assert "--require-dispatch-healthy" in health_workflow
     assert "steps.early-check.outputs.stale_refresh" in r2_workflow
 
 

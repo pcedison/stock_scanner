@@ -176,9 +176,10 @@ class Api:
             return json_response(self.runtime_config(), headers=self.runtime_config_cache_headers())
 
         if path == "/api/health" and method == "GET":
-            manifest = await self.r2_json("public/manifest.json", {})
+            dispatch_status = worker_health.refresh_dispatch_status(self, worker_refresh_control.dispatch_enabled(self.env))
+            manifest, refresh_dispatch = await asyncio.gather(self.r2_json("public/manifest.json", {}), dispatch_status)
             payload = worker_health.health_payload(
-                manifest, manifest_quality, self.cache_status_from_manifest, self.cache_policy, utc_now
+                manifest, manifest_quality, self.cache_status_from_manifest, self.cache_policy, utc_now, refresh_dispatch
             )
             return json_response(payload, public_cache_seconds=60)
 
@@ -450,11 +451,11 @@ class Api:
             "quality": manifest_quality(manifest),
         }
 
-    async def ensure_refresh_job(self, manifest, force=False, client_key=None):
+    async def ensure_refresh_job(self, manifest, force=False, client_key=None, *, refresh_ahead_seconds=0):
         failure = None
         try:
             return await worker_refresh_jobs.enqueue_or_reuse_refresh_job(
-                self, manifest, force, client_key, datetime.now(UTC)
+                self, manifest, force, client_key, datetime.now(UTC), refresh_ahead_seconds=refresh_ahead_seconds
             )
         except worker_refresh_jobs.RefreshJobReadBackError as exc:
             failure = DependencyFailure("d1_read", True, exc)

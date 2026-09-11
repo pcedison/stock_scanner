@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.render_wrangler_release_config import (
-    PRODUCTION_CRON,
+    PRODUCTION_CRONS,
     render_production_profile,
     render_staging_config,
 )
@@ -61,7 +61,7 @@ def test_staging_config_rejects_production_resources():
 def test_production_cron_profile_enables_cron_and_dispatch_atomically():
     config = parsed(render_production_profile("production-cron", enable_production_cron=True))
 
-    assert config["triggers"]["crons"] == [PRODUCTION_CRON]
+    assert config["triggers"]["crons"] == PRODUCTION_CRONS
     assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "true"
     assert config["vars"]["MARKET_SCAN_API_VERSION"] == "v1"
     assert config["vars"]["EDGE_CACHE_ENABLED"] == "false"
@@ -76,7 +76,7 @@ def test_production_v2_and_rollback_profiles_change_only_release_switches():
             enable_production_v2=True,
         )
     )
-    assert v2["triggers"]["crons"] == [PRODUCTION_CRON]
+    assert v2["triggers"]["crons"] == PRODUCTION_CRONS
     assert v2["vars"]["GITHUB_DISPATCH_ENABLED"] == "true"
     assert v2["vars"]["MARKET_SCAN_API_VERSION"] == "v2"
     assert v2["vars"]["EDGE_CACHE_ENABLED"] == "true"
@@ -89,7 +89,7 @@ def test_production_v2_and_rollback_profiles_change_only_release_switches():
             confirm_production_v1_rollback=True,
         )
     )
-    assert rollback["triggers"]["crons"] == [PRODUCTION_CRON]
+    assert rollback["triggers"]["crons"] == PRODUCTION_CRONS
     assert rollback["vars"]["GITHUB_DISPATCH_ENABLED"] == "true"
     assert rollback["vars"]["MARKET_SCAN_API_VERSION"] == "v1"
     assert rollback["vars"]["EDGE_CACHE_ENABLED"] == "false"

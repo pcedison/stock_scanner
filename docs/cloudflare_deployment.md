@@ -20,6 +20,11 @@ GitHub Actions secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
+Cloudflare Worker secrets (`npx wrangler secret put <NAME> --config cloudflare/wrangler.toml`):
+
+- `SUPER_USER_USERNAME`
+- `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`: credentials for a GitHub App that can `POST /repos/{owner}/{repo}/actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches`. See [Dispatch credentials](#dispatch-credentials-github-app) for how to create them. A personal access token would also work, but every fine-grained token expires within 366 days and the seed silently stops refreshing when it does; an App private key has no expiry. All three are secrets rather than vars because this repository is public. Deploys fail preflight (`scripts/check_cloudflare_worker_secrets.py`) while any is missing.
+
 GitHub Actions repository variables:
 
 - `CF_WORKER_HEALTH_URL`: deployed Worker HTTPS `/api/health` URL.
@@ -37,12 +42,49 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 - `MARKET_SCAN_API_VERSION = "v2"`
 - `EDGE_CACHE_ENABLED = "true"`
 - `[cache].enabled = false`
-- `[triggers].crons = []`
-- `GITHUB_DISPATCH_ENABLED = "false"`
+- `[triggers].crons = ["*/20 0-10 * * MON-FRI", "0 11-23 * * *"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name)
+- `GITHUB_DISPATCH_ENABLED = "true"`
 
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
 
-The committed production config serves paginated v2 market reads with edge cache headers: the legacy v1 `GET /api/scan/market` payload (several MB) exhausted Python Worker resource limits in production (2026-09), so v1 is kept only as a streamed pass-through fallback for stale clients. Cron dispatch and the Worker `[cache]` binding are still enabled only through generated full configs from `scripts/render_wrangler_release_config.py`; do not hand-edit production release switches in `cloudflare/wrangler.toml`.
+The committed production config serves paginated v2 market reads with edge cache headers: the legacy v1 `GET /api/scan/market` payload (several MB) exhausted Python Worker resource limits in production (2026-09), so v1 is kept only as a streamed pass-through fallback for stale clients. The Worker cron and GitHub dispatch are enabled in the committed config (see "Server-Side R2 Seed Rebuild"); `scripts/check_deployment_preflight.py` rejects a config that turns either of them off. The Worker `[cache]` binding is still enabled only through generated full configs from `scripts/render_wrangler_release_config.py`.
+
+## Dispatch credentials (GitHub App)
+
+The Worker cron triggers the refresh workflow through the GitHub API, which needs a
+credential. A GitHub App is used rather than a personal access token because every
+fine-grained PAT expires within 366 days and the seed stops refreshing the moment it
+does; an App private key has no expiry, and the token actually used on the wire is a
+one-hour installation token the Worker mints for itself on each dispatch.
+
+One-time setup:
+
+1. Create the App at <https://github.com/settings/apps/new>.
+   - **GitHub App name**: anything unique, e.g. `stock-scanner-seed-refresh`.
+   - **Homepage URL**: this repository's URL.
+   - **Webhook**: untick **Active**. The Worker calls GitHub, never the reverse.
+   - **Repository permissions -> Actions**: **Read and write**. Leave everything else
+     at *No access*; `Metadata: Read-only` is added automatically.
+   - **Where can this GitHub App be installed?**: *Only on this account*.
+2. On the App's page note the **App ID** -> `GITHUB_APP_ID`.
+3. **Generate a private key** at the bottom of the same page. A `.pem` downloads; it is
+   shown only once. It is already PKCS#8, which is what WebCrypto imports.
+4. **Install App** -> this account -> **Only select repositories** -> this repository.
+   After installing, the URL ends in `/installations/<id>`; that number is
+   `GITHUB_APP_INSTALLATION_ID`.
+5. Store all three as Worker secrets:
+
+   ```bash
+   npx wrangler secret put GITHUB_APP_ID --config cloudflare/wrangler.toml
+   npx wrangler secret put GITHUB_APP_INSTALLATION_ID --config cloudflare/wrangler.toml
+   npx wrangler secret put GITHUB_APP_PRIVATE_KEY --config cloudflare/wrangler.toml < app.private-key.pem
+   ```
+
+   The private key is multi-line, so pipe the `.pem` in rather than pasting it. Delete
+   the local `.pem` afterwards; it never belongs in the repository.
+
+Rotation is only needed if the key is exposed: generate a new one on the App page,
+`wrangler secret put` it, then delete the old key in GitHub.
 
 ## Deploy Flow
 
@@ -92,13 +134,22 @@ This keeps production deploys deterministic while preventing the committed seed 
 
 ## Server-Side R2 Seed Rebuild
 
-`.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. It runs every 15 minutes and can also be dispatched manually with `force=true`.
+`.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. It has no GitHub `schedule` trigger: GitHub delivered scheduled runs hours late or not at all (2026-09, roughly one run per 3-4 hours against a 20-minute cron), which let the seed pass its policy deadline and tripped the health monitor. Scheduling lives in the Worker instead.
+
+Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes on Taipei weekday business hours and hourly otherwise) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
+
+1. Re-queues a `running` job whose workflow run started more than 2 hours ago (cancelled or timed-out run) - `worker_refresh_schedule.ORPHANED_RUNNING_SECONDS`.
+2. Resets a `failed` / `unknown` / never-claimed `dispatched` job back to `pending` after 20 minutes so the dispatch is retried - `DISPATCH_RETRY_SECONDS`.
+3. Queues a new `market_scan` job when the deployed seed is stale or will be stale within 2 hours (`REFRESH_AHEAD_SECONDS`); the terminal-job cooldown is shortened by the same window so the rebuild lands before `cacheStatus.nextRefreshAfter`.
+4. Dispatches the pending job with `POST .../actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches` (`inputs.force=false`), authenticating as the GitHub App: it signs a short-lived RS256 JWT with `GITHUB_APP_PRIVATE_KEY` through WebCrypto, exchanges it for a one-hour installation token, and uses that for the dispatch. A token is minted per dispatch, so nothing is cached and nothing expires between runs. The job records `dispatch_status` / `dispatch_error_code`, and `/api/health` exposes this as `refreshDispatch`.
+
+The workflow can still be dispatched manually; `force=true` bypasses the D1/freshness guards and unlocks the larger MOPS backfill budget. On each run it:
 
 1. Poll D1 `refresh_jobs` for queued or running `market_scan` jobs and check deployed `/api/health` freshness.
 2. Stop without touching R2 when no job is queued and the production seed is fresh, unless the workflow is manually forced.
 3. Mark queued jobs as `running`.
 4. Download the previous R2 `official/monthly_revenue_history.json`, `official/official_fundamentals_history.json`, and `official/official_history_backfill_progress.json`, then merge them with the committed seed through `scripts/hydrate_cloudflare_seed_inputs.py` (the R2 quarterly history wins over the zip snapshot so backfilled prior-year quarters persist across runs).
-5. Backfill prior-year same-quarter fundamentals from MOPS with `python -m backend.services.official_history_backfill --retry-failed` (bounded by `OFFICIAL_HISTORY_BACKFILL_LIMIT`, 400 on schedule / `backfill_limit` input on manual runs). This supplies the EPS and net-income YoY inputs for the X3–X5 rules; a MOPS outage degrades those rules to INSUFFICIENT_DATA instead of blocking the refresh.
+5. Backfill prior-year same-quarter fundamentals from MOPS with `python -m backend.services.official_history_backfill --retry-failed` (bounded by `OFFICIAL_HISTORY_BACKFILL_LIMIT`, 400 for Worker-cron dispatches / `backfill_limit` input on manual `force=true` runs). This supplies the EPS and net-income YoY inputs for the X3–X5 rules; a MOPS outage degrades those rules to INSUFFICIENT_DATA instead of blocking the refresh.
 6. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
 7. Reject publication when fewer than 1,000 companies have consecutive revenue months or when more than 10% of scan rows lack the X2 previous-month signal.
 8. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with freshness, monthly-history, universe, and analysis gates.
@@ -155,7 +206,7 @@ Before each Worker rollout that depends on a new D1 migration, apply and verify 
 
 ## Monitoring
 
-`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 30 minutes. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
+`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 4 hours (GitHub may deliver it late). It fails when the seed is more than 75 minutes past `cacheStatus.nextRefreshAfter`, and - via `--require-dispatch-healthy` - as soon as `/api/health` `refreshDispatch` reports a `failed` dispatch or three unacknowledged attempts, before the seed itself goes stale. A revoked App key, a wrong installation id, or a renamed workflow all land there; `scripts/check_cloudflare_health.py` names the secret to fix in the failure message. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
 
 ## Local Verification
 
