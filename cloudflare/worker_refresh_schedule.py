@@ -42,7 +42,7 @@ READ_RETRYABLE_DISPATCH_SQL = """
 SELECT id, status, dispatch_status, dispatch_attempts, dispatch_error_code, updated_at
 FROM refresh_jobs
 WHERE job_type = ? AND status = 'queued'
-  AND dispatch_status IN ('failed', 'unknown', 'dispatched')
+  AND dispatch_status IN ('failed', 'unknown', 'dispatched', 'dispatching')
   AND julianday(COALESCE(NULLIF(updated_at, ''), queued_at)) <= julianday(?)
 ORDER BY queued_at ASC, id ASC
 LIMIT 1
@@ -51,7 +51,7 @@ RESET_RETRYABLE_DISPATCH_SQL = """
 UPDATE refresh_jobs
 SET dispatch_status = 'pending', updated_at = ?
 WHERE id = ? AND job_type = ? AND status = 'queued'
-  AND dispatch_status IN ('failed', 'unknown', 'dispatched')
+  AND dispatch_status IN ('failed', 'unknown', 'dispatched', 'dispatching')
 """
 RECOVER_ORPHANED_RUNNING_SQL = """
 UPDATE refresh_jobs
@@ -103,7 +103,13 @@ async def recover_orphaned_running_jobs(api, now: datetime) -> int:
 
 
 async def requeue_retryable_dispatch(api, now: datetime):
-    """Reset a failed/unknown/unclaimed dispatch to ``pending`` after the retry delay."""
+    """Reset a stalled dispatch to ``pending`` after the retry delay.
+
+    ``dispatching`` is included because it is transient: claim, call GitHub, record the
+    outcome. An invocation that dies in between leaves a row no later tick can see - not
+    ``pending``, not ``running`` - which wedges the Worker cron for good. The cutoff makes
+    this safe; a live dispatch settles in seconds, not DISPATCH_RETRY_SECONDS.
+    """
     cutoff = (utc_datetime(now) - timedelta(seconds=DISPATCH_RETRY_SECONDS)).isoformat()
     row = await api.db_first(READ_RETRYABLE_DISPATCH_SQL, JOB_TYPE, cutoff)
     if not row:

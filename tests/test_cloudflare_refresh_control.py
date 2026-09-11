@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import types
 from datetime import UTC, datetime, timedelta
 
 from cloudflare import worker_refresh_control, worker_refresh_schedule
 
 FIXED_TIME = datetime(2026, 7, 13, 12, 15, tzinfo=UTC)
+# Derived from the module's own SQL rather than restated here: a fake that hardcodes
+# the state list keeps recovering rows after the SQL stops selecting them, which makes
+# the recovery tests pass against a broken module.
+RETRYABLE_DISPATCH_STATUSES = set(
+    re.findall(
+        r"'([a-z]+)'",
+        re.search(
+            r"dispatch_status IN \(([^)]*)\)",
+            worker_refresh_schedule.READ_RETRYABLE_DISPATCH_SQL,
+        ).group(1),
+    )
+)
 
 
 def _iso(value: datetime) -> str:
@@ -60,14 +73,14 @@ class FakeApi:
                 (dict(row) for row in self.rows if row["status"] == "queued" and row["dispatch_status"] == "pending"),
                 None,
             )
-        if "dispatch_status IN ('failed', 'unknown', 'dispatched')" in normalized and normalized.startswith("SELECT"):
+        if "dispatch_status IN (" in normalized and normalized.startswith("SELECT"):
             _job_type, cutoff = params
             return next(
                 (
                     dict(row)
                     for row in self.rows
                     if row["status"] == "queued"
-                    and row["dispatch_status"] in {"failed", "unknown", "dispatched"}
+                    and row["dispatch_status"] in RETRYABLE_DISPATCH_STATUSES
                     and (row.get("updated_at") or row["queued_at"]) <= cutoff
                 ),
                 None,
@@ -98,7 +111,7 @@ class FakeApi:
                 if (
                     row["id"] == job_id
                     and row["status"] == "queued"
-                    and row["dispatch_status"] in {"failed", "unknown", "dispatched"}
+                    and row["dispatch_status"] in RETRYABLE_DISPATCH_STATUSES
                 ):
                     row.update({"dispatch_status": "pending", "updated_at": now})
                     return {"meta": {"changes": 1}}
@@ -271,6 +284,36 @@ def test_unknown_dispatch_is_retried_after_the_retry_delay():
     assert api.rows[0]["dispatch_status"] == "dispatched"
     assert len(calls) == 1
     assert api.enqueue_calls == []
+
+
+def test_dispatch_stuck_mid_flight_is_recovered_after_the_retry_delay():
+    # Production, 2026-09-11: a tick claimed a job at 07:00:41 and the invocation died
+    # before recording an outcome. The row sat in 'dispatching' - not pending, not
+    # running - so no later tick could see it and the Worker cron stopped dispatching
+    # entirely until the row was reset by hand.
+    api = FakeApi(enabled=True)
+    stale = _iso(FIXED_TIME - timedelta(seconds=worker_refresh_schedule.DISPATCH_RETRY_SECONDS + 60))
+    api.rows.append(queued_job("job-stuck", dispatch_status="dispatching", updated_at=stale))
+    calls: list[dict] = []
+
+    result = _run(api, _ok_dispatch(calls))
+
+    assert result["status"] == "dispatched"
+    assert result["jobId"] == "job-stuck"
+    assert len(calls) == 1
+
+
+def test_dispatch_still_in_flight_is_left_alone():
+    # The mirror of the above: a dispatch claimed moments ago is genuinely in progress,
+    # so the retry delay must not let a concurrent tick claim it a second time.
+    api = FakeApi(enabled=True, next_refresh_after=_iso(FIXED_TIME + timedelta(hours=6)))
+    api.rows.append(queued_job("job-live", dispatch_status="dispatching", updated_at=_iso(FIXED_TIME - timedelta(minutes=2))))
+    calls: list[dict] = []
+
+    result = _run(api, _ok_dispatch(calls))
+
+    assert result["status"] == "idle"
+    assert calls == []
 
 
 def test_recent_unknown_dispatch_waits_for_the_retry_delay():
