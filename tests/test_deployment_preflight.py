@@ -279,13 +279,14 @@ def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
     r2_workflow = r2_path.read_text(encoding="utf-8")
     health_workflow = health_path.read_text(encoding="utf-8")
 
-    # The R2 refresh is scheduled by the Worker cron (wrangler.toml) and reached only via
-    # workflow_dispatch: GitHub `schedule` events were delayed/dropped for hours and are gone.
+    # The Worker cron is the primary trigger, but GitHub `schedule` is kept as a
+    # backstop: after the 2026-09-11 cutover the Worker cron did not fire and, with
+    # `schedule` removed, nothing refreshed the seed for five hours. Both may run - the
+    # Worker dispatches force=false so the second arrival is a no-op here.
     r2_triggers = yaml.safe_load(r2_workflow)
     r2_on = r2_triggers.get("on", r2_triggers.get(True))
-    assert "schedule" not in r2_on
+    assert _workflow_schedule_crons(r2_path) == ["7,27,47 0-10 * * 1-5", "7 11-23 * * *"]
     assert "workflow_dispatch" in r2_on
-    assert "github.event_name == 'schedule'" not in r2_workflow
     # The monitor still polls from GitHub every 4 hours and now also fails fast on a dead
     # dispatch token, before the seed itself goes stale.
     assert _workflow_schedule_crons(health_path) == ["11 */4 * * *"]

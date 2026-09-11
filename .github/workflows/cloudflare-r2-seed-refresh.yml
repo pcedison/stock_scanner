@@ -1,10 +1,17 @@
 name: Refresh Cloudflare R2 Seed
 
-# Scheduling lives in the Cloudflare Worker (cloudflare/wrangler.toml [triggers].crons):
-# each cron tick queues a refresh job in D1 when the seed is stale or inside the
-# refresh-ahead window and dispatches this workflow through the GitHub API. GitHub's
-# own `schedule` event was delayed or dropped for hours at a time and is no longer used.
+# Primary trigger is the Cloudflare Worker cron (cloudflare/wrangler.toml
+# [triggers].crons), which dispatches this workflow through the GitHub API.
+# The `schedule` below is only a backstop: GitHub delivers it with a median gap of
+# 3.28h (max 39.32h observed) against its 20-minute cron, but after the 2026-09-11
+# cutover the Worker cron did not fire at all and nothing refreshed the seed for five
+# hours. Running both is free - the Worker dispatches force=false, so whichever
+# arrives second is a no-op through this workflow's own D1/freshness guards. Drop this
+# block only once the Worker cron is observed firing in production.
 on:
+  schedule:
+    - cron: "7,27,47 0-10 * * 1-5"  # 台北 08:00-18:59 平日，每 20 分鐘
+    - cron: "7 11-23 * * *"          # 其餘時段每小時一次（含週末）
   workflow_dispatch:
     inputs:
       force:
