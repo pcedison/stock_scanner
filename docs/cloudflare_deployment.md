@@ -42,7 +42,7 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 - `MARKET_SCAN_API_VERSION = "v2"`
 - `EDGE_CACHE_ENABLED = "true"`
 - `[cache].enabled = false`
-- `[triggers].crons = ["*/20 0-10 * * MON-FRI", "0 11-23 * * *"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name)
+- `[triggers].crons = ["*/20 0-10 * * MON-FRI", "0 11-23 * * MON-FRI"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name). Both are weekday-only: every source the seed is built from publishes on trading days only, so a weekend tick can only re-fetch data that cannot have changed.
 - `GITHUB_DISPATCH_ENABLED = "true"`
 
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
@@ -85,6 +85,23 @@ One-time setup:
 
 Rotation is only needed if the key is exposed: generate a new one on the App page,
 `wrangler secret put` it, then delete the old key in GitHub.
+
+
+## Refresh cadence and the trading calendar
+
+Every source the seed is built from - daily valuation ratios (`BWIBBU_d`, TPEX P/E), company profiles (`t187ap03`), MOPS monthly revenue (`t187ap05`) and quarterly filings (`t187ap06/07`) - only publishes on a trading day. The market closes at 13:30 and the official post-close files land shortly after, so a trading day's data is complete at **15:00 Taipei**.
+
+Two things follow from that, and both are implemented:
+
+- **Nothing is fetched while the market is shut.** Both Worker crons and the workflow's `schedule` backstop are weekday-only. A weekend tick could only re-fetch Friday's data, burning Actions minutes and adding load to sources that rate-limit.
+- **A refresh deadline landing on a non-trading day waits for the next trading day.** `backend/services/cache_policy.next_publication_time` and its Worker mirror `cloudflare/worker_trading_calendar.py` push such a deadline to the next trading day at 15:00 Taipei. Without this the seed was reported stale every three hours all weekend even though the data was complete and current, which failed the health monitor for no reason.
+
+A deadline already on a trading day is left alone, so the intraday cadence during the monthly-revenue (day 8-15) and financial-report windows is unchanged.
+
+Market holidays come from `data/market_calendar_<year>.json` (built from the TWSE holiday schedule). The seed build copies them into the manifest as `marketClosedDates` for the current and next year, which is how the Worker sees them - it cannot read the repo. A missing or unreadable list degrades to weekend-only rather than failing the request.
+
+`tests/test_trading_calendar_parity.py` pins the backend and Worker implementations to the same answers; they are duplicated because the Worker cannot import `backend`.
+
 
 ## Deploy Flow
 
@@ -136,7 +153,7 @@ This keeps production deploys deterministic while preventing the committed seed 
 
 `.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. It has no GitHub `schedule` trigger: GitHub delivered scheduled runs hours late or not at all (2026-09, roughly one run per 3-4 hours against a 20-minute cron), which let the seed pass its policy deadline and tripped the health monitor. Scheduling lives in the Worker instead.
 
-Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes on Taipei weekday business hours and hourly otherwise) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
+Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes during Taipei weekday business hours and hourly through weekday evenings) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
 
 1. Re-queues a `running` job whose workflow run started more than 2 hours ago (cancelled or timed-out run) - `worker_refresh_schedule.ORPHANED_RUNNING_SECONDS`.
 2. Resets a `failed` / `unknown` / never-claimed `dispatched` job back to `pending` after 20 minutes so the dispatch is retried - `DISPATCH_RETRY_SECONDS`.
