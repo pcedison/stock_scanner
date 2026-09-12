@@ -22,7 +22,11 @@ DEFAULT_BUDGETS = {
     "frontend/market_refresh.js": 220,
     "frontend/reference_data.js": 40,
     "frontend/styles.css": 2953,
-    "cloudflare/worker.py": 900,
+    # 900 -> 905: the trading-calendar rule lives in cloudflare/worker_trading_calendar.py,
+    # so only an import and a one-line call site landed here. tests/test_code_size_budgets.py
+    # pins this number on purpose - raising it is meant to be a deliberate, reviewed act.
+    "cloudflare/worker.py": 905,
+    "cloudflare/worker_trading_calendar.py": 90,
     "cloudflare/worker_health.py": 120,
     "cloudflare/worker_market_query.py": 450,
     "cloudflare/worker_refresh_jobs.py": 260,

@@ -25,11 +25,13 @@ try:
     import worker_observability as observability
     import worker_refresh_control
     import worker_refresh_jobs
+    import worker_trading_calendar as trading_calendar
 except ModuleNotFoundError:
     from cloudflare import worker_health, worker_market_query, worker_refresh_control, worker_refresh_jobs
     from cloudflare import worker_market_legacy as market_legacy
     from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
+    from cloudflare import worker_trading_calendar as trading_calendar
 
 CLIENT_ERROR_STATUS = {BadRequestError: 400, NotFoundError: 404, ValidationError: 422, PermissionError: 401, ForbiddenError: 403}
 set_response_header = observability.set_response_header
@@ -432,7 +434,10 @@ class Api:
         next_refresh = None
         is_stale = True
         if generated_time:
-            next_refresh_time = generated_time.astimezone(UTC) + timedelta(seconds=policy["minIntervalSeconds"])
+            # Deadlines landing while the market is shut wait for the next trading day.
+            next_refresh_time = trading_calendar.next_refresh_deadline(
+                generated_time.astimezone(UTC), policy["minIntervalSeconds"], manifest
+            )
             next_refresh = next_refresh_time.isoformat()
             is_stale = datetime.now(UTC) >= next_refresh_time
         return {

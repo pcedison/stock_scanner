@@ -511,9 +511,11 @@ def _healthy_worker_manifest(generated_at="2026-07-11T21:52:48+00:00"):
 
 
 def test_worker_health_is_fresh_before_dynamic_cache_boundary(monkeypatch):
-    manifest = _healthy_worker_manifest()
+    # A Wednesday: the interval alone decides staleness here. The weekend rule is
+    # covered by test_worker_health_stays_fresh_while_the_market_is_shut.
+    manifest = _healthy_worker_manifest("2026-07-14T21:52:48+00:00")
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:47+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-15T00:52:47+00:00")
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
@@ -521,14 +523,14 @@ def test_worker_health_is_fresh_before_dynamic_cache_boundary(monkeypatch):
     assert response.init["status"] == 200
     assert payload["status"] == "ok"
     assert payload["cacheStatus"]["isStale"] is False
-    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-12T00:52:48")
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-15T00:52:48")
     assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
 
 
 def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
-    manifest = _healthy_worker_manifest()
+    manifest = _healthy_worker_manifest("2026-07-14T21:52:48+00:00")
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:48+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-15T00:52:48+00:00")
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
@@ -536,20 +538,47 @@ def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
     assert response.init["status"] == 200
     assert payload["status"] == "degraded"
     assert payload["cacheStatus"]["isStale"] is True
-    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-12T00:52:48")
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-15T00:52:48")
     assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
 
 
 def test_worker_health_degrades_after_dynamic_cache_boundary(monkeypatch):
-    manifest = _healthy_worker_manifest()
+    manifest = _healthy_worker_manifest("2026-07-14T21:52:48+00:00")
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-12T00:52:49+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-15T00:52:49+00:00")
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
 
     assert response.init["status"] == 200
     assert payload["status"] == "degraded"
+    assert payload["cacheStatus"]["isStale"] is True
+
+
+def test_worker_health_stays_fresh_while_the_market_is_shut(monkeypatch):
+    # The seed built late Friday UTC is the complete Friday picture; nothing is filed
+    # over the weekend, so calling it stale every three hours was a false alarm. It now
+    # stays fresh until the next trading day's publish hour, 15:00 Taipei on Monday.
+    manifest = _healthy_worker_manifest("2026-09-11T23:07:20+00:00")
+    manifest["marketClosedDates"] = ["2026-09-28"]
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-09-12T08:46:00+00:00")
+
+    payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
+
+    assert payload["status"] == "ok"
+    assert payload["cacheStatus"]["isStale"] is False
+    # 2026-09-14 15:00 Taipei == 07:00 UTC
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-09-14T07:00")
+
+
+def test_worker_health_degrades_once_the_next_trading_day_publishes(monkeypatch):
+    manifest = _healthy_worker_manifest("2026-09-11T23:07:20+00:00")
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    pin_worker_time(monkeypatch, worker, "2026-09-14T07:00:01+00:00")
+
+    payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
+
     assert payload["cacheStatus"]["isStale"] is True
 
 

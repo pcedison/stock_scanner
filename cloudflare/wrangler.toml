@@ -37,7 +37,7 @@ EDGE_CACHE_ENABLED = "true"
 [triggers]
 crons = [
   "*/20 0-10 * * MON-FRI", # Taipei 08:00-18:59 weekdays, every 20 minutes
-  "0 11-23 * * *",         # otherwise hourly (weekends included)
+  "0 11-23 * * MON-FRI",   # weekday evenings/overnight Taipei, hourly
 ]
 
 [cache]

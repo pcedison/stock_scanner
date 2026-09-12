@@ -40,7 +40,8 @@ from backend.models.company import Company  # noqa: E402
 from backend.models.financial import FundamentalSnapshot  # noqa: E402
 from backend.models.holding import Holding  # noqa: E402
 from backend.models.settings import ScannerSettings  # noqa: E402
-from backend.services.cache_policy import refresh_policy  # noqa: E402
+from backend.services.cache_policy import next_publication_time, refresh_policy  # noqa: E402
+from backend.services.calendar import load_market_calendar  # noqa: E402
 from backend.services.market_query import build_market_generation, canonical_json_bytes  # noqa: E402
 from backend.services.market_scan import data_sources_status_payload, scan_market_payload  # noqa: E402
 from backend.services.official_data_provider import OfficialDataProvider, _is_financial_company  # noqa: E402
@@ -105,6 +106,14 @@ def clear_generated_analysis_shards() -> None:
     directories = [_resolved_seed_child(path) for path in (ANALYSIS_SHARD_DIR, HOLDING_ANALYSIS_SHARD_DIR)]
     _remove_generated_json_files(directories)
 
+
+
+def market_closed_dates(year: int) -> set:
+    """TWSE closed days for this year and the next, so the walk forward can cross 31 Dec."""
+    closed: set = set()
+    for value in (year, year + 1):
+        closed |= load_market_calendar(value).closed_dates
+    return closed
 
 def clear_seed_output() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -689,7 +698,13 @@ def main() -> None:
     scan_payload = _scan_market_payload(settings)
     policy = refresh_policy()
     generated_at = datetime.fromisoformat(scan_payload["generatedAt"])
-    next_refresh = generated_at + timedelta(seconds=policy["minIntervalSeconds"])
+    # Nothing is published while the market is shut, so a deadline that lands on a
+    # weekend or holiday is moved to the next trading day instead of marking the seed
+    # stale against sources that cannot have changed.
+    closed_dates = market_closed_dates(generated_at.year)
+    next_refresh = next_publication_time(
+        generated_at + timedelta(seconds=policy["minIntervalSeconds"]), closed_dates
+    )
     snapshots = official_provider.list_snapshots(settings)
     companies = merge_seed_companies(official_provider.list_companies(), snapshots)
     analysis_by_code: dict = {}
@@ -749,6 +764,9 @@ def main() -> None:
         "companiesByMarket": company_market_counts(companies),
         "financialFreshness": scan_payload.get("financialFreshness"),
         "cachePolicy": policy,
+        # The Worker applies the same trading-day rule and has no access to the repo
+        # calendar, so the closed days ride along with every rebuild.
+        "marketClosedDates": sorted(day.isoformat() for day in closed_dates),
         "files": [
             "market_scan_latest.json",
             MARKET_SCAN_SUMMARY_FILE,
