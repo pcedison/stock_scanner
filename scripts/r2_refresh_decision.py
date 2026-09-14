@@ -269,6 +269,7 @@ def backfill_summary_markdown(payload: object) -> str:
             ("skippedCompanies", "skipped"),
             ("failedCompanies", "failed"),
             ("pendingCompanies", "pending"),
+            ("unavailableCompanies", "unavailable (not retried)"),
             ("incomeRows", "income rows"),
             ("balanceRows", "balance rows"),
         )
