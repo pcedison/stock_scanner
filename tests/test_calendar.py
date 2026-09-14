@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 import backend.services.calendar as calendar_module
@@ -68,7 +70,9 @@ def test_market_calendar_load_falls_back_when_file_absent(tmp_path, monkeypatch)
     monkeypatch.setattr(calendar_module, "ROOT_DIR", tmp_path)  # empty dir, no calendar file
     cal = calendar_module.MarketCalendar.load(2026)
     assert cal.source == "weekend-only fallback"
-    assert cal.closed_dates == set()
+    # TWSE publishes next year's schedule late in the year; New Year's Day is always closed,
+    # so a Dec 31 walk forward never schedules a rebuild on it.
+    assert cal.closed_dates == {date(2026, 1, 1)}
 
 
 def test_update_market_calendar_writes_then_reloads(tmp_path, monkeypatch):

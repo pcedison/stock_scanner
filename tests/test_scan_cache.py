@@ -202,11 +202,11 @@ def test_publication_slot_policy_keeps_the_local_cache_fresh_until_the_next_slot
 
     policy = {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "schedule": "publication_slots",
               "minIntervalSeconds": 3600}
-    stored = datetime(2026, 9, 15, 9, 40, tzinfo=UTC)  # Tue 17:40 Taipei
+    stored = datetime(2026, 9, 15, 10, 40, tzinfo=UTC)  # Tue 18:40 Taipei
 
     expected = next_refresh_after(stored, market_closed_dates(2026))
     assert scan_cache_module._next_refresh(stored, policy) == expected
-    assert expected == datetime(2026, 9, 16, 9, 30, tzinfo=UTC)  # not 18:40 an hour later
+    assert expected == datetime(2026, 9, 16, 10, 0, tzinfo=UTC)  # Wed 18:00 Taipei, not an hour later
 
 
 def test_stale_scan_cache_queues_single_background_refresh(tmp_path):

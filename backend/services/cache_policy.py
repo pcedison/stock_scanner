@@ -17,9 +17,10 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 # - TWSE OpenAPI (t187ap03/05/06/07_L) is regenerated once a day at ~05:25 with the MOPS
 #   filings up to the previous day.
 MORNING_SLOT = time(6, 30)
-# - TWSE BWIBBU_d carries the day's valuation ratios after the 13:30 close, and TPEX OpenAPI
-#   (profiles, revenue, filings, P/E) is regenerated at ~16:00.
-EVENING_SLOT = time(17, 30)
+# - TPEX OpenAPI (profiles, revenue, filings, P/E) is regenerated at ~16:00, and TWSE
+#   BWIBBU_d carries the day's valuation ratios after the 13:30 close (confirmed present at
+#   17:40; its exact publication time was not observed, so the slot waits until 18:00).
+EVENING_SLOT = time(18, 0)
 
 # Most companies file in the last two weeks before the general deadline; nothing arrives
 # after the final (financial-industry) deadline.

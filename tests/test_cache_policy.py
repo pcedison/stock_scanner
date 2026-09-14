@@ -62,24 +62,32 @@ def test_active_slots_follow_trading_days_and_filing_windows():
 
 
 def test_next_refresh_waits_for_the_evening_publication_on_routine_days():
-    assert next_refresh_after(_at(9, 15, 10)) == _at(9, 15, 17, 30)
-    assert next_refresh_after(_at(9, 15, 17, 50)) == _at(9, 16, 17, 30)
+    assert next_refresh_after(_at(9, 15, 10)) == _at(9, 15, 18)
+    assert next_refresh_after(_at(9, 15, 18, 10)) == _at(9, 16, 18)
 
 
 def test_next_refresh_skips_the_weekend_and_market_holidays():
-    assert next_refresh_after(_at(9, 18, 17, 45)) == _at(9, 21, 17, 30)  # Fri -> Mon
+    assert next_refresh_after(_at(9, 18, 18, 15)) == _at(9, 21, 18)  # Fri -> Mon
     closed = frozenset({date(2026, 9, 25), date(2026, 9, 28)})
-    assert next_refresh_after(_at(9, 24, 17, 45), closed) == _at(9, 29, 17, 30)
+    assert next_refresh_after(_at(9, 24, 18, 15), closed) == _at(9, 29, 18)
 
 
 def test_next_refresh_adds_the_morning_batch_inside_filing_windows():
-    assert next_refresh_after(_at(10, 1, 17, 45)) == _at(10, 2, 6, 30)
-    assert next_refresh_after(_at(10, 2, 7, 0)) == _at(10, 2, 17, 30)
-    assert next_refresh_after(_at(10, 2, 17, 45)) == _at(10, 5, 6, 30)  # Fri evening -> Mon morning
+    assert next_refresh_after(_at(10, 1, 18, 15)) == _at(10, 2, 6, 30)
+    assert next_refresh_after(_at(10, 2, 7, 0)) == _at(10, 2, 18)
+    assert next_refresh_after(_at(10, 2, 18, 15)) == _at(10, 5, 6, 30)  # Fri evening -> Mon morning
+
+
+def test_next_refresh_never_lands_on_new_years_day_before_the_schedule_is_published():
+    # data/market_calendar_2027.json does not exist yet (TWSE publishes it late in the year);
+    # the fallback still closes 1/1, so the walk goes to Monday 1/4 (revenue window: morning slot).
+    from backend.services.filing_calendar import market_closed_dates
+
+    assert next_refresh_after(_at(12, 31, 20), market_closed_dates(2026)) == _at(1, 4, 6, 30, year=2027)
 
 
 def test_next_refresh_keeps_the_callers_timezone():
     utc_build = datetime(2026, 9, 15, 2, 0, tzinfo=ZoneInfo("UTC"))
     result = next_refresh_after(utc_build)
     assert result.tzinfo == utc_build.tzinfo
-    assert result == _at(9, 15, 17, 30)
+    assert result == _at(9, 15, 18)

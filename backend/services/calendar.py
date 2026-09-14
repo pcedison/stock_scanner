@@ -26,7 +26,15 @@ class MarketCalendar:
     def load(cls, year: int) -> MarketCalendar:
         path = ROOT_DIR / "data" / f"market_calendar_{year}.json"
         if not path.exists():
-            return cls(year=year, closed_dates=set(), spring_festival_dates=set(), source="weekend-only fallback", source_url="")
+            # New Year's Day is the one holiday that is closed every year regardless of the
+            # schedule TWSE has yet to publish.
+            return cls(
+                year=year,
+                closed_dates={date(year, 1, 1)},
+                spring_festival_dates=set(),
+                source="weekend-only fallback",
+                source_url="",
+            )
 
         raw = json.loads(path.read_text(encoding="utf-8"))
         return cls(

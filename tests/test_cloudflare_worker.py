@@ -583,19 +583,19 @@ def test_worker_health_degrades_once_the_next_trading_day_publishes(monkeypatch)
 
 
 def test_worker_health_follows_the_manifest_publication_slot(monkeypatch):
-    # The seed builder writes the next publication slot (e.g. 17:30 Taipei the next trading
+    # The seed builder writes the next publication slot (e.g. 18:00 Taipei the next trading
     # day); the Worker must not re-derive an earlier interval deadline and rebuild before
     # any new data exists.
-    manifest = _healthy_worker_manifest("2026-09-15T09:40:00+00:00")  # Tue 17:40 Taipei
-    manifest["nextRefreshAfter"] = "2026-09-16T09:30:00+00:00"  # Wed 17:30 Taipei
+    manifest = _healthy_worker_manifest("2026-09-15T10:40:00+00:00")  # Tue 18:40 Taipei
+    manifest["nextRefreshAfter"] = "2026-09-16T10:00:00+00:00"  # Wed 18:00 Taipei
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
 
-    pin_worker_time(monkeypatch, worker, "2026-09-16T09:29:59+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-09-16T09:59:59+00:00")
     payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
     assert payload["cacheStatus"]["isStale"] is False
-    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-09-16T09:30:00")
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-09-16T10:00:00")
 
-    pin_worker_time(monkeypatch, worker, "2026-09-16T09:30:00+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-09-16T10:00:00+00:00")
     payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
     assert payload["cacheStatus"]["isStale"] is True
 

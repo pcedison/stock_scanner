@@ -286,7 +286,7 @@ def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
     # Worker dispatches force=false so the second arrival is a no-op here.
     r2_triggers = yaml.safe_load(r2_workflow)
     r2_on = r2_triggers.get("on", r2_triggers.get(True))
-    # Backstop ticks land just after the 06:30 / 17:30 Taipei publication slots only.
+    # Backstop ticks land just after the 06:30 / 18:00 Taipei publication slots only.
     assert _workflow_schedule_crons(r2_path) == ["7 23 * * 0-4", "7 10,12 * * 1-5"]
     assert "workflow_dispatch" in r2_on
     # The monitor still polls from GitHub every 4 hours and now also fails fast on a dead

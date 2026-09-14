@@ -21,6 +21,7 @@ on:
       - "backend/services/cache_policy.py"
       - "backend/services/calendar.py"
       - "backend/services/scheduler.py"
+      - "backend/services/scan_cache.py"
       - "cloudflare/worker_trading_calendar.py"
       - "data/market_calendar_*.json"
 
@@ -44,7 +45,7 @@ jobs:
         fake_date:
           - "now"
           - "2026-03-31" # annual report deadline (inclusive)
-          - "2026-05-31" # Q1 financial deadline 5/30 (Sat) extended to 6/1 (the original regression date)
+          - "2026-05-31" # original regression date; now inside Q1 (5/30 Sat extended to 6/1)
           - "2026-06-02" # Q1 → gap
           - "2026-07-01" # Q2 window start; freshness should still accept Q1
           - "2026-08-14" # Q2 general deadline

@@ -41,7 +41,7 @@ None of the OpenAPI datasets change intraday, so any rebuild between two regener
 ## Plan (TDD, one PR)
 
 1. `filing_calendar`: correct deadlines (Q2 general 8/14 + financial 8/31, Q3 financial 11/29), holiday extension for window ends / freshness / revenue lag. Freshness still keys on the *final* (financial) deadline.
-2. `cache_policy`: publication slots — morning 06:30 (TWSE batch) and evening 17:30 (TPEX batch + BWIBBU) on trading days. Evening slot always; morning slot only inside filing windows (monthly revenue: day 1 → extended 10th; financial: general deadline − 14 days → extended final deadline; annual: 3/1 → extended 3/31). `next_refresh_after(generatedAt, closedDates)` = first active slot after the build. Seed build writes it to the manifest.
+2. `cache_policy`: publication slots — morning 06:30 (TWSE batch) and evening 18:00 (TPEX batch + BWIBBU, confirmed present by 17:40) on trading days. Evening slot always; morning slot only inside filing windows (monthly revenue: day 1 → extended 10th; financial: general deadline − 14 days → extended final deadline; annual: 3/1 → extended 3/31). `next_refresh_after(generatedAt, closedDates)` = first active slot after the build. Seed build writes it to the manifest.
 3. Worker: trust manifest `nextRefreshAfter` (single source of truth); fallback to the old rule for legacy manifests. Refresh-ahead 120 min → 0 (never build before publication). Terminal-job cooldown 1 h (failure backoff; success is already fresh until the next slot). Crons cover the slot windows including Monday 06:30 (UTC Sunday).
 4. GitHub backstop schedule: 3 runs per weekday just after the slots. `r2_refresh_decision` age → trading hours, refresh-ahead 0.
 5. `scheduler.should_wake_up` uses the same windows.
