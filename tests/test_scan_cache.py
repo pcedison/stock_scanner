@@ -227,7 +227,9 @@ def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     )
     cache_path = tmp_path / "scan.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    # Older than any market closure, so a publication slot has passed whatever today's date is
+    # (one day back from a Sunday is Saturday, which is legitimately still fresh).
+    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     cache_path.write_text(json.dumps(cached), encoding="utf-8")
     calls = {"count": 0}
 
@@ -277,7 +279,9 @@ def test_empty_background_refresh_preserves_last_good_and_marks_job_failed(tmp_p
     )
     cache_path = tmp_path / "scan.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    # Older than any market closure, so a publication slot has passed whatever today's date is
+    # (one day back from a Sunday is Saturday, which is legitimately still fresh).
+    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     cache_path.write_text(json.dumps(cached), encoding="utf-8")
 
     def refresh():
@@ -348,7 +352,9 @@ def test_failed_background_refresh_redacts_error_details(tmp_path, caplog):
     )
     cache_path = tmp_path / "scan.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    # Older than any market closure, so a publication slot has passed whatever today's date is
+    # (one day back from a Sunday is Saturday, which is legitimately still fresh).
+    cached["items"][key]["storedAt"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     cache_path.write_text(json.dumps(cached), encoding="utf-8")
 
     def refresh():
