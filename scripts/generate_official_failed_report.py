@@ -123,6 +123,14 @@ def build_rows(ctx: dict | None = None) -> tuple[list[dict[str, object]], int]:
     return rows, len(pending)
 
 
+def _unavailable_count() -> int:
+    try:
+        progress = json.loads(PROGRESS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    return len(progress.get("unavailableCompanies", {}) or {})
+
+
 def write_csv(rows: list[dict[str, object]], csv_path: Path) -> None:
     if not rows:
         return
@@ -150,8 +158,9 @@ def write_markdown(rows: list[dict[str, object]], pending_count: int, markdown_p
         "",
         "## 摘要",
         "",
-        f"- failed 公司數：{len(rows)}",
+        f"- failed 公司數：{len(rows)}（請求失敗，排程最多重試 3 次）",
         f"- pending 公司數：{pending_count}（多數為當期尚未公告，不列入本清單）",
+        f"- 官方無此期別資料公司數：{_unavailable_count()}（MOPS 明確回覆無資料，例如晚於該年度才上市或成立，不再重試，不列入本清單）",
         "",
         "## 初步原因統計",
         "",

@@ -809,10 +809,18 @@ def test_r2_refresh_persists_quarterly_fundamentals_and_backfills_before_build()
 def test_backfill_summary_markdown_handles_missing_and_complete_payloads(tmp_path, capsys):
     assert r2.backfill_summary_markdown(None) == "Official history backfill: no result recorded."
     text = r2.backfill_summary_markdown(
-        {"requestedCompanies": 3, "backfilledCompanies": 2, "failedCompanies": 1, "periods": ["2026Q2", "2025Q2"], "completed": True}
+        {
+            "requestedCompanies": 3,
+            "backfilledCompanies": 2,
+            "failedCompanies": 1,
+            "unavailableCompanies": 4,
+            "periods": ["2026Q2", "2025Q2"],
+            "completed": True,
+        }
     )
     assert text.startswith("Official history backfill (complete; periods 2026Q2, 2025Q2)")
     assert "requested 3" in text and "failed 1" in text
+    assert "unavailable (not retried) 4" in text
 
     missing = tmp_path / "missing.json"
     assert r2.main(["backfill-summary", "--json-file", str(missing)]) == 0

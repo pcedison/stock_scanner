@@ -3,6 +3,7 @@ from backend.adapters.mops_historical_fundamentals import OfficialMopsHistorical
 from backend.adapters.official_fundamentals import OfficialBalanceSheetRow, OfficialIncomeStatementRow
 from backend.models.company import Company
 from backend.services.official_history_backfill import (
+    MAX_FAILED_ATTEMPTS,
     BackfillProgressStore,
     OfficialHistoryBackfillResult,
     OfficialHistoryBackfillService,
@@ -356,6 +357,7 @@ def test_backfill_result_as_dict_round_trips():
         "periods",
         "progress",
         "completed",
+        "unavailableCompanies",
     }
 
 
@@ -421,20 +423,93 @@ def test_backfill_records_annual_period_failures(monkeypatch, tmp_path):
 
     result = service.backfill([_company("1111")], limit=1, throttle_seconds=0, reset_progress=True)
 
-    assert result.failedCompanies == 1
-    assert result.backfilledCompanies == 0
+    # MOPS answered but has no rows for past periods (company listed later, holding company
+    # formed after 2021, ...). That is a fact about the data, not a failure to retry.
+    assert result.failedCompanies == 0
+    assert result.unavailableCompanies == 1
     assert result.incomeRows == 0
-    assert "1111" in BackfillProgressStore(progress_path).load()["failedCompanies"]
+    saved = BackfillProgressStore(progress_path).load()
+    assert saved["failedCompanies"] == {}
+    assert "1111" in saved["unavailableCompanies"]
+    assert "1111" in saved["completedCompanies"]
 
-    # A resume run skips the still-failing company instead of re-fetching it.
-    resumed = service.backfill([_company("1111")], limit=1, throttle_seconds=0)
-    assert resumed.requestedCompanies == 0
-    assert resumed.skippedCompanies == 1
-
-    # Scheduled refreshes opt into retrying failures so transient MOPS errors heal over time.
+    # Scheduled refreshes pass --retry-failed; an unavailable period must not be re-fetched.
     retried = service.backfill([_company("1111")], limit=1, throttle_seconds=0, retry_failed=True)
-    assert retried.requestedCompanies == 1
-    assert retried.skippedCompanies == 0
+    assert retried.requestedCompanies == 0
+    assert retried.skippedCompanies == 1
+
+
+class RaisingAdapter:
+    """MOPS unreachable: every request raises."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_company_period(self, stock_code, company_name, market, fiscal_year, quarter):
+        self.calls += 1
+        raise RuntimeError("connection reset")
+
+
+def test_backfill_retries_request_errors_a_bounded_number_of_times(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    progress_path = tmp_path / "progress.json"
+    service = OfficialHistoryBackfillService(
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        adapter=RaisingAdapter(),
+        progress_store=BackfillProgressStore(progress_path),
+    )
+
+    first = service.backfill([_company("1111")], limit=1, throttle_seconds=0, reset_progress=True)
+    assert first.failedCompanies == 1
+    # A resume run without --retry-failed skips the failing company.
+    assert service.backfill([_company("1111")], limit=1, throttle_seconds=0).requestedCompanies == 0
+
+    requested = [
+        service.backfill([_company("1111")], limit=1, throttle_seconds=0, retry_failed=True).requestedCompanies
+        for _ in range(4)
+    ]
+    # Attempts 2 and 3 are retried; after MAX_FAILED_ATTEMPTS the company waits for the next period.
+    assert requested == [1, 1, 0, 0]
+    saved = BackfillProgressStore(progress_path).load()
+    assert saved["failedAttempts"]["1111"] == MAX_FAILED_ATTEMPTS
+    assert "1111" in saved["failedCompanies"]
+
+
+def test_backfill_migrates_past_no_rows_failures_to_unavailable_on_resume(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 3}, "monthlyRevenuePeriod": "2026-08"},
+    )
+    progress_path = tmp_path / "progress.json"
+    # Shape of the production progress file on 2026-09-09: holding companies formed after 2021.
+    BackfillProgressStore(progress_path).save(
+        {
+            "schemaVersion": 1,
+            "runKey": "2026Q3:5:strategy",
+            "completedCompanies": [],
+            "failedCompanies": {
+                "3716": [
+                    {"period": "2023Q4", "error": "no official rows returned"},
+                    {"period": "2021Q4", "error": "no official rows returned"},
+                ],
+                "9999": [{"period": "2025Q4", "error": "connection reset"}],
+            },
+            "pendingCompanies": {},
+        }
+    )
+    adapter = RaisingAdapter()
+    service = _service(tmp_path, FakeHistoryStore(quarter_row=None, annual_count=2), adapter)
+
+    result = service.backfill([_company("3716"), _company("9999")], limit=10, throttle_seconds=0, retry_failed=True)
+
+    saved = BackfillProgressStore(progress_path).load()
+    assert "3716" in saved["unavailableCompanies"]
+    assert "3716" not in saved["failedCompanies"]
+    assert result.requestedCompanies == 1  # only the genuine request error is retried
+    assert "9999" in saved["failedCompanies"]
 
 
 def test_backfill_skips_when_all_target_periods_present(monkeypatch, tmp_path):
@@ -648,4 +723,4 @@ def test_backfill_fetches_companies_concurrently_with_bounded_workers(monkeypatc
 
     assert result.requestedCompanies == 9
     assert 1 < adapter.peak <= 3
-    assert len(BackfillProgressStore(tmp_path / "progress.json").load()["failedCompanies"]) == 9
+    assert len(BackfillProgressStore(tmp_path / "progress.json").load()["unavailableCompanies"]) == 9
