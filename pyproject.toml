@@ -67,10 +67,9 @@ known-first-party = ["backend", "cloudflare", "scripts"]
 
 # --------------------------------------------------------------------------- #
 # mypy: static type checking
-# CI gate scope: `python -m mypy backend`（backend 套件 import 路徑單一、可乾淨檢查）。
-# 全 backend 已通過型別檢查，不再有 per-module ignore_errors overrides。
-# cloudflare/ 因 Pyodide 平面 import 與本地套件 import 造成同檔雙模組名，scripts/
-# 需 sys.path 注入，兩者尚未納入 gate，待後續以 explicit_package_bases 處理。
+# CI gate scope: `python -m mypy backend scripts cloudflare tests`。
+# backend / scripts / cloudflare 不使用 per-module ignore_errors overrides；tests
+# 只放寬 fixture / fake 慣用 duck typing 所需的少數錯誤碼（見下方 override）。
 # --------------------------------------------------------------------------- #
 [tool.mypy]
 python_version = "3.12"

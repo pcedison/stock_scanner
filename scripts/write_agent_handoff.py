@@ -53,16 +53,15 @@ def handoff_markdown(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Required next-agent startup",
+            "## Next-agent decision",
             "",
-            "```powershell",
-            "git fetch --prune origin",
-            "git switch main",
-            "git pull --ff-only origin main",
-            "python scripts\\write_agent_handoff.py --repo <owner/repo>",
-            "```",
+            "Treat this snapshot as evidence, not permission to switch branches, pull,",
+            "discard work, cancel runs, deploy, or mutate production.",
             "",
-            "Both agents should treat this file as the shared state snapshot before editing.",
+            "- Preserve expected branch and working-tree state.",
+            "- If a fresh remote comparison is required, run `git fetch --prune origin`",
+            "  and regenerate the snapshot before deciding how to reconcile differences.",
+            "- Do not run `git switch` or `git pull` only to make this snapshot green.",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -98,7 +97,7 @@ def write_handoff(payload: dict[str, Any], json_output: Path, markdown_output: P
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Write a machine-readable handoff snapshot for cooperating agents.")
+    parser = argparse.ArgumentParser(description="Write a machine-readable main-release handoff snapshot.")
     parser.add_argument("--repo", help="GitHub repository in owner/name form. Defaults to gh repo view.")
     parser.add_argument("--validate-workflow", default="ci.yml", help="Validate workflow file name or id.")
     parser.add_argument("--deploy-workflow", default="cloudflare-deploy.yml", help="Deploy workflow file name or id.")

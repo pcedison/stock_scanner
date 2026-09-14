@@ -1,8 +1,8 @@
 # Stock Scanner Reliability Hardening Design
 
 Date: 2026-07-12
-Branch: `codex/reliability-hardening`
-Status: Approved for implementation (Plan A first, then Plan B after Plan A verification)
+Implementation branch (historical): `codex/reliability-hardening`
+Status: Historical design record; implemented through Plans A/B and merged in PR #121. It is not current work authorization or agent guidance.
 
 ## Objective
 

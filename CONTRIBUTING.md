@@ -4,7 +4,7 @@
 
 ## 開發環境 / Getting Started
 
-需要 **Python 3.11+**（後端使用 `datetime.UTC`，3.10 以下會失敗；CI 跑 3.12 / 3.13）。Cloudflare seed zip 以 Git LFS 追蹤，請先安裝並啟用 `git lfs`。
+需要 **Python 3.12+**（與 `pyproject.toml` 的最低版本一致；CI 跑 3.12 / 3.13）。Cloudflare seed zip 以 Git LFS 追蹤，請先安裝並啟用 `git lfs`。
 
 最快的方式是用 `make`（建立 `.venv`、安裝 Python 與 npm 相依）：
 

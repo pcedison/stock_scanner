@@ -1,6 +1,6 @@
 # Current Architecture Snapshot
 
-Last reviewed: 2026-05-18
+Last reviewed: 2026-07-16
 
 This project is no longer a localStorage-only prototype. The current shape is:
 

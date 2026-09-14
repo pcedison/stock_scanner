@@ -1,14 +1,12 @@
 # 台股財報事件驅動掃描器 — Spec
 
-> Current architecture notice, 2026-05-18:
-> This file is a historical MVP spec. The authoritative current state is
-> `docs/current_architecture.md`, where holdings/settings/session state are
-> server-backed through FastAPI locally and Cloudflare Worker + D1 in production.
-> Any localStorage sections below should be read as legacy MVP notes, not the
-> production storage contract.
+> Historical document notice:
+> This is a historical MVP specification, not an active implementation contract or agent instruction.
+> Use `docs/current_architecture.md` for current architecture and operational behavior.
+> Any localStorage sections below are legacy MVP notes.
 
 > 版本：v0.1
-> 狀態：給本地端 Codex 開發用的產品與技術規格草案
+> 狀態：歷史 MVP 產品與技術規格，不作為目前實作或 agent 指令來源
 > 語言：繁體中文
 > 投資提醒：本工具只提供依規則產生的研究輔助訊號，不構成投資建議、保證獲利或代客操作。
 
@@ -929,7 +927,3 @@ MVP 必須完成：
 - 證券交易法第 36 條: https://law.fsc.gov.tw/LawContent.aspx?id=FL007009
 - 公開發行公司財務報告及營運情形公告申報特殊適用範圍辦法: https://law.fsc.gov.tw/LawContent.aspx?id=GL000593
 - TWSE 市場開休市日期: https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html
-
-# Current Spec Notice
-
-The implementation has moved beyond the original MVP notes. The authoritative current architecture snapshot is `docs/current_architecture.md`: server-backed auth/settings/holdings, FastAPI/Worker contract tests, offline reproducible Cloudflare seed packaging, runtime cache quality checks, and production CORS/cookie guards.

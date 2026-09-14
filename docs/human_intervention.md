@@ -11,7 +11,7 @@
 - 本地官方歷史快取：`data/official_fundamentals_history.json`。
 - 回補續跑進度：`data/official_history_backfill_progress.json`。
 
-截至 2026-05-14 14:24（Asia/Taipei）已完成的回補結果：
+以下是 2026-05-14 14:24（Asia/Taipei）的歷史回補快照，不代表目前即時數量：
 
 - 官方 universe：1973 檔。
 - 已完成歷史回補流程：1883 檔。
@@ -45,7 +45,7 @@
 
 部署到私有伺服器時，先把 zip 解壓到專案的 `data/` 目錄，讓伺服器啟動時直接讀取 `official_fundamentals_history.json` 與 `official_history_backfill_progress.json`。之後只跑增量與 pending 重試，不需要每次 deploy 都重新全量回補。
 
-公告期過後可重新跑：
+公告期過後可重新跑。`--reset-progress` 會丟棄既有 checkpoint 並重新開始，只有使用者明確要求完整重跑時才使用：
 
 ```powershell
 python -m backend.services.official_history_backfill --limit 600 --years 5 --mode strategy --throttle 0.03 --reset-progress

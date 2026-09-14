@@ -1,6 +1,6 @@
 # Stock Scanner UI Redesign Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Archive notice (2026-07-16):** This is a historical implementation record, not current work authorization or agent guidance. Use the repository `AGENTS.md` and current user request; execute plan items only when explicitly requested.
 
 **Goal:** Write the approved Open Design operational-dashboard UI back into the existing stock scanner frontend without changing strategy, workflow, data fetching, API/auth/cache/report behavior, or persistence.
 

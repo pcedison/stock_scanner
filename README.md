@@ -107,7 +107,7 @@ python scripts\write_agent_handoff.py --repo pcedison/stock_scanner
 ```
 
 The default run is a dry run that only reports JSON. `--cancel-stale-deploys` only cancels stale `Deploy to Cloudflare` runs on `main` whose `headSha` is not `origin/main`; it never approves production deploys.
-Production health/smoke checks reject stale cache data older than 36 hours and offline-seed production payloads by default. See `docs/agent_handoff.md` for the Codex/Claude shared-state protocol.
+Production health/smoke checks reject stale cache data older than 36 hours and offline-seed production payloads by default. See `docs/agent_handoff.md` for the main-release handoff protocol; generating a snapshot does not authorize branch switching, pulling, run cancellation, or deployment.
 
 ## 資料更新
 
@@ -120,6 +120,7 @@ Production health/smoke checks reject stale cache data older than 36 hours and o
 
 ## 開發約定
 
+- Agent 專案指引、完成條件與驗證路由見 [`AGENTS.md`](./AGENTS.md)。歷史 task/spec/plan 不會自動成為目前工作授權。
 - 新 API 行為需要同步考慮 FastAPI 與 Worker contract。
 - 新 Cloudflare schema 變更應新增 `cloudflare/migrations/*.sql`，不要只改 `cloudflare/schema.sql`。
 - 新前端 renderer 應優先使用 `frontend/dom.js` 中的 escape/DOM helper，避免增加 ad hoc `innerHTML`。

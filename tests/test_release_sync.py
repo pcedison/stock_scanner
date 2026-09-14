@@ -389,4 +389,8 @@ def test_write_agent_handoff_outputs_shared_snapshot(monkeypatch, tmp_path, caps
     assert exit_code == 0
     assert printed["releaseSync"]["ok"] is True
     assert json.loads(json_output.read_text(encoding="utf-8"))["releaseSync"]["git"]["localHead"] == ORIGIN_SHA
-    assert "Required next-agent startup" in markdown_output.read_text(encoding="utf-8")
+    markdown = markdown_output.read_text(encoding="utf-8")
+    assert "Next-agent decision" in markdown
+    assert "git switch" in markdown
+    assert "Do not run `git switch`" in markdown
+    assert "git pull --ff-only" not in markdown

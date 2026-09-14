@@ -14,7 +14,7 @@
 
 ## 檢查清單 / Checklist
 
-- [ ] 本機通過 lint / type gate：`npm run lint`、`python -m ruff check .`、`python -m mypy backend`
+- [ ] 本機通過 lint / type gate：`npm run lint`、`python -m ruff check .`、`python -m mypy backend scripts cloudflare tests`
 - [ ] 本機通過測試：`python -m pytest -q`（必要時 `npm run test:e2e`）
 - [ ] 若改動 API 行為，已同步 FastAPI 與 Cloudflare Worker 的 contract，並更新 `tests/test_api_worker_contracts.py`
 - [ ] 若變更 Cloudflare schema，已新增 `cloudflare/migrations/*.sql`（而非只改 `schema.sql`）
