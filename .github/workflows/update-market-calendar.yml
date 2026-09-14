@@ -1,0 +1,94 @@
+name: Update market calendar
+
+# Keeps data/market_calendar_<year>.json current for this year and next, every year, without
+# a human. TWSE publishes the next year's holiday schedule late in the year (and occasionally
+# revises the current one); the closed dates drive the refresh cadence and reach the Worker
+# through the seed manifest, so the next R2 seed rebuild picks a change up - no deploy needed.
+#
+# Until the schedule is published the script writes nothing and the run succeeds. A fetch
+# error or a schedule that fails validation fails the run (so it is noticed) and writes nothing.
+
+on:
+  schedule:
+    - cron: "17 1 * 10,11,12,1 1" # Mondays 09:17 Taipei, October-January (publication season)
+    - cron: "17 1 1 2-9 *"        # 1st of the month 09:17 Taipei, February-September (revisions)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-market-calendar
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            constraints.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+
+      - name: Fetch and validate TWSE holiday schedules
+        id: update
+        run: python scripts/update_market_calendars.py --github-output "$GITHUB_OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run calendar-dependent tests against the new schedule
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          python -m pytest -q \
+            tests/test_calendar.py \
+            tests/test_filing_calendar.py \
+            tests/test_cache_policy.py \
+            tests/test_scheduler.py \
+            tests/test_trading_calendar_parity.py \
+            tests/test_update_market_calendars.py
+
+      - name: Commit through a pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          YEARS: ${{ steps.update.outputs.years }}
+        run: |
+          branch="automation/market-calendar-$(echo "$YEARS" | tr ' ' '-')-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add data/market_calendar_*.json
+          git commit -m "data: update TWSE market calendar ($YEARS)"
+          git push --force-with-lease --set-upstream origin "$branch"
+          manual_pr_url="https://github.com/${GITHUB_REPOSITORY}/compare/main...${branch}?expand=1"
+          if ! pr_url="$(gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "data: update TWSE market calendar ($YEARS)" \
+            --body "Automated by .github/workflows/update-market-calendar.yml: fetched from the TWSE holiday schedule, validated (weekday closures inside the year, New Year's Day, Spring Festival, no truncated revision) and checked with the calendar-dependent tests. The next R2 seed rebuild publishes it to the Worker through the manifest.")"; then
+            echo "::error::Validated calendar was pushed to $branch, but GitHub Actions could not open the PR (check 'Allow GitHub Actions to create and approve pull requests'). Open it manually: $manual_pr_url"
+            echo "Calendar branch pushed but PR creation failed. Manual PR: $manual_pr_url" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! gh pr merge "$pr_url" --squash --delete-branch; then
+            echo "::error::Opened $pr_url but could not merge it automatically; merge it manually."
+            echo "PR opened but not merged: $pr_url" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Merged $pr_url" >> "$GITHUB_STEP_SUMMARY"

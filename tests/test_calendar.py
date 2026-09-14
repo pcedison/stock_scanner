@@ -55,9 +55,18 @@ class _FakeResponse:
 
 def test_fetch_twse_market_calendar_parses_ok_payload(monkeypatch):
     payload = {"stat": "OK", "fields": ["日期", "名稱", "說明"], "data": [["2026-02-12", "市場無交易", ""]]}
-    monkeypatch.setattr(calendar_module.httpx, "get", lambda *a, **k: _FakeResponse(payload))
+    seen: dict = {}
+
+    def fake_get(*args, **kwargs):
+        seen.update(kwargs.get("params") or {})
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(calendar_module.httpx, "get", fake_get)
     result = calendar_module.fetch_twse_market_calendar(2026)
     assert result["closedDates"] == ["2026-02-12"]
+    # `queryYear` is ignored by TWSE (always the current year); `date` selects the year.
+    assert seen["date"] == "20260101"
+    assert "queryYear" not in seen
 
 
 def test_fetch_twse_market_calendar_rejects_invalid_payload(monkeypatch):
