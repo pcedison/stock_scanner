@@ -158,7 +158,7 @@ def write_markdown(rows: list[dict[str, object]], pending_count: int, markdown_p
         "",
         "## 摘要",
         "",
-        f"- failed 公司數：{len(rows)}（請求失敗，排程最多重試 3 次）",
+        f"- failed 公司數：{len(rows)}（請求失敗，排程先重試 3 次，之後每週一次）",
         f"- pending 公司數：{pending_count}（多數為當期尚未公告，不列入本清單）",
         f"- 官方無此期別資料公司數：{_unavailable_count()}（MOPS 明確回覆無資料，例如晚於該年度才上市或成立，不再重試，不列入本清單）",
         "",

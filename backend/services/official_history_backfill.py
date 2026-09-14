@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,14 @@ NO_ROWS_ERROR = "no official rows returned"
 # Request errors (MOPS unreachable, reset connections) are retried by scheduled refreshes,
 # but only this many times per target period; the counter resets with the next period.
 MAX_FAILED_ATTEMPTS = 3
+# After that the company is retried once a week, so a lasting outage does not wait a quarter.
+EXHAUSTED_RETRY_INTERVAL = timedelta(days=7)
+
+
+def _merge_period_errors(existing: Any, new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = {str(item.get("period")): item for item in (existing or []) if isinstance(item, dict)}
+    merged.update({str(item.get("period")): item for item in new})
+    return [merged[key] for key in sorted(merged, reverse=True)]
 
 
 def _latest_annual_year(fiscal_year: int, quarter: int) -> int:
@@ -230,24 +238,28 @@ class OfficialHistoryBackfillService:
         unavailable_companies = dict(progress.get("unavailableCompanies", {}))
         target_period_label = f"{fiscal_year}Q{quarter}"
         companies_by_code = {company.stockCode: company for company in company_list}
+        failed_last_attempt = dict(progress.get("failedLastAttemptAt", {}))
         for code, errors in list(failed_companies.items()):
-            if (
-                isinstance(errors, list)
-                and errors
-                and all(isinstance(error, dict) and error.get("error") == NO_ROWS_ERROR for error in errors)
-            ):
+            if isinstance(errors, list):
                 # Progress written before "unavailable" existed recorded MOPS "no rows" answers
-                # as failures, so every scheduled refresh re-requested them forever.
-                target_errors = [error for error in errors if error.get("period") == target_period_label]
-                past_errors = [error for error in errors if error.get("period") != target_period_label]
-                if target_errors:
-                    pending_companies.setdefault(code, target_errors)
-                if past_errors:
-                    unavailable_companies.setdefault(code, past_errors)
-                completed_codes.add(code)
-                failed_companies.pop(code, None)
-                failed_attempts.pop(code, None)
-                continue
+                # as failures, so every scheduled refresh re-requested them forever. Split them
+                # out; only genuine request errors stay failed.
+                no_rows = [error for error in errors if isinstance(error, dict) and error.get("error") == NO_ROWS_ERROR]
+                request_errors = [error for error in errors if error not in no_rows]
+                target_no_rows = [error for error in no_rows if error.get("period") == target_period_label]
+                past_no_rows = [error for error in no_rows if error.get("period") != target_period_label]
+                if past_no_rows:
+                    unavailable_companies[code] = _merge_period_errors(unavailable_companies.get(code), past_no_rows)
+                if no_rows and not request_errors:
+                    if target_no_rows:
+                        pending_companies.setdefault(code, target_no_rows)
+                    completed_codes.add(code)
+                    failed_companies.pop(code, None)
+                    failed_attempts.pop(code, None)
+                    failed_last_attempt.pop(code, None)
+                    continue
+                if no_rows:
+                    failed_companies[code] = request_errors
             company = companies_by_code.get(code)
             if company is not None and not self._needs_backfill(company, fiscal_year, quarter, years=years):
                 completed_codes.add(code)
@@ -258,6 +270,17 @@ class OfficialHistoryBackfillService:
         deadline = time.monotonic() + max_seconds if max_seconds is not None and max_seconds > 0 else None
         worker_count = max(1, int(workers))
 
+        def _retry_allowed(code: str) -> bool:
+            if failed_attempts.get(code, 0) < MAX_FAILED_ATTEMPTS:
+                return True
+            # Out of quick retries: try again weekly instead of waiting for the next period.
+            last = failed_last_attempt.get(code)
+            try:
+                last_time = datetime.fromisoformat(str(last))
+            except ValueError:
+                return True
+            return datetime.now(UTC) - last_time >= EXHAUSTED_RETRY_INTERVAL
+
         def eligible_periods(company: Company) -> list[tuple[int, int]] | None:
             nonlocal skipped
             if company.stockCode in completed_codes:
@@ -266,8 +289,10 @@ class OfficialHistoryBackfillService:
             if resume and company.stockCode in previously_pending_codes:
                 skipped += 1
                 return None
-            if resume and company.stockCode in previously_failed_codes and (
-                not retry_failed or failed_attempts.get(company.stockCode, 0) >= MAX_FAILED_ATTEMPTS
+            if (
+                resume
+                and company.stockCode in previously_failed_codes
+                and (not retry_failed or not _retry_allowed(company.stockCode))
             ):
                 skipped += 1
                 return None
@@ -275,13 +300,22 @@ class OfficialHistoryBackfillService:
                 completed_codes.add(company.stockCode)
                 skipped += 1
                 return None
+            known_unavailable = {
+                str(error.get("period"))
+                for error in unavailable_companies.get(company.stockCode, [])
+                if isinstance(error, dict)
+            }
             company_periods = [
                 (year, period_quarter)
                 for year, period_quarter in periods
-                if self._period_needs_backfill(company, year, period_quarter)
+                if _period_label(year, period_quarter) not in known_unavailable
+                and self._period_needs_backfill(company, year, period_quarter)
             ]
             if not company_periods:
                 completed_codes.add(company.stockCode)
+                failed_companies.pop(company.stockCode, None)
+                failed_attempts.pop(company.stockCode, None)
+                failed_last_attempt.pop(company.stockCode, None)
                 skipped += 1
                 return None
             return company_periods
@@ -340,15 +374,19 @@ class OfficialHistoryBackfillService:
                     if fetched.incomes or fetched.balances:
                         self.history_store.merge_rows(fetched.incomes, fetched.balances)
                     if fetched.unavailable:
-                        unavailable_companies[company.stockCode] = fetched.unavailable
+                        unavailable_companies[company.stockCode] = _merge_period_errors(
+                            unavailable_companies.get(company.stockCode), fetched.unavailable
+                        )
                     if fetched.errors:
                         failed += 1
                         failed_companies[company.stockCode] = fetched.errors
                         failed_attempts[company.stockCode] = failed_attempts.get(company.stockCode, 0) + 1
+                        failed_last_attempt[company.stockCode] = datetime.now(UTC).isoformat()
                     else:
                         failed_companies.pop(company.stockCode, None)
                         failed_attempts.pop(company.stockCode, None)
-                        if fetched.unavailable:
+                        failed_last_attempt.pop(company.stockCode, None)
+                        if company.stockCode in unavailable_companies:
                             unavailable += 1
                         if fetched.pending:
                             pending += 1
@@ -377,6 +415,7 @@ class OfficialHistoryBackfillService:
         progress["completedCompanies"] = sorted(completed_codes)
         progress["failedCompanies"] = failed_companies
         progress["failedAttempts"] = failed_attempts
+        progress["failedLastAttemptAt"] = failed_last_attempt
         progress["pendingCompanies"] = pending_companies
         progress["unavailableCompanies"] = unavailable_companies
         progress["unavailableCount"] = len(unavailable_companies)

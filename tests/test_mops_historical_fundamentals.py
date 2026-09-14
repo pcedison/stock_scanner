@@ -444,9 +444,11 @@ class RaisingAdapter:
 
     def __init__(self):
         self.calls = 0
+        self.calls_for: dict[str, list[tuple[int, int]]] = {}
 
     def fetch_company_period(self, stock_code, company_name, market, fiscal_year, quarter):
         self.calls += 1
+        self.calls_for.setdefault(stock_code, []).append((fiscal_year, quarter))
         raise RuntimeError("connection reset")
 
 
@@ -478,6 +480,74 @@ def test_backfill_retries_request_errors_a_bounded_number_of_times(monkeypatch, 
     assert "1111" in saved["failedCompanies"]
 
 
+class MixedAdapter:
+    """2025Q1 raises; every other period answers with no rows."""
+
+    def __init__(self):
+        self.calls: list[tuple[int, int]] = []
+
+    def fetch_company_period(self, stock_code, company_name, market, fiscal_year, quarter):
+        self.calls.append((fiscal_year, quarter))
+        if (fiscal_year, quarter) == (2025, 1):
+            raise RuntimeError("connection reset")
+        return type("Bundle", (), {"incomes": [], "balances": []})()
+
+
+def test_retry_after_a_mixed_failure_only_requests_the_errored_periods(monkeypatch, tmp_path):
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    adapter = MixedAdapter()
+    service = OfficialHistoryBackfillService(
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        adapter=adapter,
+        progress_store=BackfillProgressStore(tmp_path / "progress.json"),
+    )
+
+    service.backfill([_company("1111")], limit=1, throttle_seconds=0, reset_progress=True)
+    first_calls = list(adapter.calls)
+    assert (2025, 1) in first_calls and len(first_calls) > 2
+    adapter.calls.clear()
+
+    service.backfill([_company("1111")], limit=1, throttle_seconds=0, retry_failed=True)
+
+    # Target period (still unannounced) and the errored period are re-requested; the past
+    # periods MOPS already answered with no rows are not.
+    assert set(adapter.calls) == {(2026, 1), (2025, 1)}
+
+
+def test_exhausted_request_errors_are_retried_again_after_a_week(monkeypatch, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    _patch_filing_context(
+        monkeypatch,
+        {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
+    )
+    progress_path = tmp_path / "progress.json"
+    stale = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    BackfillProgressStore(progress_path).save(
+        {
+            "schemaVersion": 1,
+            "runKey": "2026Q1:5:strategy",
+            "completedCompanies": [],
+            "failedCompanies": {"1111": [{"period": "2025Q1", "error": "connection reset"}]},
+            "failedAttempts": {"1111": MAX_FAILED_ATTEMPTS},
+            "failedLastAttemptAt": {"1111": stale},
+            "pendingCompanies": {},
+        }
+    )
+    service = OfficialHistoryBackfillService(
+        history_store=OfficialFundamentalsHistoryStore(tmp_path / "history.json"),
+        adapter=RaisingAdapter(),
+        progress_store=BackfillProgressStore(progress_path),
+    )
+
+    assert service.backfill([_company("1111")], limit=1, throttle_seconds=0, retry_failed=True).requestedCompanies == 1
+    # The attempt just made is recent, so the next scheduled run backs off again.
+    assert service.backfill([_company("1111")], limit=1, throttle_seconds=0, retry_failed=True).requestedCompanies == 0
+
+
 def test_backfill_migrates_past_no_rows_failures_to_unavailable_on_resume(monkeypatch, tmp_path):
     _patch_filing_context(
         monkeypatch,
@@ -496,6 +566,10 @@ def test_backfill_migrates_past_no_rows_failures_to_unavailable_on_resume(monkey
                     {"period": "2021Q4", "error": "no official rows returned"},
                 ],
                 "9999": [{"period": "2025Q4", "error": "connection reset"}],
+                "8888": [
+                    {"period": "2025Q4", "error": "connection reset"},
+                    {"period": "2021Q4", "error": "no official rows returned"},
+                ],
             },
             "pendingCompanies": {},
         }
@@ -503,13 +577,18 @@ def test_backfill_migrates_past_no_rows_failures_to_unavailable_on_resume(monkey
     adapter = RaisingAdapter()
     service = _service(tmp_path, FakeHistoryStore(quarter_row=None, annual_count=2), adapter)
 
-    result = service.backfill([_company("3716"), _company("9999")], limit=10, throttle_seconds=0, retry_failed=True)
+    result = service.backfill(
+        [_company("3716"), _company("9999"), _company("8888")], limit=10, throttle_seconds=0, retry_failed=True
+    )
 
     saved = BackfillProgressStore(progress_path).load()
     assert "3716" in saved["unavailableCompanies"]
     assert "3716" not in saved["failedCompanies"]
-    assert result.requestedCompanies == 1  # only the genuine request error is retried
+    assert result.requestedCompanies == 2  # only companies with genuine request errors are retried
     assert "9999" in saved["failedCompanies"]
+    # A mixed entry is split: the "no rows" period becomes unavailable and is not re-requested.
+    assert saved["unavailableCompanies"]["8888"] == [{"period": "2021Q4", "error": "no official rows returned"}]
+    assert (2021, 4) not in adapter.calls_for.get("8888", [])
 
 
 def test_backfill_skips_when_all_target_periods_present(monkeypatch, tmp_path):
