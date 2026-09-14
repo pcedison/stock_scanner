@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from backend.adapters._utils import to_float as _to_float
+from backend.adapters.official_tls import official_ssl_context
 
 TWSE_COMPANY_PROFILE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 TPEX_COMPANY_PROFILE_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
@@ -71,12 +72,14 @@ class OfficialMonthlyRevenueAdapter:
         self.timeout = timeout
         self.retry_attempts = max(1, retry_attempts)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        # Markets whose last fetch_company_profiles() fell back, e.g. {"TPEX": "monthly_revenue"}.
+        self.profile_fallbacks: dict[str, str] = {}
 
     def _fetch_json(self, url: str) -> list[dict[str, Any]]:
         last_error: Exception | None = None
         for attempt in range(1, self.retry_attempts + 1):
             try:
-                response = httpx.get(url, timeout=self.timeout)
+                response = httpx.get(url, timeout=self.timeout, verify=official_ssl_context())
                 response.raise_for_status()
                 rows = response.json()
                 if not isinstance(rows, list):
@@ -151,11 +154,46 @@ class OfficialMonthlyRevenueAdapter:
             for row in rows
         ]
 
+    def _profiles_from_monthly_revenue(self, market: str) -> list[OfficialCompanyProfileRow]:
+        fetch = self.fetch_twse_monthly_revenue if market == "TWSE" else self.fetch_tpex_monthly_revenue
+        return [
+            OfficialCompanyProfileRow(
+                stockCode=row.stockCode,
+                companyName=row.companyName,
+                companyShortName=row.companyName,
+                market=market,
+                industryName=row.industryName,
+                industryCode=row.industryName,
+                reportDate=row.reportDate,
+            )
+            for row in fetch()
+            if row.stockCode.isdigit()
+        ]
+
     def fetch_company_profiles(self) -> list[OfficialCompanyProfileRow]:
+        """Both markets' profiles; a market whose profile endpoint is down is derived from its
+        monthly-revenue file (same code/name/industry columns) so one broken endpoint cannot
+        zero the whole scan universe. Raises only when the fallback fails too."""
+        self.profile_fallbacks = {}
         with ThreadPoolExecutor(max_workers=2) as executor:
-            twse = executor.submit(self.fetch_twse_company_profiles)
-            tpex = executor.submit(self.fetch_tpex_company_profiles)
-            return [*twse.result(), *tpex.result()]
+            futures = {
+                "TWSE": executor.submit(self.fetch_twse_company_profiles),
+                "TPEX": executor.submit(self.fetch_tpex_company_profiles),
+            }
+            profiles: list[OfficialCompanyProfileRow] = []
+            for market, future in futures.items():
+                try:
+                    profiles.extend(future.result())
+                except RuntimeError as exc:
+                    try:
+                        derived = self._profiles_from_monthly_revenue(market)
+                    except RuntimeError:
+                        raise exc from None
+                    if not derived:
+                        raise
+                    self.profile_fallbacks[market] = "monthly_revenue"
+                    profiles.extend(derived)
+            return profiles
 
     def health(self) -> dict:
         status = {}

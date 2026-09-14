@@ -15,6 +15,7 @@ from backend.adapters.official_fundamentals import (
     _gross_margin,
     _operating_margin,
 )
+from backend.adapters.official_tls import official_ssl_context
 
 MOPS_BASE_URL = "https://mopsov.twse.com.tw/mops/web"
 MOPS_INCOME_ENDPOINT = f"{MOPS_BASE_URL}/ajax_t164sb04"
@@ -198,7 +199,14 @@ class OfficialMopsHistoricalFundamentalsAdapter:
             "User-Agent": "Mozilla/5.0",
         }
         try:
-            response = httpx.post(endpoint, json=payload, headers=headers, timeout=self.timeout, follow_redirects=True)
+            response = httpx.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
+                follow_redirects=True,
+                verify=official_ssl_context(),
+            )
             response.raise_for_status()
             body = response.json()
         except (httpx.HTTPError, ValueError):
@@ -225,7 +233,14 @@ class OfficialMopsHistoricalFundamentalsAdapter:
             "Referer": endpoint.replace("ajax_", ""),
         }
         try:
-            response = httpx.get(endpoint, params=params, headers=headers, timeout=self.timeout, follow_redirects=True)
+            response = httpx.get(
+                endpoint,
+                params=params,
+                headers=headers,
+                timeout=self.timeout,
+                follow_redirects=True,
+                verify=official_ssl_context(),
+            )
             response.raise_for_status()
         except httpx.HTTPError:
             return None

@@ -95,6 +95,9 @@ Two things follow from that, and both are implemented:
 
 - **Nothing is fetched while the market is shut.** Both Worker crons and the workflow's `schedule` backstop are weekday-only. A weekend tick could only re-fetch Friday's data, burning Actions minutes and adding load to sources that rate-limit.
 - **A refresh deadline landing on a non-trading day waits for the next trading day.** `backend/services/cache_policy.next_publication_time` and its Worker mirror `cloudflare/worker_trading_calendar.py` push such a deadline to the next trading day at 15:00 Taipei. Without this the seed was reported stale every three hours all weekend even though the data was complete and current, which failed the health monitor for no reason.
+- **The 36-hour cache-age ceiling counts trading-day hours only.** `scripts/check_cloudflare_health.trading_hours_between` (used by the health monitor and the remote smoke) skips weekends and `marketClosedDates`. With weekday-only crons the last refresh before a weekend lands Saturday morning, which is ~54 wall-clock hours old by Monday noon; measured in wall-clock time that failed the monitor every Sunday evening (2026-09-13/14). The summary reports both `cacheAgeHours` (trading) and `cacheWallAgeHours`.
+
+A single broken company-profile endpoint no longer zeroes the scan universe: `OfficialMonthlyRevenueAdapter.fetch_company_profiles` derives a market's profiles from that market's monthly-revenue file when its profile endpoint fails (2026-09-13, TPEX `mopsfin_t187ap03_O` reset every connection mid-body for hours and blocked every R2 rebuild). The fallback is recorded as `companyProfilesFallback` in the provider source status; the build still fails if the revenue file is unavailable too.
 
 A deadline already on a trading day is left alone, so the intraday cadence during the monthly-revenue (day 8-15) and financial-report windows is unchanged.
 

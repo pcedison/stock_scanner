@@ -152,13 +152,14 @@ def test_validate_health_payload_rejects_passed_boundary_when_stale_flag_is_fals
 
 
 def test_validate_health_payload_keeps_cache_age_ceiling_during_refresh_grace():
+    # Mon 20:00 -> Wed 09:00 Taipei: 37 hours, all of them on trading days.
     payload = _healthy_health_payload()
     payload["status"] = "degraded"
-    payload["cache"]["generatedAt"] = "2026-07-10T12:00:00+00:00"
-    payload["cache"]["sourceLastCheckedAt"] = "2026-07-10T12:00:00+00:00"
+    payload["cache"]["generatedAt"] = "2026-07-13T12:00:00+00:00"
+    payload["cache"]["sourceLastCheckedAt"] = "2026-07-13T12:00:00+00:00"
     payload["cacheStatus"] = {
         "isStale": True,
-        "nextRefreshAfter": "2026-07-12T00:52:48+00:00",
+        "nextRefreshAfter": "2026-07-15T00:52:48+00:00",
     }
 
     with pytest.raises(RuntimeError, match="deployed cache is stale"):
@@ -166,8 +167,46 @@ def test_validate_health_payload_keeps_cache_age_ceiling_during_refresh_grace():
             payload,
             max_cache_age_hours=36,
             max_refresh_delay_minutes=15,
-            now=datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+            now=datetime(2026, 7, 15, 1, 0, tzinfo=UTC),
         )
+
+
+def _aged_payload(last_checked: str, closed_dates=None) -> dict:
+    payload = _healthy_health_payload()
+    payload["cache"]["generatedAt"] = last_checked
+    payload["cache"]["sourceLastCheckedAt"] = last_checked
+    if closed_dates is not None:
+        payload["cache"]["marketClosedDates"] = closed_dates
+    return payload
+
+
+def test_cache_age_ignores_the_weekend():
+    # 2026-09-14 regression: last refresh Sat 07:07 Taipei, monitor Mon 12:47 Taipei.
+    # 53.7 wall-clock hours, but only Monday's 12.8 hours could have produced new data.
+    summary = validate_health_payload(
+        _aged_payload("2026-09-11T23:07:20+00:00", closed_dates=[]),
+        max_cache_age_hours=36,
+        now=datetime(2026, 9, 14, 4, 47, 17, tzinfo=UTC),
+    )
+
+    assert summary["cacheAgeHours"] == pytest.approx(12.79, abs=0.01)
+    assert summary["cacheWallAgeHours"] == pytest.approx(53.67, abs=0.01)
+
+
+def test_cache_age_ignores_market_holidays_from_the_manifest():
+    # Thu 07:00 Taipei -> Mon 12:00 Taipei with Thu/Fri closed: 12 trading hours.
+    last_checked = "2026-09-30T23:00:00+00:00"
+    now = datetime(2026, 10, 5, 4, 0, tzinfo=UTC)
+
+    summary = validate_health_payload(
+        _aged_payload(last_checked, closed_dates=["2026-10-01", "2026-10-02"]),
+        max_cache_age_hours=36,
+        now=now,
+    )
+    assert summary["cacheAgeHours"] == pytest.approx(12)
+
+    with pytest.raises(RuntimeError, match="deployed cache is stale"):
+        validate_health_payload(_aged_payload(last_checked, closed_dates=[]), max_cache_age_hours=36, now=now)
 
 
 def test_validate_health_payload_new_worker_default_is_strict():
