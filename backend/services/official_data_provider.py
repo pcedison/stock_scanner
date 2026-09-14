@@ -193,6 +193,7 @@ class OfficialDataProvider:
                 "companyProfilesNormalized": len(companies),
                 "companyProfilesByMarket": self._company_market_counts(companies),
                 "companyProfilesAccepted": True,
+                "companyProfilesFallback": dict(getattr(self.adapter, "profile_fallbacks", {}) or {}),
             }
 
     def refresh(self, force: bool = False) -> None:
@@ -423,6 +424,7 @@ class OfficialDataProvider:
                 "companyProfilesNormalized": len(companies),
                 "companyProfilesByMarket": self._company_market_counts(companies),
                 "companyProfilesAccepted": True,
+                "companyProfilesFallback": dict(getattr(self.adapter, "profile_fallbacks", {}) or {}),
                 "monthlyRevenueRows": len(revenue_rows),
                 **fundamentals.status,
                 "fundamentalsImport": imported.status,

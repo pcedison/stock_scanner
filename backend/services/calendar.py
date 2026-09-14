@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from backend.adapters.official_tls import official_ssl_context
+
 ROOT_DIR = Path(__file__).resolve().parents[2]
 TWSE_HOLIDAY_URL = "https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule"
 
@@ -95,7 +97,9 @@ def _parse_twse_holiday_payload(year: int, payload: dict[str, Any]) -> dict[str,
 
 def fetch_twse_market_calendar(year: int, timeout: float = 20) -> dict[str, Any]:
     params: dict[str, str | int] = {"response": "json", "queryYear": year}
-    response = httpx.get(TWSE_HOLIDAY_URL, params=params, timeout=timeout, follow_redirects=True)
+    response = httpx.get(
+        TWSE_HOLIDAY_URL, params=params, timeout=timeout, follow_redirects=True, verify=official_ssl_context()
+    )
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict) or str(payload.get("stat", "")).lower() != "ok":

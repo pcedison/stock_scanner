@@ -3,12 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+_ROOT = str(Path(__file__).resolve().parents[1])
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from cloudflare.worker_trading_calendar import TAIPEI_TZ, is_trading_day, parse_closed_dates  # noqa: E402
 
 CHECK_USER_AGENT = "Mozilla/5.0 stock-scanner-health-check/1.0"
 
@@ -62,6 +68,26 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def trading_hours_between(start: datetime, end: datetime, closed_dates=frozenset()) -> float:
+    """Hours between ``start`` and ``end`` that fall on Taipei trading days.
+
+    Sources only publish on trading days and the refresh crons are weekday-only, so a
+    seed last refreshed Saturday morning is legitimately ~54 wall-clock hours old by
+    Monday noon. Counting only trading-day time keeps the age ceiling meaningful across
+    weekends and holidays without loosening it on normal weekdays.
+    """
+    cursor = start.astimezone(TAIPEI_TZ)
+    stop = end.astimezone(TAIPEI_TZ)
+    total = 0.0
+    while cursor < stop:
+        next_midnight = datetime(cursor.year, cursor.month, cursor.day, tzinfo=TAIPEI_TZ) + timedelta(days=1)
+        segment_end = min(next_midnight, stop)
+        if is_trading_day(cursor.date(), closed_dates):
+            total += (segment_end - cursor).total_seconds() / 3600
+        cursor = segment_end
+    return total
 
 
 DISPATCH_UNHEALTHY_ATTEMPTS = 3
@@ -192,18 +218,22 @@ def validate_health_payload(
         problems.append(f"health status is {status!r}, expected {expected_status!r}")
 
     cache_age_hours = None
+    cache_wall_age_hours = None
     checked_at = None
     if max_cache_age_hours is not None:
         checked_at = _parse_timestamp(cache.get("sourceLastCheckedAt") or cache.get("generatedAt"))
         if checked_at is None:
             problems.append("cache sourceLastCheckedAt/generatedAt is missing or invalid")
         else:
-            cache_age_hours = max(0.0, (current - checked_at).total_seconds() / 3600)
+            cache_wall_age_hours = max(0.0, (current - checked_at).total_seconds() / 3600)
+            closed_dates = parse_closed_dates(cache.get("marketClosedDates"))
+            cache_age_hours = trading_hours_between(checked_at, current, closed_dates)
             if cache_age_hours > max_cache_age_hours:
                 problems.append(
                     "deployed cache is stale: "
                     f"last checked {checked_at.isoformat()} "
-                    f"({cache_age_hours:.1f}h old, limit {max_cache_age_hours:g}h)"
+                    f"({cache_age_hours:.1f} trading-day hours old, {cache_wall_age_hours:.1f}h wall clock, "
+                    f"limit {max_cache_age_hours:g}h)"
                 )
 
     refresh_dispatch = payload.get("refreshDispatch")
@@ -221,6 +251,7 @@ def validate_health_payload(
         "cacheQuality": cache_quality,
         "sourceLastCheckedAt": cache.get("sourceLastCheckedAt") or cache.get("generatedAt"),
         "cacheAgeHours": cache_age_hours,
+        "cacheWallAgeHours": cache_wall_age_hours,
         "refreshDelayMinutes": refresh_delay_minutes,
         "financialFreshness": financial_freshness,
     }

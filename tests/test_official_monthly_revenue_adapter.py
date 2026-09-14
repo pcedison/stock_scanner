@@ -21,7 +21,7 @@ class FakeResponse:
 def test_fetch_json_retries_transient_failures(monkeypatch):
     calls = {"count": 0}
 
-    def fake_get(url, timeout):
+    def fake_get(url, timeout, verify=None):
         calls["count"] += 1
         if calls["count"] == 1:
             raise httpx.ConnectError("temporary failure")
@@ -35,7 +35,7 @@ def test_fetch_json_retries_transient_failures(monkeypatch):
 
 
 def test_fetch_json_rejects_non_list_payload(monkeypatch):
-    def fake_get(url, timeout):
+    def fake_get(url, timeout, verify=None):
         return FakeResponse({"error": "temporary upstream response"})
 
     monkeypatch.setattr("backend.adapters.official_monthly_revenue.httpx.get", fake_get)
@@ -48,7 +48,7 @@ def test_fetch_json_rejects_non_list_payload(monkeypatch):
 def test_fetch_json_sleeps_between_retries_when_backoff_configured(monkeypatch):
     calls = {"count": 0}
 
-    def fake_get(url, timeout):
+    def fake_get(url, timeout, verify=None):
         calls["count"] += 1
         if calls["count"] == 1:
             raise httpx.ConnectError("temporary failure")

@@ -116,3 +116,65 @@ def test_fetch_company_profiles_combines_both_markets(monkeypatch):
     monkeypatch.setattr(adapter, "fetch_tpex_company_profiles", lambda: ["tpex-a", "tpex-b"])
 
     assert adapter.fetch_company_profiles() == ["twse", "tpex-a", "tpex-b"]
+    assert adapter.profile_fallbacks == {}
+
+
+def _revenue_row(code, market):
+    from backend.adapters.official_monthly_revenue import OfficialMonthlyRevenueRow
+
+    return OfficialMonthlyRevenueRow(
+        stockCode=code,
+        companyName=f"name-{code}",
+        market=market,
+        industryName="半導體業",
+        reportDate="1150910",
+        dataMonth="2026-08",
+        monthlyRevenue=1,
+        monthlyRevenueYoY=1.0,
+        cumulativeRevenue=1,
+        cumulativeRevenueYoY=1.0,
+    )
+
+
+def test_fetch_company_profiles_derives_failed_market_from_monthly_revenue(monkeypatch):
+    # 2026-09-13: the TPEX profile endpoint reset every connection mid-body for hours,
+    # which zeroed the whole universe and blocked every R2 rebuild.
+    adapter = OfficialMonthlyRevenueAdapter()
+
+    def broken():
+        raise RuntimeError("Failed to fetch official endpoint after 3 attempts: tpex profiles")
+
+    monkeypatch.setattr(adapter, "fetch_twse_company_profiles", lambda: ["twse"])
+    monkeypatch.setattr(adapter, "fetch_tpex_company_profiles", broken)
+    monkeypatch.setattr(
+        adapter, "fetch_tpex_monthly_revenue", lambda: [_revenue_row("6488", "TPEX"), _revenue_row("abc", "TPEX")]
+    )
+
+    profiles = adapter.fetch_company_profiles()
+
+    assert profiles[0] == "twse"
+    derived = profiles[1:]
+    assert [row.stockCode for row in derived] == ["6488"]
+    assert derived[0].market == "TPEX"
+    assert derived[0].companyShortName == "name-6488"
+    assert derived[0].industryName == "半導體業"
+    assert adapter.profile_fallbacks == {"TPEX": "monthly_revenue"}
+
+
+def test_fetch_company_profiles_raises_when_fallback_also_fails(monkeypatch):
+    import pytest
+
+    adapter = OfficialMonthlyRevenueAdapter()
+
+    def broken():
+        raise RuntimeError("profiles down")
+
+    def revenue_broken():
+        raise RuntimeError("revenue down")
+
+    monkeypatch.setattr(adapter, "fetch_twse_company_profiles", lambda: ["twse"])
+    monkeypatch.setattr(adapter, "fetch_tpex_company_profiles", broken)
+    monkeypatch.setattr(adapter, "fetch_tpex_monthly_revenue", revenue_broken)
+
+    with pytest.raises(RuntimeError, match="profiles down"):
+        adapter.fetch_company_profiles()

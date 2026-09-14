@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from backend.adapters._utils import to_float as _to_float
+from backend.adapters.official_tls import official_ssl_context
 
 _FETCH_RETRIES = 2
 _FETCH_RETRY_DELAY = 0.5
@@ -152,7 +153,9 @@ class OfficialFundamentalsAdapter:
         self.timeout = timeout
 
     def _fetch_json(self, url: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]] | dict[str, Any]:
-        response = httpx.get(url, params=params, timeout=self.timeout, follow_redirects=True)
+        response = httpx.get(
+            url, params=params, timeout=self.timeout, follow_redirects=True, verify=official_ssl_context()
+        )
         response.raise_for_status()
         return response.json()
 

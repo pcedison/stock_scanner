@@ -241,7 +241,7 @@ def test_fetch_json_returns_payload(monkeypatch):
     adapter = OfficialFundamentalsAdapter()
     captured: dict[str, object] = {}
 
-    def fake_get(url, params=None, timeout=None, follow_redirects=None):
+    def fake_get(url, params=None, timeout=None, follow_redirects=None, verify=None):
         captured.update(url=url, params=params, timeout=timeout, follow_redirects=follow_redirects)
         return _FakeResponse([{"公司代號": "2330"}])
 
