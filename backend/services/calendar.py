@@ -104,7 +104,10 @@ def _parse_twse_holiday_payload(year: int, payload: dict[str, Any]) -> dict[str,
 
 
 def fetch_twse_market_calendar(year: int, timeout: float = 20) -> dict[str, Any]:
-    params: dict[str, str | int] = {"response": "json", "queryYear": year}
+    # TWSE selects the year with `date=YYYYMMDD`; `queryYear` is ignored and always returns the
+    # current year's schedule (verified 2026-09-14 against 2019-2028). An unpublished year
+    # comes back with no rows.
+    params: dict[str, str | int] = {"response": "json", "date": f"{year}0101"}
     response = httpx.get(
         TWSE_HOLIDAY_URL, params=params, timeout=timeout, follow_redirects=True, verify=official_ssl_context()
     )

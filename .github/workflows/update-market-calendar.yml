@@ -76,10 +76,19 @@ jobs:
           git add data/market_calendar_*.json
           git commit -m "data: update TWSE market calendar ($YEARS)"
           git push --force-with-lease --set-upstream origin "$branch"
-          pr_url="$(gh pr create \
+          manual_pr_url="https://github.com/${GITHUB_REPOSITORY}/compare/main...${branch}?expand=1"
+          if ! pr_url="$(gh pr create \
             --base main \
             --head "$branch" \
             --title "data: update TWSE market calendar ($YEARS)" \
-            --body "Automated by .github/workflows/update-market-calendar.yml: fetched from the TWSE holiday schedule, validated (weekday closures inside the year, New Year's Day, Spring Festival, no truncated revision) and checked with the calendar-dependent tests. The next R2 seed rebuild publishes it to the Worker through the manifest.")"
-          gh pr merge "$pr_url" --squash --delete-branch
+            --body "Automated by .github/workflows/update-market-calendar.yml: fetched from the TWSE holiday schedule, validated (weekday closures inside the year, New Year's Day, Spring Festival, no truncated revision) and checked with the calendar-dependent tests. The next R2 seed rebuild publishes it to the Worker through the manifest.")"; then
+            echo "::error::Validated calendar was pushed to $branch, but GitHub Actions could not open the PR (check 'Allow GitHub Actions to create and approve pull requests'). Open it manually: $manual_pr_url"
+            echo "Calendar branch pushed but PR creation failed. Manual PR: $manual_pr_url" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! gh pr merge "$pr_url" --squash --delete-branch; then
+            echo "::error::Opened $pr_url but could not merge it automatically; merge it manually."
+            echo "PR opened but not merged: $pr_url" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           echo "Merged $pr_url" >> "$GITHUB_STEP_SUMMARY"

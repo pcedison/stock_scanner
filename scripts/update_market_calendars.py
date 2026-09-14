@@ -50,7 +50,7 @@ def validate_calendar(year: int, calendar: dict[str, Any]) -> list[str]:
         spring = _dates(calendar.get("springFestivalDates"))
     except ValueError as exc:
         return [f"unparseable date: {exc}"]
-    outside = [day.isoformat() for day in [*closed, *spring] if day.year != year]
+    outside = sorted({day.isoformat() for day in [*closed, *spring] if day.year != year})
     if outside:
         problems.append(f"dates outside {year}: {', '.join(outside)}")
     weekends = [day.isoformat() for day in closed if day.weekday() >= 5]
