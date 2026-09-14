@@ -4,8 +4,8 @@ The Worker cron (cloudflare/wrangler.toml ``[triggers].crons``) is the only sche
 trigger for ``.github/workflows/cloudflare-r2-seed-refresh.yml``; GitHub ``schedule``
 events were delayed or dropped for hours at a time. Each tick therefore has to be
 self-sufficient: recover jobs orphaned by a cancelled/timed-out run, retry a dispatch
-GitHub did not acknowledge or that no workflow run claimed, and queue a refresh
-ahead of the policy deadline so the seed never reaches ``nextRefreshAfter``.
+GitHub did not acknowledge or that no workflow run claimed, and queue a refresh once
+the seed reaches ``nextRefreshAfter``.
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ def parse_time(value):
 
 
 JOB_TYPE = "market_scan"
-REFRESH_AHEAD_SECONDS = 120 * 60
+# ``nextRefreshAfter`` is the publication slot at which new official data exists; queuing
+# before it only rebuilds from the same datasets (it used to be 2 hours ahead).
+REFRESH_AHEAD_SECONDS = 0
 DISPATCH_RETRY_SECONDS = 20 * 60
 ORPHANED_RUNNING_SECONDS = 120 * 60
 WORKER_CRON_CLIENT_KEY = "worker-cron"

@@ -5,13 +5,14 @@ name: Refresh Cloudflare R2 Seed
 # The `schedule` below is only a backstop: GitHub delivers it with a median gap of
 # 3.28h (max 39.32h observed) against its 20-minute cron, but after the 2026-09-11
 # cutover the Worker cron did not fire at all and nothing refreshed the seed for five
-# hours. Running both is free - the Worker dispatches force=false, so whichever
-# arrives second is a no-op through this workflow's own D1/freshness guards. Drop this
-# block only once the Worker cron is observed firing in production.
+# hours. The Worker dispatches force=false, so whichever arrives second is a no-op
+# through this workflow's own D1/freshness guards. Backstop ticks only land just after the
+# 06:30 / 17:30 Taipei publication slots (backend/services/cache_policy.py); any other
+# tick is a billed runner start that can find nothing new.
 on:
   schedule:
-    - cron: "7,27,47 0-10 * * 1-5"  # 台北 08:00-18:59 平日，每 20 分鐘
-    - cron: "7 11-23 * * 1-5"        # 平日夜間／隔日凌晨（台北），每小時一次
+    - cron: "7 23 * * 0-4"     # 台北 週一至週五 07:07（早盤時段 06:30 之後）
+    - cron: "7 10,12 * * 1-5"  # 台北 週一至週五 18:07、20:07（晚盤時段 17:30 之後）
   workflow_dispatch:
     inputs:
       force:
@@ -100,7 +101,7 @@ jobs:
             "${job_check_args[@]}" \
             "${health_args[@]}" \
             --max-cache-age-hours 36 \
-            --refresh-ahead-minutes 120 \
+            --refresh-ahead-minutes 0 \
             --github-output "$GITHUB_OUTPUT" \
             --github-step-summary "$GITHUB_STEP_SUMMARY"
 

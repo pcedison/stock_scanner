@@ -1,5 +1,6 @@
 import json
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -11,6 +12,7 @@ from backend.adapters.monthly_revenue_history import MonthlyRevenueHistoryStore
 from backend.models.analysis import AnalysisResult, RuleResult
 from backend.models.company import Company
 from backend.models.financial import FundamentalSnapshot
+from backend.services.cache_policy import next_refresh_after
 
 
 class ObjectResult:
@@ -539,6 +541,9 @@ def test_live_seed_main_writes_v2_generation_and_manifest_fields(tmp_path, monke
     assert manifest["marketApiSchemaVersion"] == 2
     assert manifest["marketGenerationId"]
     assert manifest["marketPageCount"] == 1
+    generated_at = datetime.fromisoformat(manifest["generatedAt"])
+    expected_next = next_refresh_after(generated_at, seed_build.market_closed_dates(generated_at.year))
+    assert manifest["nextRefreshAfter"] == expected_next.isoformat()
     assert (output / "market_scan_index.json").is_file()
     assert (output / "market_scan" / "v2" / manifest["marketGenerationId"] / "index.json").is_file()
 

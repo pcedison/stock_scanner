@@ -385,17 +385,16 @@ def test_fresh_seed_outside_refresh_ahead_window_stays_idle():
     ]
 
 
-def test_seed_inside_refresh_ahead_window_is_enqueued_and_dispatched():
+def test_seed_before_its_publication_slot_is_not_rebuilt_early():
+    # nextRefreshAfter is when the official datasets regenerate; 90 minutes before it a
+    # rebuild would only re-fetch the data the seed already has.
     api = FakeApi(enabled=True, next_refresh_after=_iso(FIXED_TIME + timedelta(minutes=90)))
     calls: list[dict] = []
 
     result = _run(api, _ok_dispatch(calls))
 
-    assert result["status"] == "dispatched"
-    assert result["enqueue"] == "queued"
-    assert result["jobId"] == "job-enqueued-1"
-    assert api.rows[0]["dispatch_status"] == "dispatched"
-    assert calls == [{"ref": "main", "inputs": {"force": "false"}}]
+    assert result == {"status": "idle", "recovered": 0, "enqueue": "fresh"}
+    assert calls == []
 
 
 def test_stale_seed_is_enqueued_and_dispatched():

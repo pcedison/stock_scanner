@@ -36,8 +36,8 @@ EDGE_CACHE_ENABLED = "true"
 # secrets rather than vars: this repository is public. Cron times are UTC.
 [triggers]
 crons = [
-  "*/20 0-10 * * MON-FRI", # Taipei 08:00-18:59 weekdays, every 20 minutes
-  "0 11-23 * * MON-FRI",   # weekday evenings/overnight Taipei, hourly
+  "*/20 21-23 * * SUN-THU", # Taipei 05:00-07:59 Mon-Fri: morning publication slot (06:30)
+  "*/20 0-15 * * MON-FRI",  # Taipei 08:00-23:59 Mon-Fri: evening slot (17:30) + failed-build retries
 ]
 
 [cache]

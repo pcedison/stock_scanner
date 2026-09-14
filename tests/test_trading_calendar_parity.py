@@ -108,6 +108,36 @@ def test_closed_dates_are_read_from_iso_strings():
     assert parsed == {date(2026, 2, 16), date(2026, 2, 17)}
 
 
+def test_refresh_reason_matches_the_backend_filing_windows_every_day():
+    # The Worker labels its policy with the same filing windows the seed builder uses.
+    from backend.services.filing_calendar import market_closed_dates
+
+    for year in (2026, 2027):
+        closed = set(market_closed_dates(year))
+        day = date(year, 1, 1)
+        while day.year == year:
+            backend_reason = backend_policy.refresh_policy(_taipei(day, 12))["reason"]
+            assert worker_calendar.refresh_reason(day, closed) == backend_reason, day
+            day += timedelta(days=1)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "expected"),
+    [
+        ({"generatedAt": "2026-09-15T09:40:00+00:00", "nextRefreshAfter": "2026-09-16T09:30:00+00:00"},
+         datetime(2026, 9, 16, 9, 30, tzinfo=UTC)),
+        ({"generatedAt": "2026-09-15T09:40:00+00:00"}, None),  # legacy manifest
+        ({"generatedAt": "2026-09-15T09:40:00+00:00", "nextRefreshAfter": "garbage"}, None),
+        # Not after the build, or implausibly far out: ignored rather than trusted.
+        ({"generatedAt": "2026-09-15T09:40:00+00:00", "nextRefreshAfter": "2026-09-15T09:00:00+00:00"}, None),
+        ({"generatedAt": "2026-09-15T09:40:00+00:00", "nextRefreshAfter": "2026-10-15T09:30:00+00:00"}, None),
+    ],
+)
+def test_manifest_next_refresh_is_trusted_only_when_plausible(manifest, expected):
+    generated = datetime.fromisoformat(manifest["generatedAt"])
+    assert worker_calendar.manifest_next_refresh(manifest, generated) == expected
+
+
 def test_the_walk_forward_crosses_a_year_boundary():
     # 1 Jan is always closed; the seed builder ships next year's dates for exactly this.
     closed = {date(2027, 1, 1)}

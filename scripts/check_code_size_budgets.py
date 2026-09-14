@@ -26,10 +26,13 @@ DEFAULT_BUDGETS = {
     # so only an import and a one-line call site landed here. tests/test_code_size_budgets.py
     # pins this number on purpose - raising it is meant to be a deliberate, reviewed act.
     "cloudflare/worker.py": 905,
-    "cloudflare/worker_trading_calendar.py": 90,
+    # 90 -> 120: the statutory filing windows and the manifest nextRefreshAfter trust bounds
+    # moved here out of worker.py's inline policy (parity-tested against the backend).
+    "cloudflare/worker_trading_calendar.py": 120,
     "cloudflare/worker_health.py": 120,
     "cloudflare/worker_market_query.py": 450,
-    "cloudflare/worker_refresh_jobs.py": 260,
+    # 260 -> 275: failed-build retry backoff decoupled from the policy interval.
+    "cloudflare/worker_refresh_jobs.py": 275,
     "cloudflare/worker_refresh_control.py": 180,
     "cloudflare/worker_refresh_schedule.py": 170,
     # Raised from 170 when js_fetch_options landed: this module owns the Python/JS

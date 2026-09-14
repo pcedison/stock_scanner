@@ -640,12 +640,11 @@ def test_scheduler_wakeup_endpoint():
     assert "SPRING_FESTIVAL_GUARD" in payload["events"]
 
 
-def test_scheduler_keeps_monthly_revenue_followup_through_day_15():
-    response = client.get("/api/scheduler/wakeup?today=2026-07-15")
-    payload = response.json()
-
-    assert response.status_code == 200
-    assert "MONTHLY_REVENUE_WINDOW" in payload["events"]
+def test_scheduler_monthly_revenue_window_ends_at_the_filing_deadline():
+    # Revenue is due by the 10th (7/10/2026 is a Friday); nothing new is filed afterwards.
+    assert "MONTHLY_REVENUE_WINDOW" in client.get("/api/scheduler/wakeup?today=2026-07-01").json()["events"]
+    assert "MONTHLY_REVENUE_WINDOW" in client.get("/api/scheduler/wakeup?today=2026-07-10").json()["events"]
+    assert "MONTHLY_REVENUE_WINDOW" not in client.get("/api/scheduler/wakeup?today=2026-07-13").json()["events"]
 
 
 def test_scheduler_auto_scan_runs_when_enabled():

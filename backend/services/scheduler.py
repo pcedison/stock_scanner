@@ -1,24 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from backend.services.cache_policy import (
-    FINANCIAL_REPORT_DEADLINES,
-    MONTHLY_REVENUE_WINDOW_END_DAY,
-    MONTHLY_REVENUE_WINDOW_START_DAY,
+    ANNUAL_WINDOW_LEAD_DAYS,
+    FINANCIAL_WINDOW_LEAD_DAYS,
+    in_monthly_revenue_window,
 )
 from backend.services.calendar import load_market_calendar
-
-_FINANCIAL_WINDOW_DAYS = 3
-
-_DEADLINE_EVENT: dict[tuple[int, int], str] = {
-    (3, 31): "ANNUAL_REPORT_WINDOW",
-    (5, 15): "Q1_REPORT_WINDOW",
-    (5, 30): "Q1_REPORT_WINDOW",
-    (8, 31): "Q2_REPORT_WINDOW",
-    (11, 14): "Q3_REPORT_WINDOW",
-}
+from backend.services.filing_calendar import financial_report_events
 
 
 @dataclass(frozen=True)
@@ -30,23 +21,24 @@ class WakeUpDecision:
     calendarSource: str
 
 
+def _financial_window_event(today: date) -> str | None:
+    for event in financial_report_events(today.year):
+        lead = ANNUAL_WINDOW_LEAD_DAYS if event.kind == "annual" else FINANCIAL_WINDOW_LEAD_DAYS
+        if event.general_deadline - timedelta(days=lead) <= today <= event.final_deadline:
+            return "ANNUAL_REPORT_WINDOW" if event.kind == "annual" else f"Q{event.quarter}_REPORT_WINDOW"
+    return None
+
+
 def should_wake_up(today: date | None = None) -> WakeUpDecision:
     today = today or date.today()
     calendar = load_market_calendar(today.year)
     events: list[str] = []
 
-    if MONTHLY_REVENUE_WINDOW_START_DAY <= today.day <= MONTHLY_REVENUE_WINDOW_END_DAY:
+    if in_monthly_revenue_window(today):
         events.append("MONTHLY_REVENUE_WINDOW")
 
-    for month, day in FINANCIAL_REPORT_DEADLINES:
-        try:
-            deadline = date(today.year, month, day)
-        except ValueError:
-            continue
-        if abs((today - deadline).days) <= _FINANCIAL_WINDOW_DAYS:
-            label = _DEADLINE_EVENT.get((month, day), "FINANCIAL_REPORT_WINDOW")
-            if label not in events:
-                events.append(label)
+    if financial_event := _financial_window_event(today):
+        events.append(financial_event)
 
     if any(d.month == today.month for d in calendar.spring_festival_dates):
         events.append("SPRING_FESTIVAL_GUARD")

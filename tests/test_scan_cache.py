@@ -195,6 +195,20 @@ def test_forced_empty_scan_preserves_last_good_payload(tmp_path):
     assert "private filesystem path" not in (tmp_path / "scan.json").read_text(encoding="utf-8")
 
 
+def test_publication_slot_policy_keeps_the_local_cache_fresh_until_the_next_slot():
+    from backend.services import scan_cache as scan_cache_module
+    from backend.services.cache_policy import next_refresh_after
+    from backend.services.filing_calendar import market_closed_dates
+
+    policy = {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "schedule": "publication_slots",
+              "minIntervalSeconds": 3600}
+    stored = datetime(2026, 9, 15, 9, 40, tzinfo=UTC)  # Tue 17:40 Taipei
+
+    expected = next_refresh_after(stored, market_closed_dates(2026))
+    assert scan_cache_module._next_refresh(stored, policy) == expected
+    assert expected == datetime(2026, 9, 16, 9, 30, tzinfo=UTC)  # not 18:40 an hour later
+
+
 def test_stale_scan_cache_queues_single_background_refresh(tmp_path):
     service = ScanCacheService(tmp_path / "scan.json", tmp_path / "jobs.json")
     settings = ScannerSettings(use_mock_data=False)

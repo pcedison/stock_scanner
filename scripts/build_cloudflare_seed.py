@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -40,7 +40,7 @@ from backend.models.company import Company  # noqa: E402
 from backend.models.financial import FundamentalSnapshot  # noqa: E402
 from backend.models.holding import Holding  # noqa: E402
 from backend.models.settings import ScannerSettings  # noqa: E402
-from backend.services.cache_policy import next_publication_time, refresh_policy  # noqa: E402
+from backend.services.cache_policy import next_refresh_after, refresh_policy  # noqa: E402
 from backend.services.calendar import load_market_calendar  # noqa: E402
 from backend.services.market_query import build_market_generation, canonical_json_bytes  # noqa: E402
 from backend.services.market_scan import data_sources_status_payload, scan_market_payload  # noqa: E402
@@ -698,13 +698,11 @@ def main() -> None:
     scan_payload = _scan_market_payload(settings)
     policy = refresh_policy()
     generated_at = datetime.fromisoformat(scan_payload["generatedAt"])
-    # Nothing is published while the market is shut, so a deadline that lands on a
-    # weekend or holiday is moved to the next trading day instead of marking the seed
-    # stale against sources that cannot have changed.
+    # The seed stays fresh until the next publication slot (a trading day's official
+    # dataset regeneration); rebuilding any earlier only re-fetches identical data. The
+    # Worker reads this value from the manifest instead of re-deriving it.
     closed_dates = market_closed_dates(generated_at.year)
-    next_refresh = next_publication_time(
-        generated_at + timedelta(seconds=policy["minIntervalSeconds"]), closed_dates
-    )
+    next_refresh = next_refresh_after(generated_at, closed_dates)
     snapshots = official_provider.list_snapshots(settings)
     companies = merge_seed_companies(official_provider.list_companies(), snapshots)
     analysis_by_code: dict = {}

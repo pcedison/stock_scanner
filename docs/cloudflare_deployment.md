@@ -42,7 +42,7 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 - `MARKET_SCAN_API_VERSION = "v2"`
 - `EDGE_CACHE_ENABLED = "true"`
 - `[cache].enabled = false`
-- `[triggers].crons = ["*/20 0-10 * * MON-FRI", "0 11-23 * * MON-FRI"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name). Both are weekday-only: every source the seed is built from publishes on trading days only, so a weekend tick can only re-fetch data that cannot have changed.
+- `[triggers].crons = ["*/20 21-23 * * SUN-THU", "*/20 0-15 * * MON-FRI"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name). Together they tick every 20 minutes Monday-Friday 05:00-23:59 Taipei; the first is `SUN-THU` because Monday's 06:30 Taipei slot is still Sunday in UTC. A tick only dispatches a rebuild once `nextRefreshAfter` has passed.
 - `GITHUB_DISPATCH_ENABLED = "true"`
 
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
@@ -89,17 +89,36 @@ Rotation is only needed if the key is exposed: generate a new one on the App pag
 
 ## Refresh cadence and the trading calendar
 
-Every source the seed is built from - daily valuation ratios (`BWIBBU_d`, TPEX P/E), company profiles (`t187ap03`), MOPS monthly revenue (`t187ap05`) and quarterly filings (`t187ap06/07`) - only publishes on a trading day. The market closes at 13:30 and the official post-close files land shortly after, so a trading day's data is complete at **15:00 Taipei**.
+Every source the seed is built from - daily valuation ratios (`BWIBBU_d`, TPEX P/E), company profiles (`t187ap03`), MOPS monthly revenue (`t187ap05`) and quarterly filings (`t187ap06/07`) - only publishes on a trading day, and none of the OpenAPI datasets change intraday (HTTP `Last-Modified`, 2026-09-14):
 
-Two things follow from that, and both are implemented:
+| Source | Regenerated (Taipei) |
+|---|---|
+| TWSE OpenAPI `t187ap03/05/06/07_L` | ~05:25, MOPS filings through the previous day |
+| TPEX OpenAPI `mopsfin_*_O`, P/E | ~16:00 |
+| TWSE `BWIBBU_d` | after the 13:30 close, same day |
 
-- **Nothing is fetched while the market is shut.** Both Worker crons and the workflow's `schedule` backstop are weekday-only. A weekend tick could only re-fetch Friday's data, burning Actions minutes and adding load to sources that rate-limit.
-- **A refresh deadline landing on a non-trading day waits for the next trading day.** `backend/services/cache_policy.next_publication_time` and its Worker mirror `cloudflare/worker_trading_calendar.py` push such a deadline to the next trading day at 15:00 Taipei. Without this the seed was reported stale every three hours all weekend even though the data was complete and current, which failed the health monitor for no reason.
+So the seed is rebuilt only at **publication slots** (`backend/services/cache_policy.py`): **17:30** every trading day, plus **06:30** inside filing windows. `next_refresh_after(generatedAt)` is the first active slot after a build; the seed build writes it to the manifest as `nextRefreshAfter` and the Worker uses that value as-is (legacy manifests without it fall back to the old interval rule). Nothing is queued ahead of a slot (`REFRESH_AHEAD_SECONDS = 0`) - before it the datasets are the ones the seed already has.
+
+Filing windows follow the statutory calendar (`backend/services/filing_calendar.py`; 證券交易法 §36 and the FSC special-scope rules), with a deadline on a closed day moved to the next business day:
+
+| Report | General listed/OTC | Financial holding / bank / insurance (KY for Q2) | Window |
+|---|---|---|---|
+| Annual | 3/31 (large caps ~3/16) | 3/31 | 3/1 - 3/31 |
+| Q1 | 5/15 | 5/30 | 5/1 - 5/30 |
+| Q2 | 8/14 | 8/31 | 7/31 - 8/31 |
+| Q3 | 11/14 | 11/29 | 10/31 - 11/29 |
+| Monthly revenue | by the 10th | insurers by the 15th | 1st - 10th |
+
+The freshness gate expects a period only after its final deadline has passed. The Worker's policy label mirrors these windows (`cloudflare/worker_trading_calendar.refresh_reason`, parity-tested day by day).
+
+Consequences:
+
+- **Nothing is fetched while the market is shut.** Worker crons, slots and the workflow's `schedule` backstop are weekday-only; weekends and `marketClosedDates` have no slots.
+- **At most two rebuilds per trading day** (one outside filing windows), instead of every 2-3 hours inside windows.
+- **A failed rebuild is retried after an hour** (`worker_refresh_jobs.TERMINAL_JOB_COOLDOWN_SECONDS`), not after the whole policy interval.
 - **The 36-hour cache-age ceiling counts trading-day hours only.** `scripts/check_cloudflare_health.trading_hours_between` (used by the health monitor and the remote smoke) skips weekends and `marketClosedDates`. With weekday-only crons the last refresh before a weekend lands Saturday morning, which is ~54 wall-clock hours old by Monday noon; measured in wall-clock time that failed the monitor every Sunday evening (2026-09-13/14). The summary reports both `cacheAgeHours` (trading) and `cacheWallAgeHours`.
 
 A single broken company-profile endpoint no longer zeroes the scan universe: `OfficialMonthlyRevenueAdapter.fetch_company_profiles` derives a market's profiles from that market's monthly-revenue file when its profile endpoint fails (2026-09-13, TPEX `mopsfin_t187ap03_O` reset every connection mid-body for hours and blocked every R2 rebuild). The fallback is recorded as `companyProfilesFallback` in the provider source status; the build still fails if the revenue file is unavailable too.
-
-A deadline already on a trading day is left alone, so the intraday cadence during the monthly-revenue (day 8-15) and financial-report windows is unchanged.
 
 Market holidays come from `data/market_calendar_<year>.json` (built from the TWSE holiday schedule). The seed build copies them into the manifest as `marketClosedDates` for the current and next year, which is how the Worker sees them - it cannot read the repo. A missing or unreadable list degrades to weekend-only rather than failing the request.
 
@@ -154,13 +173,13 @@ This keeps production deploys deterministic while preventing the committed seed 
 
 ## Server-Side R2 Seed Rebuild
 
-`.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. It has no GitHub `schedule` trigger: GitHub delivered scheduled runs hours late or not at all (2026-09, roughly one run per 3-4 hours against a 20-minute cron), which let the seed pass its policy deadline and tripped the health monitor. Scheduling lives in the Worker instead.
+`.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. GitHub delivered scheduled runs hours late or not at all (2026-09, roughly one run per 3-4 hours against a 20-minute cron), so scheduling lives in the Worker; the workflow's own `schedule` is only a backstop of three ticks per weekday just after the publication slots (07:07, 18:07, 20:07 Taipei).
 
-Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes during Taipei weekday business hours and hourly through weekday evenings) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
+Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes Monday-Friday 05:00-23:59 Taipei, covering both publication slots and failed-build retries) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
 
 1. Re-queues a `running` job whose workflow run started more than 2 hours ago (cancelled or timed-out run) - `worker_refresh_schedule.ORPHANED_RUNNING_SECONDS`.
 2. Resets a `failed` / `unknown` / never-claimed `dispatched` job back to `pending` after 20 minutes so the dispatch is retried - `DISPATCH_RETRY_SECONDS`.
-3. Queues a new `market_scan` job when the deployed seed is stale or will be stale within 2 hours (`REFRESH_AHEAD_SECONDS`); the terminal-job cooldown is shortened by the same window so the rebuild lands before `cacheStatus.nextRefreshAfter`.
+3. Queues a new `market_scan` job once the deployed seed reaches `cacheStatus.nextRefreshAfter` (the next publication slot; `REFRESH_AHEAD_SECONDS = 0`). After a failed rebuild the next job waits `TERMINAL_JOB_COOLDOWN_SECONDS` (1 hour).
 4. Dispatches the pending job with `POST .../actions/workflows/cloudflare-r2-seed-refresh.yml/dispatches` (`inputs.force=false`), authenticating as the GitHub App: it signs a short-lived RS256 JWT with `GITHUB_APP_PRIVATE_KEY` through WebCrypto, exchanges it for a one-hour installation token, and uses that for the dispatch. A token is minted per dispatch, so nothing is cached and nothing expires between runs. The job records `dispatch_status` / `dispatch_error_code`, and `/api/health` exposes this as `refreshDispatch`.
 
 The workflow can still be dispatched manually; `force=true` bypasses the D1/freshness guards and unlocks the larger MOPS backfill budget. On each run it:

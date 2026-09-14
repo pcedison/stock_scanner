@@ -429,7 +429,9 @@ def test_early_refresh_decision_uses_proactive_refresh_boundary(now, expected):
     assert decision["staleRefresh"] is expected
 
 
-def test_early_refresh_decision_function_default_refreshes_79_minutes_ahead():
+def test_early_refresh_decision_function_default_waits_for_the_publication_slot():
+    # nextRefreshAfter is when new official data exists; rebuilding 79 minutes early
+    # re-fetches identical datasets.
     decision = r2.early_refresh_decision(
         force=False,
         pending_count=0,
@@ -440,11 +442,30 @@ def test_early_refresh_decision_function_default_refreshes_79_minutes_ahead():
         now=datetime(2026, 7, 12, 0, 41, tzinfo=UTC),
     )
 
-    assert decision["runRefresh"] is True
-    assert decision["staleRefresh"] is True
+    assert decision["runRefresh"] is False
+    assert decision["staleRefresh"] is False
 
 
-def test_early_refresh_decision_cli_default_refreshes_79_minutes_ahead(tmp_path, capsys):
+def test_early_refresh_decision_ignores_the_weekend_in_the_age_ceiling():
+    # 2026-09-14 Monday 12:46 Taipei: 53.7 wall-clock hours since Saturday 07:07, but only
+    # 12.8 trading-day hours; the old wall-clock check forced a rebuild before any new data.
+    decision = r2.early_refresh_decision(
+        force=False,
+        pending_count=0,
+        health_payload=_health_payload(
+            next_refresh_after="2026-09-14T09:30:00+00:00", checked_at="2026-09-11T23:07:20+00:00"
+        ),
+        health_error="",
+        health_url_configured=True,
+        max_cache_age_hours=36,
+        now=datetime(2026, 9, 14, 4, 46, 58, tzinfo=UTC),
+    )
+
+    assert decision["runRefresh"] is False
+    assert decision["cacheAgeHours"] == pytest.approx(12.78, abs=0.01)
+
+
+def test_early_refresh_decision_cli_default_waits_for_the_publication_slot(tmp_path, capsys):
     current = datetime.now(UTC)
     health = tmp_path / "health.json"
     health.write_text(
@@ -471,9 +492,9 @@ def test_early_refresh_decision_cli_default_refreshes_79_minutes_ahead(tmp_path,
 
     assert rc == 0
     decision = json.loads(capsys.readouterr().out)
-    assert decision["runRefresh"] is True
-    assert decision["staleRefresh"] is True
-    assert "run_refresh=true" in output.read_text(encoding="utf-8")
+    assert decision["runRefresh"] is False
+    assert decision["staleRefresh"] is False
+    assert "run_refresh=false" in output.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -494,11 +515,12 @@ def test_early_refresh_decision_cli_default_refreshes_79_minutes_ahead(tmp_path,
             datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
         ),
         (
+            # Mon 20:00 -> Wed 09:00 Taipei: 37 trading-day hours.
             _health_payload(
-                next_refresh_after="2026-07-13T12:00:00+00:00",
-                checked_at="2026-07-10T12:00:00+00:00",
+                next_refresh_after="2026-07-16T12:00:00+00:00",
+                checked_at="2026-07-13T12:00:00+00:00",
             ),
-            datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+            datetime(2026, 7, 15, 1, 0, tzinfo=UTC),
         ),
     ],
     ids=("reported-stale", "non-ok-health", "37-hour-safety-ceiling"),

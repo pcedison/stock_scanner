@@ -7,6 +7,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+try:
+    from check_cloudflare_health import parse_closed_dates, trading_hours_between
+except ModuleNotFoundError:  # Imported as scripts.r2_refresh_decision under pytest.
+    from scripts.check_cloudflare_health import parse_closed_dates, trading_hours_between
+
 COUNT_FIELDS = ("pending_count", "cnt")
 JOB_CHECK_ERROR = "D1 pending-job query unavailable"
 
@@ -110,6 +115,7 @@ def refresh_due_at(health_payload: dict[str, Any]) -> datetime | None:
 
 
 def health_age_hours(health_payload: dict[str, Any], now: datetime | None = None) -> float | None:
+    """Trading-day hours since the seed was last checked (weekends and closed days excluded)."""
     cache = health_payload.get("cache") if isinstance(health_payload, dict) else None
     cache = cache if isinstance(cache, dict) else {}
     checked_at = parse_timestamp(cache.get("sourceLastCheckedAt") or cache.get("generatedAt"))
@@ -118,7 +124,8 @@ def health_age_hours(health_payload: dict[str, Any], now: datetime | None = None
     current = now or datetime.now(UTC)
     if current.tzinfo is None:
         current = current.replace(tzinfo=UTC)
-    return max(0.0, (current.astimezone(UTC) - checked_at).total_seconds() / 3600)
+    closed_dates = parse_closed_dates(cache.get("marketClosedDates"))
+    return trading_hours_between(checked_at, current.astimezone(UTC), closed_dates)
 
 
 def early_refresh_decision(
@@ -130,7 +137,7 @@ def early_refresh_decision(
     health_url_configured: bool,
     max_cache_age_hours: float,
     job_check_error: str = "",
-    refresh_ahead_minutes: float = 120,
+    refresh_ahead_minutes: float = 0,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if force:
@@ -301,7 +308,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     early.add_argument("--job-check-error", default="")
     early.add_argument("--health-url-configured", action="store_true")
     early.add_argument("--max-cache-age-hours", type=float, default=36)
-    early.add_argument("--refresh-ahead-minutes", type=float, default=120)
+    early.add_argument("--refresh-ahead-minutes", type=float, default=0)
     early.add_argument("--github-output", type=Path)
     early.add_argument("--github-step-summary", type=Path)
     early.set_defaults(func=run_early_check)
