@@ -120,7 +120,9 @@ Consequences:
 
 A single broken company-profile endpoint no longer zeroes the scan universe: `OfficialMonthlyRevenueAdapter.fetch_company_profiles` derives a market's profiles from that market's monthly-revenue file when its profile endpoint fails (2026-09-13, TPEX `mopsfin_t187ap03_O` reset every connection mid-body for hours and blocked every R2 rebuild). The fallback is recorded as `companyProfilesFallback` in the provider source status; the build still fails if the revenue file is unavailable too.
 
-Market holidays come from `data/market_calendar_<year>.json` (built from the TWSE holiday schedule). The seed build copies them into the manifest as `marketClosedDates` for the current and next year, which is how the Worker sees them - it cannot read the repo. A missing or unreadable list degrades to weekend-only rather than failing the request.
+Market holidays come from `data/market_calendar_<year>.json` (built from the TWSE holiday schedule). The seed build copies them into the manifest as `marketClosedDates` for the current and next year, which is how the Worker sees them - it cannot read the repo. A missing or unreadable list degrades to weekend-only (plus New Year's Day) rather than failing the request.
+
+The files maintain themselves: `.github/workflows/update-market-calendar.yml` runs `scripts/update_market_calendars.py` every Monday from October to January (when TWSE publishes the next year's schedule) and on the 1st of every other month (revisions). It fetches this year and next; an unpublished year writes nothing, a published one is validated (weekday closures inside the year, New Year's Day when it is a weekday, Spring Festival in January/February, at least 6 closed days, a revision may not drop more than 2 days), checked with the calendar-dependent tests, and merged through an automated PR. A fetch error or failed validation fails the run and writes nothing. No manual step is needed each year.
 
 `tests/test_trading_calendar_parity.py` pins the backend and Worker implementations to the same answers; they are duplicated because the Worker cannot import `backend`.
 
