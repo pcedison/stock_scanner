@@ -1,11 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from backend.services.calendar import load_market_calendar
+
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+# 證券交易法 §36: monthly revenue by the 10th of the following month (insurers may use the
+# 15th). A statutory deadline on a non-business day moves to the next business day.
+MONTHLY_REVENUE_DEADLINE_DAY = 10
+
+
+@lru_cache(maxsize=8)
+def _closed_dates(year: int) -> frozenset[date]:
+    return frozenset(load_market_calendar(year).closed_dates)
+
+
+def market_closed_dates(year: int) -> frozenset[date]:
+    """TWSE closed days for ``year`` and the next, so a walk forward can cross 31 Dec."""
+    return _closed_dates(year) | _closed_dates(year + 1)
+
+
+def next_business_day(day: date) -> date:
+    """``day`` itself when the market is open, else the next open day (weekends + TWSE holidays)."""
+    while day.weekday() >= 5 or day in _closed_dates(day.year):
+        day += timedelta(days=1)
+    return day
 
 
 @dataclass(frozen=True)
@@ -18,6 +42,11 @@ class FinancialReportEvent:
     general_deadline: date
     financial_deadline: date | None = None
 
+    @property
+    def final_deadline(self) -> date:
+        """Last day any listed company may file this period, after holiday extension."""
+        return next_business_day(self.financial_deadline or self.general_deadline)
+
 
 def today_taipei() -> date:
     from datetime import datetime
@@ -25,11 +54,15 @@ def today_taipei() -> date:
     return datetime.now(TAIPEI_TZ).date()
 
 
+def monthly_revenue_deadline(year: int, month: int) -> date:
+    return next_business_day(date(year, month, MONTHLY_REVENUE_DEADLINE_DAY))
+
+
 def latest_monthly_revenue_period(today: date) -> str:
-    # 台股月營收採「每月 10 日前公布上月營收」。因此每月 1~10 日時,上個月的營收
+    # 台股月營收採「每月 10 日前公布上月營收」(遇假日順延)。截止日(含)前,上個月的營收
     # 尚未(完整)公布,若直接取上個月會抓到還沒公布的期別,使營收年增率(E3 等)
-    # 全市場缺值。故 10 日(含)前往前推兩個月,11 日起才取上個月。
-    months_back = 2 if today.day <= 10 else 1
+    # 全市場缺值。故截止日(含)前往前推兩個月,之後才取上個月。
+    months_back = 2 if today <= monthly_revenue_deadline(today.year, today.month) else 1
     year = today.year
     month = today.month - months_back
     while month <= 0:
@@ -38,11 +71,14 @@ def latest_monthly_revenue_period(today: date) -> str:
     return f"{year}-{month:02d}"
 
 
-def active_financial_report_event(today: date) -> FinancialReportEvent | None:
-    """Return the current filing window that should drive announced/pending grouping."""
+def financial_report_events(year: int) -> list[FinancialReportEvent]:
+    """Statutory filing deadlines for reports filed during ``year``, chronological.
 
-    year = today.year
-    windows = [
+    General listed/OTC companies: annual 3/31, Q1 5/15, Q2 8/14, Q3 11/14 (§36: 45 days
+    after each quarter). Financial holding companies, banks and insurers: Q1 5/30,
+    Q2 8/31, Q3 11/29; primary-listed foreign (KY) companies also file Q2 by 8/31.
+    """
+    return [
         FinancialReportEvent(
             kind="annual",
             fiscal_year=year - 1,
@@ -66,7 +102,8 @@ def active_financial_report_event(today: date) -> FinancialReportEvent | None:
             quarter=2,
             period=f"{year}Q2",
             label=f"{year} 第 2 季半年報",
-            general_deadline=date(year, 8, 31),
+            general_deadline=date(year, 8, 14),
+            financial_deadline=date(year, 8, 31),
         ),
         FinancialReportEvent(
             kind="quarterly",
@@ -75,13 +112,22 @@ def active_financial_report_event(today: date) -> FinancialReportEvent | None:
             period=f"{year}Q3",
             label=f"{year} 第 3 季季報",
             general_deadline=date(year, 11, 14),
+            financial_deadline=date(year, 11, 29),
         ),
     ]
-    starts = [date(year, 1, 1), date(year, 4, 1), date(year, 7, 1), date(year, 10, 1)]
+
+
+_WINDOW_STARTS = ((1, 1), (4, 1), (7, 1), (10, 1))
+
+
+def active_financial_report_event(today: date) -> FinancialReportEvent | None:
+    """Return the current filing window that should drive announced/pending grouping."""
+
+    year = today.year
     most_recently_closed: FinancialReportEvent | None = None
-    for start, event in zip(starts, windows, strict=False):
-        deadline = event.financial_deadline or event.general_deadline
-        if start <= today <= deadline:
+    for (month, day), event in zip(_WINDOW_STARTS, financial_report_events(year), strict=True):
+        deadline = event.final_deadline
+        if date(year, month, day) <= today <= deadline:
             return event
         if deadline < today:
             # windows are chronological, so the last match is the most recent
@@ -109,22 +155,10 @@ def freshness_financial_report_event(today: date) -> FinancialReportEvent | None
     """Return the latest report period whose filing deadline has fully passed."""
 
     latest_due: FinancialReportEvent | None = None
-    latest_deadline: date | None = None
     for year in (today.year - 1, today.year):
-        deadline_dates = (
-            date(year, 3, 31),
-            date(year, 5, 30),
-            date(year, 8, 31),
-            date(year, 11, 14),
-        )
-        for deadline_date in deadline_dates:
-            event = active_financial_report_event(deadline_date)
-            if not event:
-                continue
-            deadline = event.financial_deadline or event.general_deadline
-            if deadline < today and (latest_deadline is None or latest_deadline < deadline):
+        for event in financial_report_events(year):
+            if event.final_deadline < today:
                 latest_due = event
-                latest_deadline = deadline
     return latest_due
 
 

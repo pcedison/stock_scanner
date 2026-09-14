@@ -124,7 +124,8 @@ def test_scan_market_payload_reports_financial_freshness_without_changing_scan_g
 
 
 def test_scan_market_payload_checks_financial_freshness_after_provider_refresh(monkeypatch):
-    _patch_filing_context(monkeypatch, date(2026, 11, 15))
+    # Q3 is only expected once the financial-industry deadline (11/29 Sun -> 11/30) has passed.
+    _patch_filing_context(monkeypatch, date(2026, 12, 1))
 
     payload = scan_market_payload(
         ScannerSettings(use_mock_data=False),

@@ -5,15 +5,25 @@ name: Nightly date sweep
 # boundary (e.g. the day after the 30-May Q1 deadline). This job re-runs the suite at
 # the real clock plus a set of representative calendar dates (via `faketime`) so such
 # date coupling surfaces here instead of on the day it next occurs.
+#
+# The pinned dates only change meaning when date logic changes, and those PRs run the
+# sweep directly (paths below); the live-clock entry is covered by every CI run on push.
+# So the schedule is weekly rather than 9 jobs x 20 min every night.
 
 on:
   schedule:
-    - cron: "17 18 * * *" # daily ~02:17 Asia/Taipei, off-peak
+    - cron: "17 18 * * 0" # weekly, Monday ~02:17 Asia/Taipei, off-peak
   workflow_dispatch:
   pull_request:
-    # Self-validate whenever this workflow is edited (does not run on other PRs).
     paths:
       - ".github/workflows/nightly-date-sweep.yml"
+      - "backend/services/filing_calendar.py"
+      - "backend/services/cache_policy.py"
+      - "backend/services/calendar.py"
+      - "backend/services/scheduler.py"
+      - "backend/services/scan_cache.py"
+      - "cloudflare/worker_trading_calendar.py"
+      - "data/market_calendar_*.json"
 
 permissions:
   contents: read
@@ -35,11 +45,14 @@ jobs:
         fake_date:
           - "now"
           - "2026-03-31" # annual report deadline (inclusive)
-          - "2026-05-31" # Q1 deadline + 1 → gap (the original regression date)
+          - "2026-05-31" # original regression date; now inside Q1 (5/30 Sat extended to 6/1)
+          - "2026-06-02" # Q1 → gap
           - "2026-07-01" # Q2 window start; freshness should still accept Q1
-          - "2026-08-31" # Q2 deadline (inclusive)
+          - "2026-08-14" # Q2 general deadline
+          - "2026-08-31" # Q2 financial/KY deadline (inclusive)
           - "2026-09-01" # Q2 → gap
-          - "2026-11-15" # Q3 → gap
+          - "2026-11-30" # Q3 financial deadline 11/29 (Sun) extended
+          - "2026-12-01" # Q3 → gap
           - "2026-12-31" # year-end gap
           - "2027-02-28" # next year, before the annual deadline
     steps:

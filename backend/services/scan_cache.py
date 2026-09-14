@@ -14,7 +14,11 @@ from threading import RLock
 from uuid import uuid4
 
 from backend.models.settings import ScannerSettings
-from backend.services.cache_policy import refresh_policy  # noqa: F401 — re-exported for callers
+from backend.services.cache_policy import (
+    next_refresh_after,
+    refresh_policy,  # noqa: F401 — re-exported for callers
+)
+from backend.services.filing_calendar import market_closed_dates
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,14 @@ DEFAULT_REFRESH_STATE_PATH = ROOT_DIR / "data" / "cache_refresh_state.json"
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _next_refresh(stored_time: datetime, policy: dict) -> datetime:
+    stored = stored_time.astimezone(UTC)
+    if policy.get("schedule") == "publication_slots":
+        # Fresh until the next official dataset regeneration, same as the Cloudflare seed.
+        return next_refresh_after(stored, market_closed_dates(stored.year))
+    return stored + timedelta(seconds=policy["minIntervalSeconds"])
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -245,7 +257,7 @@ class ScanCacheService:
     ) -> dict:
         served = copy.deepcopy(payload)
         stored_time = _parse_time(stored_at)
-        next_refresh = stored_time + timedelta(seconds=policy["minIntervalSeconds"]) if stored_time else None
+        next_refresh = _next_refresh(stored_time, policy) if stored_time else None
         served["cacheStatus"] = {
             "strategy": "stale_while_revalidate",
             "source": "local_json_cache",
@@ -288,7 +300,7 @@ class ScanCacheService:
         stored_time = _parse_time(stored_at)
         if not stored_time:
             return True
-        return datetime.now(UTC) >= stored_time.astimezone(UTC) + timedelta(seconds=policy["minIntervalSeconds"])
+        return datetime.now(UTC) >= _next_refresh(stored_time, policy)
 
     def _append_job(self, job: dict) -> None:
         with self._lock:

@@ -19,6 +19,10 @@ OWNER_RUN_ID_PATTERN = re.compile(r"[0-9]{1,20}\Z", re.ASCII)
 JOB_TYPE = "market_scan"
 JOB_STATUSES = frozenset({"queued", "running", "success", "failed"})
 JOB_REASONS = frozenset({"financial_report_window", "monthly_revenue_window", "routine_refresh"})
+# Another job after a terminal one is only due while the seed is stale - a successful build
+# is fresh until the next publication slot - so this is effectively the failed-build retry
+# backoff. It used to be the whole policy interval (up to 12 hours).
+TERMINAL_JOB_COOLDOWN_SECONDS = 3600
 
 INSERT_JOB_SQL = """
 INSERT OR IGNORE INTO refresh_jobs
@@ -187,11 +191,15 @@ def _retry_after_until(target, now) -> int:
     return max(1, int((target - _utc_datetime(now)).total_seconds()))
 
 
+def _terminal_cooldown_seconds(policy) -> int:
+    return min(int(policy["minIntervalSeconds"]), TERMINAL_JOB_COOLDOWN_SECONDS)
+
+
 def _terminal_retry_after(row, policy, now) -> int:
     finished_at = parse_time(row.get("finished_at") or row.get("updated_at") or row.get("queued_at"))
     if finished_at is None:
-        return max(60, int(policy["minIntervalSeconds"]))
-    allowed_at = finished_at + timedelta(seconds=int(policy["minIntervalSeconds"]))
+        return max(60, _terminal_cooldown_seconds(policy))
+    allowed_at = finished_at + timedelta(seconds=_terminal_cooldown_seconds(policy))
     return _retry_after_until(allowed_at, now)
 
 
@@ -214,8 +222,8 @@ async def enqueue_or_reuse_refresh_job(api, manifest, force, client_key, now, *,
     if force and not due:
         next_refresh = parse_time(status.get("nextRefreshAfter"))
         raise RefreshCooldownError(_retry_after_until(next_refresh, now))
-    # Terminal-job cooldown is the policy interval minus the refresh-ahead window.
-    cooldown_seconds = max(int(policy["minIntervalSeconds"]) - int(refresh_ahead_seconds or 0), 0)
+    # Terminal-job cooldown is the retry backoff minus the refresh-ahead window.
+    cooldown_seconds = max(_terminal_cooldown_seconds(policy) - int(refresh_ahead_seconds or 0), 0)
     terminal_cutoff = (_utc_datetime(now) - timedelta(seconds=cooldown_seconds)).isoformat()
     recent_terminal = await api.db_first(READ_RECENT_TERMINAL_SQL, JOB_TYPE, terminal_cutoff)
     if recent_terminal:

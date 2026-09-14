@@ -511,11 +511,11 @@ def _healthy_worker_manifest(generated_at="2026-07-11T21:52:48+00:00"):
 
 
 def test_worker_health_is_fresh_before_dynamic_cache_boundary(monkeypatch):
-    # A Wednesday: the interval alone decides staleness here. The weekend rule is
+    # A Wednesday inside the revenue window (legacy manifest, 3h interval). The weekend rule is
     # covered by test_worker_health_stays_fresh_while_the_market_is_shut.
-    manifest = _healthy_worker_manifest("2026-07-14T21:52:48+00:00")
+    manifest = _healthy_worker_manifest("2026-07-07T21:52:48+00:00")
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-15T00:52:47+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-08T00:52:47+00:00")
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
@@ -523,14 +523,14 @@ def test_worker_health_is_fresh_before_dynamic_cache_boundary(monkeypatch):
     assert response.init["status"] == 200
     assert payload["status"] == "ok"
     assert payload["cacheStatus"]["isStale"] is False
-    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-15T00:52:48")
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-08T00:52:48")
     assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
 
 
 def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
-    manifest = _healthy_worker_manifest("2026-07-14T21:52:48+00:00")
+    manifest = _healthy_worker_manifest("2026-07-07T21:52:48+00:00")
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-15T00:52:48+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-08T00:52:48+00:00")
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
@@ -538,14 +538,14 @@ def test_worker_health_degrades_at_dynamic_cache_boundary(monkeypatch):
     assert response.init["status"] == 200
     assert payload["status"] == "degraded"
     assert payload["cacheStatus"]["isStale"] is True
-    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-15T00:52:48")
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-07-08T00:52:48")
     assert payload["cacheStatus"]["refreshReason"] == "monthly_revenue_window"
 
 
 def test_worker_health_degrades_after_dynamic_cache_boundary(monkeypatch):
-    manifest = _healthy_worker_manifest("2026-07-14T21:52:48+00:00")
+    manifest = _healthy_worker_manifest("2026-07-07T21:52:48+00:00")
     worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-15T00:52:49+00:00")
+    pin_worker_time(monkeypatch, worker, "2026-07-08T00:52:49+00:00")
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/health")))
     payload = json.loads(response.body)
@@ -580,6 +580,29 @@ def test_worker_health_degrades_once_the_next_trading_day_publishes(monkeypatch)
     payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
 
     assert payload["cacheStatus"]["isStale"] is True
+
+
+def test_worker_health_follows_the_manifest_publication_slot(monkeypatch):
+    # The seed builder writes the next publication slot (e.g. 18:00 Taipei the next trading
+    # day); the Worker must not re-derive an earlier interval deadline and rebuild before
+    # any new data exists.
+    manifest = _healthy_worker_manifest("2026-09-15T10:40:00+00:00")  # Tue 18:40 Taipei
+    manifest["nextRefreshAfter"] = "2026-09-16T10:00:00+00:00"  # Wed 18:00 Taipei
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+
+    pin_worker_time(monkeypatch, worker, "2026-09-16T09:59:59+00:00")
+    payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
+    assert payload["cacheStatus"]["isStale"] is False
+    assert payload["cacheStatus"]["nextRefreshAfter"].startswith("2026-09-16T10:00:00")
+
+    pin_worker_time(monkeypatch, worker, "2026-09-16T10:00:00+00:00")
+    payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/health"))).body)
+    assert payload["cacheStatus"]["isStale"] is True
+
+
+def test_worker_cron_never_refreshes_ahead_of_publication():
+    schedule = importlib.import_module("cloudflare.worker_refresh_schedule")
+    assert schedule.REFRESH_AHEAD_SECONDS == 0
 
 
 def test_worker_scheduler_auto_scan_reads_d1_settings(monkeypatch):
@@ -2612,7 +2635,8 @@ def test_refresh_command_rejects_fresh_manifest_without_writing_d1(monkeypatch):
     assert response.init["status"] == 429
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["retry-after"].isdigit()
-    assert 1 <= int(response.headers["retry-after"]) <= 10800
+    # Legacy manifest (no nextRefreshAfter) on a routine day: retry once the 12h deadline passes.
+    assert 1 <= int(response.headers["retry-after"]) <= 43200
     assert payload["detail"] == "Market refresh is cooling down; try again later."
     assert db.refresh_jobs == []
 
@@ -3250,6 +3274,13 @@ def test_worker_cache_policy_windows(monkeypatch):
     pin_worker_time(monkeypatch, worker, "2026-02-20T04:00:00+00:00")
     assert api.cache_policy()["reason"] == "routine_refresh"
 
+    # Q2 filings peak before the 8/14 general deadline; the old ±3 days around 8/31 missed it.
+    pin_worker_time(monkeypatch, worker, "2026-08-05T04:00:00+00:00")
+    assert api.cache_policy()["reason"] == "financial_report_window"
+    # Revenue is due by the 10th; the old day 8-15 window called the 13th a filing day.
+    pin_worker_time(monkeypatch, worker, "2026-07-13T04:00:00+00:00")
+    assert api.cache_policy()["reason"] == "routine_refresh"
+
 
 def test_worker_subrouter_not_found_fallbacks(monkeypatch):
     worker, api, _db = build_router_api(monkeypatch)
@@ -3410,10 +3441,10 @@ def test_worker_health_survives_d1_outage_when_reading_dispatch_state(monkeypatc
 
 def test_refresh_job_ahead_window_enqueues_before_policy_staleness(monkeypatch):
     refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
-    manifest = {"generatedAt": "2026-07-13T10:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    manifest = {"generatedAt": "2026-07-08T10:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    # 13th -> monthly revenue window, minIntervalSeconds=10800 -> stale at 13:00.
-    now = pin_worker_time(monkeypatch, worker, "2026-07-13T11:30:00+00:00")
+    # 8th -> monthly revenue window; legacy manifest, minIntervalSeconds=10800 -> stale at 13:00.
+    now = pin_worker_time(monkeypatch, worker, "2026-07-08T11:30:00+00:00")
 
     fresh = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now))
     assert fresh["status"] == "fresh"
@@ -3426,9 +3457,10 @@ def test_refresh_job_ahead_window_enqueues_before_policy_staleness(monkeypatch):
     assert len(db.refresh_jobs) == 1
 
 
-def test_refresh_job_ahead_window_shortens_terminal_cooldown(monkeypatch):
+def test_failed_rebuild_is_retried_after_an_hour_not_the_policy_interval(monkeypatch):
     refresh_jobs = importlib.import_module("cloudflare.worker_refresh_jobs")
-    manifest = {"generatedAt": "2026-07-13T10:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
+    # Legacy manifest on a routine day: the 12h interval made the seed stale at 22:00.
+    manifest = {"generatedAt": "2026-07-20T10:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
     db.refresh_jobs.append(
         {
@@ -3436,22 +3468,21 @@ def test_refresh_job_ahead_window_shortens_terminal_cooldown(monkeypatch):
             "job_type": "market_scan",
             "cache_key": "cache",
             "idempotency_key": "earlier",
-            "status": "success",
-            "reason": "monthly_revenue_window",
-            "queued_at": "2026-07-13T10:00:00+00:00",
-            "updated_at": "2026-07-13T10:20:00+00:00",
-            "finished_at": "2026-07-13T10:20:00+00:00",
+            "status": "failed",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-20T22:00:00+00:00",
+            "updated_at": "2026-07-20T22:20:00+00:00",
+            "finished_at": "2026-07-20T22:20:00+00:00",
             "dispatch_status": "workflow_claimed",
         }
     )
-    now = pin_worker_time(monkeypatch, worker, "2026-07-13T11:30:00+00:00")
 
-    # Full 3h cooldown: a terminal job at 10:20 still blocks at 11:30 ...
+    # 40 minutes after the failed rebuild: still backing off ...
+    now = pin_worker_time(monkeypatch, worker, "2026-07-20T23:00:00+00:00")
     with pytest.raises(refresh_jobs.RefreshCooldownError):
-        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, True, "manual", now))
-    # ... but the cron caller's cooldown is 3h - 2h = 1h, so 11:30 may queue again.
-    queued = asyncio.run(
-        refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now, refresh_ahead_seconds=7200)
-    )
+        asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now))
+    # ... an hour later it is retried, instead of waiting out the whole 12h interval.
+    now = pin_worker_time(monkeypatch, worker, "2026-07-20T23:21:00+00:00")
+    queued = asyncio.run(refresh_jobs.enqueue_or_reuse_refresh_job(api, manifest, False, "worker-cron", now))
     assert queued["status"] == "queued"
     assert len(db.refresh_jobs) == 2

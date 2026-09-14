@@ -396,17 +396,11 @@ class Api:
         return result
 
     def cache_policy(self):
-        now = datetime.now(TAIPEI_TZ)
-        financial_deadlines = {(3, 31), (5, 15), (5, 30), (8, 31), (11, 14)}
-        in_financial_window = any(
-            month == now.month and abs((now.date() - now.replace(month=month, day=day).date()).days) <= 3
-            for month, day in financial_deadlines
-        )
-        if in_financial_window:
-            return {"strategy": "stale_while_revalidate", "reason": "financial_report_window", "minIntervalSeconds": 7200}
-        if 8 <= now.day <= 15:
-            return {"strategy": "stale_while_revalidate", "reason": "monthly_revenue_window", "minIntervalSeconds": 10800}
-        return {"strategy": "stale_while_revalidate", "reason": "routine_refresh", "minIntervalSeconds": 43200}
+        reason = trading_calendar.refresh_reason(datetime.now(TAIPEI_TZ).date())
+        # Freshness follows the manifest's publication slot; this interval is only the
+        # legacy-manifest deadline and the terminal-job cooldown ceiling.
+        legacy_interval = {"financial_report_window": 7200, "monthly_revenue_window": 10800}.get(reason, 43200)
+        return {"strategy": "stale_while_revalidate", "reason": reason, "minIntervalSeconds": legacy_interval}
 
     def market_api_version(self):
         return "v2" if str(env_value(self.env, "MARKET_SCAN_API_VERSION", "v1")).strip().lower() == "v2" else "v1"
@@ -434,10 +428,10 @@ class Api:
         next_refresh = None
         is_stale = True
         if generated_time:
-            # Deadlines landing while the market is shut wait for the next trading day.
-            next_refresh_time = trading_calendar.next_refresh_deadline(
-                generated_time.astimezone(UTC), policy["minIntervalSeconds"], manifest
-            )
+            # The seed builder's publication slot; legacy manifests fall back to the interval rule.
+            next_refresh_time = trading_calendar.manifest_next_refresh(
+                manifest, generated_time
+            ) or trading_calendar.next_refresh_deadline(generated_time.astimezone(UTC), policy["minIntervalSeconds"], manifest)
             next_refresh = next_refresh_time.isoformat()
             is_stale = datetime.now(UTC) >= next_refresh_time
         return {

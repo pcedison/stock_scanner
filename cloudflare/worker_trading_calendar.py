@@ -13,7 +13,7 @@ import ``backend``, so the rule is duplicated and
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 # Close is 13:30 and the official post-close files land shortly after, so 15:00 Taipei is
 # the point where a trading day's data is complete and worth rebuilding for.
@@ -61,6 +61,44 @@ def next_publication_time(candidate: datetime, closed_dates=frozenset()) -> date
 
 
 def next_refresh_deadline(generated_time: datetime, min_interval_seconds, manifest) -> datetime:
-    """The deadline `cache_status_from_manifest` should publish and compare against."""
+    """Legacy deadline for manifests built before ``nextRefreshAfter`` was slot-aligned."""
     deadline = generated_time + timedelta(seconds=int(min_interval_seconds))
     return next_publication_time(deadline, parse_closed_dates((manifest or {}).get("marketClosedDates")))
+
+
+# The seed builder (backend.services.cache_policy.next_refresh_after) writes the next
+# publication slot into the manifest; the Worker trusts it inside these bounds.
+MAX_TRUSTED_REFRESH_SPAN = timedelta(days=21)
+
+
+def manifest_next_refresh(manifest, generated_time: datetime):
+    value = (manifest or {}).get("nextRefreshAfter")
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None or not generated_time < parsed <= generated_time + MAX_TRUSTED_REFRESH_SPAN:
+        return None
+    return parsed.astimezone(UTC)
+
+
+# Statutory filing windows, mirroring backend.services.filing_calendar/cache_policy:
+# (general deadline, final financial-industry deadline, lead days before the general one).
+FILING_DEADLINES = (((3, 31), (3, 31), 30), ((5, 15), (5, 30), 14), ((8, 14), (8, 31), 14), ((11, 14), (11, 29), 14))
+MONTHLY_REVENUE_DEADLINE_DAY = 10
+
+
+def next_open_day(day: date, closed_dates=frozenset()) -> date:
+    while not is_trading_day(day, closed_dates):
+        day += timedelta(days=1)
+    return day
+
+
+def refresh_reason(day: date, closed_dates=frozenset()) -> str:
+    for (g_month, g_day), (f_month, f_day), lead in FILING_DEADLINES:
+        start = date(day.year, g_month, g_day) - timedelta(days=lead)
+        if start <= day <= next_open_day(date(day.year, f_month, f_day), closed_dates):
+            return "financial_report_window"
+    if day <= next_open_day(date(day.year, day.month, MONTHLY_REVENUE_DEADLINE_DAY), closed_dates):
+        return "monthly_revenue_window"
+    return "routine_refresh"
