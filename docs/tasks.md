@@ -1,13 +1,14 @@
 # 台股財報事件驅動掃描器 — Tasks
 
-> Current task-state notice, 2026-05-18:
-> This file preserves the original MVP task ledger. The current delivery state
-> and remaining guardrails are summarized in `docs/current_architecture.md`.
-> localStorage tasks below are historical MVP milestones; current holdings,
+> Archive notice, reviewed 2026-07-16:
+> This file preserves the original MVP ledger and backlog. It is not an active
+> instruction source or authorization to implement unchecked items. Use the
+> repository `AGENTS.md` and `docs/current_architecture.md` for current guidance.
+> localStorage tasks below are historical milestones; current holdings,
 > settings, and session flows are API-backed with Cloudflare D1 in production.
 
 > 版本：v0.1
-> 用途：給本地端 Codex / 開發者依序執行的任務清單
+> 用途：保留原始里程碑、驗收條件與 backlog 脈絡
 > 任務格式：`[ ]` 未完成、`[x]` 已完成、`[~]` 進行中
 
 ---
@@ -627,17 +628,11 @@ pytest
 
 ---
 
-### T-091 Codex 開發提示詞
+### T-091 Agent 專案指引
 
-將以下提示詞提供給 Codex：
-
-```txt
-你正在開發「台股財報事件驅動掃描器」。請先閱讀 spec.md 與 tasks.md。
-請依 tasks.md 順序開發，不要跳過驗收條件。
-優先完成 MVP：前端 RWD、首次持股輸入、localStorage 持股管理、搜尋框、MockDataProvider、進場/出場規則、掃描全市場、掃描持股、設定開關。
-請特別修正：輸入「2357 華碩」後不得出現 undefined。
-所有投資判斷必須輸出原因，不得只給買賣結論。
-```
+- [x] 以 repository root `AGENTS.md` 作為目前的 agent 專案契約。
+- [x] 目前架構以 `docs/current_architecture.md` 為準。
+- [x] 本檔的 MVP 順序、舊 localStorage 描述與 unchecked backlog 只保留歷史脈絡；除非使用者明確指定，不自動執行。
 
 ---
 
@@ -694,7 +689,4 @@ pytest
 9. T-010 RWD 介面
 10. T-090 README
 
-完成以上後，就是可用 MVP。
-# Current Task State
-
-The remaining near-term quality work has been folded into the active architecture snapshot in `docs/current_architecture.md`. Current validation covers offline seed packaging, FastAPI/Worker response contracts, production security guards, Worker cache-quality health checks, browser smoke/E2E flows, and frontend renderer XSS regression tests.
+以上為原始 MVP 優先順序的歷史記錄，不是目前工作佇列。

@@ -44,3 +44,4 @@ node_modules/
 # Local conflict/backup copies from synced workstations
 *-Marcus_Office
 *-Marcus_Office.*
+.gstack/

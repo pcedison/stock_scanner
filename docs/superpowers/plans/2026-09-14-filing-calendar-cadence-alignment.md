@@ -1,6 +1,6 @@
 # Align refresh cadence with the TWSE filing calendar and source publication times
 
-Date: 2026-09-14. Stacked on PR #162 (TPEX TLS intermediate + trading-hour health age).
+Date: 2026-09-14. Status: implemented and merged in PR #162 (TPEX TLS intermediate + trading-hour health age) and PR #163 (publication-slot cadence). Historical record, not current work authorization.
 
 ## Evidence
 

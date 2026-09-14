@@ -1,13 +1,13 @@
 # Stock Scanner UI Redesign Design
 
 Date: 2026-06-22
-Status: Open Design draft generated and locally validated; awaiting user review before implementation planning.
+Status: Historical design record; implemented and merged in PR #107. It is not current work authorization or agent guidance.
 
 ## Source Material
 
 - Open Design project: `stock-scanner-interface-redesign`
 - Open Design preview: http://127.0.0.1:7456/api/projects/stock-scanner-interface-redesign/raw/index.html
-- Open Design project directory: `C:\Users\y_mea\AppData\Local\Programs\Open Design Portable\0.11.0\resources\app\prebundled\.od\projects\stock-scanner-interface-redesign`
+- Open Design project directory: local tool state outside this repository (not required to use this historical record)
 - Generated artifact: `index.html`, single-file HTML/CSS/JS prototype, about 64 KB
 - Validation screenshots: `.tmp/od-visual-scan/`
 - Validation audit: `.tmp/od-visual-scan/audit.json`

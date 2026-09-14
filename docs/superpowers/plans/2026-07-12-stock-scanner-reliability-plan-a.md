@@ -1,6 +1,6 @@
 # Stock Scanner Reliability Plan A Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Archive notice (2026-07-16):** This is a historical implementation record, not current work authorization or agent guidance. Use the repository `AGENTS.md` and current user request; execute plan items only when explicitly requested.
 
 **Goal:** Stabilize the existing production contract with traceable Worker failures, safe market-refresh degradation, policy-aligned health checks, proactive refresh scheduling, bounded idempotent-read retries, and last-good UI rendering.
 

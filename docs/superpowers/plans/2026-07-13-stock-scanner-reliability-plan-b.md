@@ -1,6 +1,6 @@
 # Stock Scanner Structural Reliability Upgrade Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Archive notice (2026-07-16):** This is a historical implementation record, not current work authorization or agent guidance. Use the repository `AGENTS.md` and current user request; execute plan items only when explicitly requested.
 
 **Goal:** Replace the browser's 2.88 MB all-at-once market scan path with bounded, versioned R2 pages; make refresh enqueue atomic and idempotent; add a safe Cloudflare control-plane trigger; and roll the new path out behind a reversible runtime flag.
 
