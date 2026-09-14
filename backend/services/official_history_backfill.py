@@ -279,6 +279,8 @@ class OfficialHistoryBackfillService:
                 last_time = datetime.fromisoformat(str(last))
             except ValueError:
                 return True
+            if last_time.tzinfo is None:  # hand-edited or legacy value: read as UTC, never crash the batch
+                last_time = last_time.replace(tzinfo=UTC)
             return datetime.now(UTC) - last_time >= EXHAUSTED_RETRY_INTERVAL
 
         def eligible_periods(company: Company) -> list[tuple[int, int]] | None:

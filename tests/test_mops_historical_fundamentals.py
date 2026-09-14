@@ -525,7 +525,8 @@ def test_exhausted_request_errors_are_retried_again_after_a_week(monkeypatch, tm
         {"activeFinancialReport": {"fiscalYear": 2026, "quarter": 1}, "monthlyRevenuePeriod": "2026-03"},
     )
     progress_path = tmp_path / "progress.json"
-    stale = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    # Naive on purpose: a hand-edited progress file must not crash the whole batch.
+    stale = (datetime.now(UTC) - timedelta(days=8)).replace(tzinfo=None).isoformat()
     BackfillProgressStore(progress_path).save(
         {
             "schemaVersion": 1,
