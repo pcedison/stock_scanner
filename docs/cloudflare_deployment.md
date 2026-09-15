@@ -169,6 +169,7 @@ python scripts\plan_cloudflare_recovery.py --d1-backup .tmp\d1-backups\pre-deplo
 3. Regenerate missing-company reports.
 4. Validate quality gates and freshness.
 5. Open or update a refresh PR when seed artifacts changed.
+6. Dispatch the `Validate` workflow (`ci.yml`) on the refresh branch explicitly, because GitHub does not trigger `pull_request`/`push` workflows for events created by `GITHUB_TOKEN`, so a PR opened by this workflow would otherwise show no checks.
 
 This keeps production deploys deterministic while preventing the committed seed from silently going stale.
 
