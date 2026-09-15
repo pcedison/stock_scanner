@@ -25,6 +25,7 @@ from backend.services.data_provider import MockDataProvider
 from backend.services.market_scan import scan_market_payload as _scan_market_payload_impl
 from backend.services.official_data_provider import OfficialDataProvider
 from backend.services.official_history_backfill import OfficialHistoryBackfillService
+from backend.services.refresh_jobs import RefreshJobService
 from backend.services.reporting import render_csv_report, render_markdown_report
 from backend.services.rules import RuleEngine
 from backend.services.scan_cache import ScanCacheService
@@ -51,6 +52,7 @@ mock_provider = MockDataProvider()
 official_provider = OfficialDataProvider()
 history_backfill_service = OfficialHistoryBackfillService(official_provider.history_store)
 scan_cache_service = ScanCacheService()
+refresh_job_service = RefreshJobService()
 engine = RuleEngine()
 auth_db_path = os.getenv("AUTH_DB_PATH")
 auth_service = AuthService(auth_db_path) if auth_db_path else AuthService()

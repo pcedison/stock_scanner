@@ -1,5 +1,7 @@
+import re
 from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -7,8 +9,10 @@ from fastapi.testclient import TestClient
 
 import backend.dependencies as deps_module
 import backend.main as main_module
+import backend.routers.market as market_module
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService
+from backend.services.scan_cache import ScanCacheService
 from backend.services.settings_service import load_settings, save_settings
 
 client = TestClient(main_module.app)
@@ -704,6 +708,145 @@ def test_report_endpoints_return_markdown_and_csv():
     assert "# 台股市場掃描報告" in md_response.text
     assert csv_response.status_code == 200
     assert "stockCode,companyName,status" in csv_response.text
+
+
+def _wait_for_terminal_refresh_job(status_url: str, timeout: float = 30.0) -> dict:
+    deadline = monotonic() + timeout
+    while True:
+        response = client.get(status_url)
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] in {"success", "failed"}:
+            return payload
+        assert monotonic() < deadline, f"refresh job never reached a terminal state: {payload}"
+        sleep(0.05)
+
+
+def test_market_refresh_command_queues_a_job_that_reaches_a_terminal_state():
+    response = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+    payload = response.json()
+
+    assert response.status_code == 202
+    assert set(payload) == {"jobId", "status", "requestId", "statusUrl"}
+    assert re.fullmatch(r"[0-9a-f]{32}", payload["jobId"])
+    assert re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", payload["requestId"])
+    assert payload["status"] == "queued"
+    assert payload["statusUrl"] == f"/api/scan/market/refresh/{payload['jobId']}"
+    assert response.headers["location"] == payload["statusUrl"]
+    assert response.headers["cache-control"] == "no-store"
+
+    terminal = _wait_for_terminal_refresh_job(payload["statusUrl"])
+
+    assert terminal["status"] == "success"
+    assert terminal["jobId"] == payload["jobId"]
+    assert terminal["hasError"] is False
+    assert terminal["reason"] in {"financial_report_window", "monthly_revenue_window", "routine_refresh"}
+
+    index_response = client.get("/api/scan/market/index")
+
+    assert index_response.status_code == 200
+    assert len(index_response.json()["generationId"]) == 24
+
+
+def test_market_refresh_command_is_idempotent_and_unknown_jobs_are_not_found():
+    key = f"api-{uuid4().hex}"
+
+    first = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": key})
+    # Repeat only once the first job is terminal, so the match is the key and not the
+    # single-flight branch that coalesces any still-active job.
+    _wait_for_terminal_refresh_job(first.json()["statusUrl"])
+    repeat = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": key})
+    fresh_key = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+
+    assert first.status_code == repeat.status_code == fresh_key.status_code == 202
+    assert repeat.json()["jobId"] == first.json()["jobId"]
+    assert fresh_key.json()["jobId"] != first.json()["jobId"]
+    _wait_for_terminal_refresh_job(fresh_key.json()["statusUrl"])
+
+    unknown = client.get(f"/api/scan/market/refresh/{'f' * 32}")
+    malformed = client.get("/api/scan/market/refresh/not-a-job-id")
+
+    assert unknown.status_code == malformed.status_code == 404
+    assert unknown.json()["detail"] == "Not found"
+
+
+def _stub_market_scan(company_name: str) -> dict:
+    return {
+        "generatedAt": "2026-07-13T00:00:00+00:00",
+        "filingContext": {},
+        "entry": [
+            {
+                "stockCode": "2330",
+                "companyName": company_name,
+                "status": "ENTRY",
+                "summary": "announced",
+                "reasons": [],
+            }
+        ],
+        "watch": [],
+        "excluded": [],
+        "universeSize": 1,
+    }
+
+
+def test_forced_refresh_job_caches_under_the_key_of_the_data_it_refreshed(tmp_path, monkeypatch):
+    # The official refresh rewrites the files the cache context fingerprints, so a job that
+    # keyed its store before the rebuild would leave the next index read with a cache miss.
+    cache_service = ScanCacheService(tmp_path / "market_scan_cache.json", tmp_path / "cache_refresh_state.json")
+    monkeypatch.setattr(market_module, "scan_cache_service", cache_service)
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=False))
+    data_version = {"value": 1}
+    official_refreshes: list[int] = []
+    plain_builds: list[int] = []
+
+    def fake_cache_context(settings):
+        return {"provider": "official", "dataVersion": data_version["value"]}
+
+    def fake_refresh_and_scan(settings):
+        data_version["value"] += 1
+        official_refreshes.append(data_version["value"])
+        return _stub_market_scan("refreshed")
+
+    def fake_scan(settings):
+        plain_builds.append(data_version["value"])
+        return _stub_market_scan("not-refreshed")
+
+    monkeypatch.setattr(market_module, "_scan_market_cache_context", fake_cache_context)
+    monkeypatch.setattr(market_module, "_scan_market_payload_after_official_refresh", fake_refresh_and_scan)
+    monkeypatch.setattr(market_module, "_scan_market_payload", fake_scan)
+
+    command = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+
+    assert command.status_code == 202
+    assert _wait_for_terminal_refresh_job(command.json()["statusUrl"])["status"] == "success"
+    assert official_refreshes == [2]
+
+    index_response = client.get("/api/scan/market/index")
+    index = index_response.json()
+    results = client.get(
+        "/api/scan/market/results",
+        params={
+            "disclosure": "announced",
+            "category": "entry",
+            "cursor": 0,
+            "limit": 1,
+            "generationId": index["generationId"],
+        },
+    )
+
+    assert index_response.status_code == results.status_code == 200
+    # The job's payload is served straight from the cache: nothing rebuilt on the read path.
+    assert plain_builds == []
+    assert official_refreshes == [2]
+    assert index["cacheStatus"]["cacheHit"] is True
+    assert results.json()["items"][0]["companyName"] == "refreshed"
+
+
+def test_market_refresh_command_rejects_an_unsafe_idempotency_key():
+    response = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": "bad key"})
+
+    assert response.status_code == 422
+    assert "Idempotency-Key" in response.json()["detail"]
 
 
 def test_calendar_and_integrations_status_endpoints():

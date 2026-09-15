@@ -4,6 +4,7 @@ single-stock analysis, market/holdings scans, cache status, and reports."""
 from __future__ import annotations
 
 import re
+import secrets
 from collections import OrderedDict
 from datetime import date
 from threading import RLock
@@ -32,8 +33,10 @@ from backend.dependencies import (
     history_backfill_service,
     mock_provider,
     official_provider,
+    refresh_job_service,
     scan_cache_service,
 )
+from backend.models.settings import ScannerSettings
 from backend.services.calendar import load_market_calendar, update_market_calendar
 from backend.services.market_query import (
     MAX_INDEX_BYTES,
@@ -44,6 +47,8 @@ from backend.services.market_query import (
     query_market_generation,
 )
 from backend.services.market_scan import data_sources_status_payload
+from backend.services.refresh_jobs import normalize_idempotency_key
+from backend.services.scan_cache import refresh_policy, scan_cache_key
 from backend.services.scheduler import should_wake_up
 
 router = APIRouter()
@@ -328,6 +333,65 @@ def scan_market_results(request: Request, response: Response) -> dict:
     if len(canonical_json_bytes(payload)) >= MAX_PAGE_BYTES:
         raise _market_query_error(503, "market_query_unavailable")
     return payload
+
+
+# Single-flight scope for the refresh command, matching the Worker's `market_scan` job type.
+# It is deliberately not the cache key: that key moves when a refresh rewrites the official files.
+MARKET_REFRESH_JOB_SCOPE = "market_scan"
+
+
+def _rebuild_market_scan(settings: ScannerSettings) -> None:
+    """The forced counterpart of `scan_market_cached()`: rebuild instead of serving the cache."""
+    if settings.use_mock_data:
+        # Mock scans are never cached (see `scan_market_cached()`), so the job only rebuilds the
+        # payload: it proves the scan still runs and leaves the served data unchanged.
+        _scan_market_payload(settings)
+        return
+    payload = jsonable_encoder(_scan_market_payload_after_official_refresh(settings))
+    # The official refresh rewrites the files `_scan_market_cache_context` fingerprints, so the
+    # cache key is only known after the rebuild: computing it first would store the fresh payload
+    # under the pre-refresh key and leave the next read with a miss.
+    context = _scan_market_cache_context(settings)
+    scan_cache_service.store(scan_cache_key(settings, context), settings, payload, refresh_policy(), context)
+
+
+@router.post("/api/scan/market/refresh", status_code=202)
+def refresh_market_scan(request: Request, response: Response) -> dict:
+    # The Worker queues a D1 job for a GitHub Actions rebuild; locally the rebuild runs on a
+    # background thread, so the client polls the same status route until the job is terminal.
+    settings = _effective_settings(None)
+    if not settings.use_mock_data:
+        # `manual_scan_enabled` is deliberately not enforced here: the Worker's refresh command
+        # does not enforce it either, and the contract tests hold both runtimes to the same rules.
+        _check_scan_rate_limit(_auth_source(request))
+    try:
+        client_key = normalize_idempotency_key(request.headers.get("idempotency-key"))
+    except ValueError as exc:
+        raise _market_query_error(422, str(exc)) from None
+    job = refresh_job_service.start(
+        lambda: _rebuild_market_scan(settings),
+        scope=MARKET_REFRESH_JOB_SCOPE,
+        reason=refresh_policy()["reason"],
+        idempotency_key=client_key,
+    )
+    status_url = f"/api/scan/market/refresh/{job['jobId']}"
+    response.headers.update(_MARKET_QUERY_HEADERS)
+    response.headers["Location"] = status_url
+    return {
+        "jobId": job["jobId"],
+        "status": job["status"],
+        "requestId": secrets.token_hex(12),
+        "statusUrl": status_url,
+    }
+
+
+@router.get("/api/scan/market/refresh/{job_id}")
+def market_refresh_job_status(job_id: str, response: Response) -> dict:
+    job = refresh_job_service.get(job_id)
+    if job is None:
+        raise _market_query_error(404, "Not found")
+    response.headers.update(_MARKET_QUERY_HEADERS)
+    return job
 
 
 @router.get("/api/cache/status")

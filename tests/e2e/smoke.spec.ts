@@ -632,3 +632,38 @@ test("refresh command posts once and refresh polling preserves rows until genera
   expect(statusRequests).toEqual([statusUrl, statusUrl]);
   expect(legacyCalls).toBe(0);
 });
+
+// Nothing is mocked here: the refresh command, the job read and the reloaded index are all
+// served by the FastAPI backend started for these tests.
+test("the FastAPI backend serves the manual refresh command and its job status", async ({ page, isMobile }) => {
+  const commandStatuses: number[] = [];
+  const jobStatuses: number[] = [];
+  const jobStates: string[] = [];
+  page.on("response", async (response) => {
+    const path = new URL(response.url()).pathname;
+    if (path === "/api/scan/market/refresh") {
+      commandStatuses.push(response.status());
+      return;
+    }
+    if (!path.startsWith("/api/scan/market/refresh/")) return;
+    jobStatuses.push(response.status());
+    const body = await response.json().catch(() => null);
+    if (body?.status) jobStates.push(body.status);
+  });
+
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  await expect(page.locator("#scan-time")).toContainText("更新", { timeout: 10_000 });
+
+  await page.locator("#refresh-market-scan-btn").click();
+
+  // The whole poll budget stays under the 30s per-test timeout in playwright.config.js:
+  // the first poll fires 1s after the command and the mock rebuild takes a few seconds.
+  await expect.poll(() => commandStatuses, { timeout: 5_000 }).toEqual([202]);
+  await expect.poll(() => jobStates.at(-1), { timeout: 12_000 }).toBe("success");
+  expect(jobStatuses.every((status) => status === 200)).toBe(true);
+  await expect(page.locator("#refresh-market-scan-btn")).toBeEnabled();
+  await expect(page.locator(".market-scan-warning")).toHaveCount(0);
+  await expect(page.locator("#market-results > .form-error")).toHaveCount(0);
+});
