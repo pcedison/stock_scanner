@@ -16,7 +16,7 @@ PRODUCTION_CONFIG = CLOUDFLARE_DIR / "wrangler.toml"
 STAGING_TEMPLATE = CLOUDFLARE_DIR / "wrangler.staging.template.toml"
 # Committed production crons (cloudflare/wrangler.toml) are the source of truth; the
 # release profiles keep them and only guarantee dispatch stays enabled alongside them.
-PRODUCTION_CRONS = ["*/20 21-23 * * SUN-THU", "*/20 0-15 * * MON-FRI"]
+PRODUCTION_CRONS = ["*/20 21-23 * * SUN-THU", "*/20 0-13 * * MON-FRI"]
 SENTINEL_PATTERN = re.compile(r"__[A-Z0-9_]+__")
 UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 ALLOWED_PRODUCTION_SWITCHES = {

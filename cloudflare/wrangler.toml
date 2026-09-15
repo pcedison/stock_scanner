@@ -37,7 +37,7 @@ EDGE_CACHE_ENABLED = "true"
 [triggers]
 crons = [
   "*/20 21-23 * * SUN-THU", # Taipei 05:00-07:59 Mon-Fri: morning publication slot (06:30)
-  "*/20 0-15 * * MON-FRI",  # Taipei 08:00-23:59 Mon-Fri: evening slot (18:00) + failed-build retries
+  "*/20 0-13 * * MON-FRI",  # Taipei 08:00-21:59 Mon-Fri: evening slot (18:00) + three hourly failed-build retries
 ]
 
 [cache]

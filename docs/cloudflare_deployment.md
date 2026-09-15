@@ -42,7 +42,7 @@ Worker production CORS lives in `cloudflare/wrangler.toml`:
 - `MARKET_SCAN_API_VERSION = "v2"`
 - `EDGE_CACHE_ENABLED = "true"`
 - `[cache].enabled = false`
-- `[triggers].crons = ["*/20 21-23 * * SUN-THU", "*/20 0-15 * * MON-FRI"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name). Together they tick every 20 minutes Monday-Friday 05:00-23:59 Taipei; the first is `SUN-THU` because Monday's 06:30 Taipei slot is still Sunday in UTC. A tick only dispatches a rebuild once `nextRefreshAfter` has passed.
+- `[triggers].crons = ["*/20 21-23 * * SUN-THU", "*/20 0-13 * * MON-FRI"]` (UTC; Cloudflare day-of-week is `1=SUN`, so weekdays are spelled by name). Together they tick every 20 minutes Monday-Friday 05:00-21:59 Taipei (ticks after 21:59 only ever served the hourly failed-build retry, so they were dropped); the first is `SUN-THU` because Monday's 06:30 Taipei slot is still Sunday in UTC. A tick only dispatches a rebuild once `nextRefreshAfter` has passed.
 - `GITHUB_DISPATCH_ENABLED = "true"`
 
 Production must not allow localhost, 127.0.0.1, or non-HTTPS origins. Production unsafe `/api/*` methods also require `X-Stock-Scanner-CSRF: 1`; the frontend sends this header automatically. Cloudflare Worker session cookies use `SameSite=None; Secure` so authenticated cross-origin fetches from Pages to the Worker can include the account session.
@@ -177,7 +177,7 @@ This keeps production deploys deterministic while preventing the committed seed 
 
 `.github/workflows/cloudflare-r2-seed-refresh.yml` is the production-side refresh worker for market scan jobs queued by the Cloudflare Worker. GitHub delivered scheduled runs hours late or not at all (2026-09, roughly one run per 3-4 hours against a 20-minute cron), so scheduling lives in the Worker; the workflow's own `schedule` is only a backstop of three ticks per weekday just after the publication slots (07:07, 18:07, 20:07 Taipei).
 
-Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes Monday-Friday 05:00-23:59 Taipei, covering both publication slots and failed-build retries) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
+Worker cron (`cloudflare/wrangler.toml` `[triggers].crons`, every 20 minutes Monday-Friday 05:00-21:59 Taipei, covering both publication slots and three hourly failed-build retries) runs `on_scheduled` -> `cloudflare/worker_refresh_control.run_scheduled_refresh`, which on every tick:
 
 1. Re-queues a `running` job whose workflow run started more than 2 hours ago (cancelled or timed-out run) - `worker_refresh_schedule.ORPHANED_RUNNING_SECONDS`.
 2. Resets a `failed` / `unknown` / never-claimed `dispatched` job back to `pending` after 20 minutes so the dispatch is retried - `DISPATCH_RETRY_SECONDS`.
@@ -247,7 +247,7 @@ Before each Worker rollout that depends on a new D1 migration, apply and verify 
 
 ## Monitoring
 
-`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 4 hours (GitHub may deliver it late). It fails when the seed is more than 75 minutes past `cacheStatus.nextRefreshAfter`, and - via `--require-dispatch-healthy` - as soon as `/api/health` `refreshDispatch` reports a `failed` dispatch or three unacknowledged attempts, before the seed itself goes stale. A revoked App key, a wrong installation id, or a renamed workflow all land there; `scripts/check_cloudflare_health.py` names the secret to fix in the failure message. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
+`.github/workflows/cloudflare-health-monitor.yml` polls `CF_WORKER_HEALTH_URL` every 4 hours on weekdays and twice a day on weekends (GitHub may deliver it late). It fails when the seed is more than 75 minutes past `cacheStatus.nextRefreshAfter`, and - via `--require-dispatch-healthy` - as soon as `/api/health` `refreshDispatch` reports a `failed` dispatch or three unacknowledged attempts, before the seed itself goes stale. A revoked App key, a wrong installation id, or a renamed workflow all land there; `scripts/check_cloudflare_health.py` names the secret to fix in the failure message. GitHub Actions failure notifications are the baseline alerting path. The same `/api/health` endpoint can be wired into Cloudflare notifications, Better Stack, UptimeRobot, or another external monitor.
 
 ## Local Verification
 
