@@ -1,6 +1,6 @@
 import json
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -496,6 +496,10 @@ def test_offline_seed_copy_rebuilds_v2_generation_and_manifest_fields(tmp_path, 
     # ...and must not keep declaring the retired summary, which is no longer copied either.
     assert "market_scan_summary.json" not in manifest["files"]
     assert not (output / "market_scan_summary.json").exists()
+    # The copied manifest also gets the per-year calendars the Worker serves on /api/calendar.
+    scan_year = datetime.fromisoformat(_v2_scan_fixture()["generatedAt"]).year
+    assert set(manifest["marketCalendars"]) == {str(scan_year), str(scan_year + 1)}
+    assert manifest["marketCalendars"][str(scan_year)] == seed_build.market_calendars(scan_year)[str(scan_year)]
 
 
 def test_live_seed_main_writes_v2_generation_and_manifest_fields(tmp_path, monkeypatch):
@@ -811,3 +815,29 @@ def test_write_market_reports_renders_the_static_exports_in_the_worker_format(tm
 def test_manifest_files_list_declares_the_static_report_exports():
     assert seed_build.MARKET_REPORT_CSV == "reports/market_scan.csv"
     assert seed_build.MARKET_REPORT_MD == "reports/market_scan.md"
+
+
+def test_market_calendars_mirror_the_loaded_calendars_for_this_year_and_next():
+    calendars = seed_build.market_calendars(2026)
+
+    expected = seed_build.load_market_calendar(2026)
+    assert set(calendars) == {"2026", "2027"}
+    assert calendars["2026"] == {
+        "source": expected.source,
+        "sourceUrl": expected.source_url,
+        "closedDates": sorted(day.isoformat() for day in expected.closed_dates),
+        "springFestivalDates": sorted(day.isoformat() for day in expected.spring_festival_dates),
+    }
+    assert len(calendars["2026"]["closedDates"]) >= 10
+    assert calendars["2026"]["springFestivalDates"]
+    # Whether or not next year is published yet, the builder ships exactly what the API serves.
+    next_year = seed_build.load_market_calendar(2027)
+    assert calendars["2027"]["closedDates"] == sorted(day.isoformat() for day in next_year.closed_dates)
+    assert calendars["2027"]["source"] == next_year.source
+
+
+def test_payload_year_prefers_the_first_usable_generated_at():
+    assert seed_build._payload_year({"generatedAt": "2026-09-15T06:42:33+00:00"}, {}) == 2026
+    assert seed_build._payload_year({"generatedAt": "2025-12-31T23:59:59Z"}) == 2025
+    assert seed_build._payload_year({"generatedAt": "not a date"}, {"generatedAt": "2024-03-01T00:00:00+00:00"}) == 2024
+    assert seed_build._payload_year({}, None, {"generatedAt": None}) == datetime.now(UTC).year
