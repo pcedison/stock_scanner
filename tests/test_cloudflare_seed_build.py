@@ -357,28 +357,10 @@ def test_history_seed_snapshots_rehydrates_monthly_revenue_history(tmp_path, mon
     assert monthly.trailingThreeMonthAverageYoY == pytest.approx(75.615)
 
 
-def test_add_market_scan_summary_to_manifest():
-    after_latest = seed_build.add_market_scan_summary_to_manifest(
-        {"files": ["manifest.json", "market_scan_latest.json", "companies.json"]}
-    )
-    assert after_latest["files"] == [
-        "manifest.json",
-        "market_scan_latest.json",
-        "market_scan_summary.json",
-        "companies.json",
-    ]
-    appended = seed_build.add_market_scan_summary_to_manifest({"files": ["companies.json"]})
-    assert appended["files"][-1] == "market_scan_summary.json"
-    assert seed_build.add_market_scan_summary_to_manifest({})["files"] == ["market_scan_summary.json"]
-    # Idempotent: a second pass does not duplicate the entry.
-    assert after_latest["files"].count("market_scan_summary.json") == 1
-    assert seed_build.add_market_scan_summary_to_manifest(after_latest)["files"].count("market_scan_summary.json") == 1
-
-
 def test_write_market_generation_emits_pointer_files_and_manifest_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(seed_build, "OUT_DIR", tmp_path)
 
-    manifest = seed_build.write_market_generation(_v2_scan_fixture(), {"files": ["market_scan_summary.json"]})
+    manifest = seed_build.write_market_generation(_v2_scan_fixture(), {"files": ["market_scan_latest.json"]})
     pointer = json.loads((tmp_path / "market_scan_index.json").read_text(encoding="utf-8"))
     generation_id = pointer["generationId"]
     immutable_index = tmp_path / "market_scan" / "v2" / generation_id / "index.json"
@@ -481,8 +463,9 @@ def test_offline_seed_copy_rebuilds_v2_generation_and_manifest_fields(tmp_path, 
     archive_path = tmp_path / "offline.zip"
     prefix = seed_build.OFFLINE_SEED_PREFIX
     payloads = {
-        "manifest.json": {"files": ["market_scan_latest.json"], "counts": {}},
+        "manifest.json": {"files": ["market_scan_latest.json", "market_scan_summary.json"], "counts": {}},
         "market_scan_latest.json": _v2_scan_fixture(),
+        "market_scan_summary.json": {"entry": [], "watch": [], "excluded": []},
         "analysis_by_code.json": {},
         "holding_analysis_by_code.json": {},
         "companies.json": {"items": []},
@@ -510,6 +493,9 @@ def test_offline_seed_copy_rebuilds_v2_generation_and_manifest_fields(tmp_path, 
     assert (output / "reports" / "market_scan.csv").is_file()
     assert "reports/market_scan.csv" in manifest["files"]
     assert "reports/market_scan.md" in manifest["files"]
+    # ...and must not keep declaring the retired summary, which is no longer copied either.
+    assert "market_scan_summary.json" not in manifest["files"]
+    assert not (output / "market_scan_summary.json").exists()
 
 
 def test_live_seed_main_writes_v2_generation_and_manifest_fields(tmp_path, monkeypatch):

@@ -92,7 +92,6 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
         "companies.json",
         "data_sources_status.json",
         "market_scan_latest.json",
-        "market_scan_summary.json",
         "analysis_by_code.json",
         "holding_analysis_by_code.json",
     ):
@@ -144,7 +143,6 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
     keys = [item.object_key for item in plan]
 
     assert "public/manifest.json" in keys
-    assert "public/market_scan_summary.json" in keys
     assert "public/reports/market_scan.csv" in keys
     assert "public/reports/market_scan.md" in keys
     assert "public/analysis_shards/23.json" in keys

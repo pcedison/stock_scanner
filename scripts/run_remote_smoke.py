@@ -100,10 +100,10 @@ class RemoteClient:
 
 MARKET_REPORT_CSV_HEADER = ["category", "stockCode", "companyName", "status", "summary"]
 
-# /api/reports/market (cloudflare/worker.py market_report -> report_response) writes one CSV
-# row per item across ("entry", "watch", "excluded", "results"), reading the same
-# market_scan_summary.json snapshot that scripts/build_cloudflare_seed.py writes from the
-# identical scan_payload used to build the v2 market index/results pages, so per-category row
+# /api/reports/market (cloudflare/worker.py market_report) streams reports/market_scan.csv,
+# which scripts/build_cloudflare_seed.py renders with one row per item across
+# ("entry", "watch", "excluded", "results") from the identical scan_payload used to build the
+# v2 market index/results pages, so per-category row
 # counts must match /api/scan/market/index counts.categories exactly. "results" is a
 # holdings-only category (used by /api/reports/holdings) and never appears in the market
 # report, so it is intentionally excluded from this comparison.
