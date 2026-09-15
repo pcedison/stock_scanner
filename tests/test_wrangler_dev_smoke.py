@@ -71,3 +71,43 @@ def test_refresh_smoke_uses_csrf_header_for_production_worker(monkeypatch):
     post_headers = [kwargs["headers"] for _url, kwargs in calls if kwargs.get("method") == "POST"]
     assert post_headers
     assert all(headers["x-stock-scanner-csrf"] == "1" for headers in post_headers)
+
+
+class _RunningProcess:
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+def test_wait_for_worker_retries_a_cold_start_read_timeout(monkeypatch):
+    # A Pyodide cold start answers the first request late; urlopen raises a bare
+    # TimeoutError (not a URLError), which must be retried inside the same deadline.
+    calls: list[str] = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        if len(calls) == 1:
+            raise TimeoutError("timed out")
+        return {"status": "degraded", "runtime": "cloudflare-python-worker", "cache": {}, "cacheQuality": {"ok": False}}
+
+    monkeypatch.setattr(run_wrangler_dev_smoke, "_fetch_json", fake_fetch)
+    monkeypatch.setattr(run_wrangler_dev_smoke, "validate_refresh_smoke", lambda base_url: {"refreshStatus": "queued"})
+    sleeps: list[float] = []
+
+    summary = run_wrangler_dev_smoke.wait_for_worker(
+        _RunningProcess(), "http://127.0.0.1:8787", 10, sleeper=sleeps.append
+    )
+
+    assert calls == ["http://127.0.0.1:8787/api/health"] * 2
+    assert sleeps == [1]
+    assert summary["refreshStatus"] == "queued"
+
+
+def test_wait_for_worker_reports_the_last_error_after_the_deadline(monkeypatch):
+    monkeypatch.setattr(run_wrangler_dev_smoke, "_fetch_json", lambda url: (_ for _ in ()).throw(TimeoutError("timed out")))
+    clock = iter([0.0, 0.0, 5.0, 20.0])
+    monkeypatch.setattr(run_wrangler_dev_smoke.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(RuntimeError, match="Timed out waiting for .*timed out"):
+        run_wrangler_dev_smoke.wait_for_worker(_RunningProcess(), "http://127.0.0.1:8787", 10, sleeper=lambda s: None)
