@@ -90,11 +90,12 @@ def test_production_csrf_guard_requires_custom_header(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     test_client = TestClient(main_module.app)
 
-    missing = test_client.post("/api/scan/market", json={"settings": MOCK_SETTINGS.model_dump()})
+    payload = {"holdings": [], "settings": MOCK_SETTINGS.model_dump()}
+    missing = test_client.post("/api/scan/holdings", json=payload)
     present = test_client.post(
-        "/api/scan/market",
+        "/api/scan/holdings",
         headers={"x-stock-scanner-csrf": "1"},
-        json={"settings": MOCK_SETTINGS.model_dump()},
+        json=payload,
     )
 
     assert missing.status_code == 403
@@ -239,16 +240,37 @@ def test_analyze_api_returns_reasons():
     assert payload["reasons"]
 
 
-def test_scan_market_returns_entry_watch_and_excluded_lists():
-    response = client.post("/api/scan/market", json={"settings": MOCK_SETTINGS.model_dump()})
-    payload = response.json()
+def _all_market_v2_items(api_client, index: dict, category: str) -> list[dict]:
+    items: list[dict] = []
+    for disclosure in ("announced", "pending"):
+        total = index["disclosures"][disclosure][category]["count"]
+        for cursor in range(0, total, 100):
+            page = api_client.get(
+                "/api/scan/market/results",
+                params={
+                    "disclosure": disclosure,
+                    "category": category,
+                    "cursor": cursor,
+                    "limit": 100,
+                    "generationId": index["generationId"],
+                },
+            )
+            assert page.status_code == 200
+            items.extend(page.json()["items"])
+    return items
 
-    assert response.status_code == 200
-    assert any(item["stockCode"] == "2357" for item in payload["entry"])
-    assert any(item["stockCode"] == "2881" for item in payload["excluded"])
-    assert "filingContext" in payload
-    assert "monthlyRevenuePeriod" in payload["filingContext"]
-    assert all(item["reasons"] for group in ["entry", "watch", "excluded"] for item in payload[group])
+
+def test_market_v2_pages_expose_entry_watch_and_excluded_results():
+    index = client.get("/api/scan/market/index").json()
+    grouped = {category: _all_market_v2_items(client, index, category) for category in ("entry", "watch", "excluded")}
+
+    assert "filingContext" in index
+    assert "monthlyRevenuePeriod" in index["filingContext"]
+    assert any(item["stockCode"] == "2357" for item in grouped["entry"])
+    assert any(item["stockCode"] == "2881" for item in grouped["excluded"])
+    assert all(item["reasons"] for items in grouped.values() for item in items)
+    for category, items in grouped.items():
+        assert len(items) == index["counts"]["categories"][category]
 
 
 def test_market_v2_index_results_and_generation_mismatch_contract():
@@ -522,10 +544,12 @@ def test_market_scan_is_independent_from_holding_add_and_delete():
     test_client = TestClient(main_module.app)
     username = f"user_{uuid4().hex[:10]}"
     password = "test-password-123"
-    settings = MOCK_SETTINGS.model_dump()
 
-    before = test_client.post("/api/scan/market", json={"settings": settings}).json()
-    before_entry_codes = [item["stockCode"] for item in before["entry"]]
+    def entry_codes() -> list[str]:
+        index = test_client.get("/api/scan/market/index").json()
+        return [item["stockCode"] for item in _all_market_v2_items(test_client, index, "entry")]
+
+    before_entry_codes = entry_codes()
     assert "2357" in before_entry_codes
 
     register_response = test_client.post("/api/auth/register", json={"username": username, "password": password})
@@ -541,9 +565,7 @@ def test_market_scan_is_independent_from_holding_add_and_delete():
     assert delete_response.status_code == 200
     assert delete_response.json()["holdings"] == []
 
-    after = test_client.post("/api/scan/market", json={"settings": settings}).json()
-    after_entry_codes = [item["stockCode"] for item in after["entry"]]
-    assert after_entry_codes == before_entry_codes
+    assert entry_codes() == before_entry_codes
 
 
 def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
@@ -613,8 +635,11 @@ def test_super_user_can_list_and_delete_users(tmp_path, monkeypatch):
 
 def test_manual_scan_disabled_blocks_manual_scan_api():
     response = client.post(
-        "/api/scan/market",
-        json={"settings": ScannerSettings(use_mock_data=True, manual_scan_enabled=False).model_dump()},
+        "/api/scan/holdings",
+        json={
+            "holdings": [],
+            "settings": ScannerSettings(use_mock_data=True, manual_scan_enabled=False).model_dump(),
+        },
     )
 
     assert response.status_code == 403

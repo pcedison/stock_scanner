@@ -821,20 +821,16 @@ console.log(JSON.stringify({
     assert payload["nonJson"] == generic
 
 
-def test_market_scan_acceptance_and_failure_helpers_own_warning_lifecycle():
+def test_market_scan_acceptance_helper_owns_its_warning_lifecycle():
     source = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
     market_render_source = (ROOT / "frontend" / "market_render.js").read_text(encoding="utf-8")
-    assert "acceptMarketScan(state.schedulerAutoScan.scan" in source
-    assert source.count("return handleMarketScanFailure(error, { revealResults, target })") == 2
     assert "state.marketScan = scan" not in source
     assert market_render_source.count("state.marketScan = scan") == 1
 
     payload = _run_node_json(
         r"""
 const app = require("./frontend/app.js");
-const available =
-  typeof app.acceptMarketScan === "function" &&
-  typeof app.handleMarketScanFailure === "function";
+const available = typeof app.acceptMarketScan === "function";
 if (!available) {
   console.log(JSON.stringify({ available }));
 } else {
@@ -846,11 +842,6 @@ if (!available) {
   };
   app.state.marketScan = base;
   app.state.marketScanWarning = null;
-  const returned = app.handleMarketScanFailure(new Error("伺服器暫時無法處理請求，請稍後再試。（追蹤編號：failure-id）"), {
-    revealResults: false,
-    target: null,
-  });
-  const failureWarning = app.state.marketScanWarning;
   app.acceptMarketScan({
     ...base,
     cacheStatus: { refreshStatus: "unavailable", requestId: "task2-id" },
@@ -859,8 +850,6 @@ if (!available) {
   app.acceptMarketScan({ ...base, cacheStatus: { refreshStatus: "fresh" } }, { resetUi: false });
   console.log(JSON.stringify({
     available,
-    preserved: returned === base && app.state.marketScan.generatedAt === base.generatedAt,
-    failureWarning,
     unavailableWarning,
     cleared: app.state.marketScanWarning === null,
   }));
@@ -869,64 +858,9 @@ if (!available) {
     )
 
     assert payload["available"] is True
-    assert payload["preserved"] is True
-    assert "failure-id" in payload["failureWarning"]
     assert "暫時" in payload["unavailableWarning"]
     assert "task2-id" in payload["unavailableWarning"]
     assert payload["cleared"] is True
-
-
-def test_background_get_and_shared_waiter_preserve_the_same_last_good_scan():
-    payload = _run_node_json(
-        r"""
-global.StockScannerConfig = { apiMode: "same-origin" };
-const app = require("./frontend/app.js");
-const available = typeof app.refreshMarketScan === "function";
-if (!available) {
-  console.log(JSON.stringify({ available }));
-} else {
-  (async () => {
-    const base = {
-      generatedAt: "2026-07-12T00:00:00Z",
-      entry: [],
-      watch: [],
-      excluded: [],
-    };
-    app.state.marketScan = base;
-    app.state.marketScanWarning = null;
-    const target = {};
-    global.document = { querySelector: (selector) => selector === "#market-results" ? target : null };
-    let fetchCalls = 0;
-    let rejectFetch = null;
-    global.fetch = async () => {
-      fetchCalls += 1;
-      return new Promise((resolve, reject) => {
-        rejectFetch = reject;
-      });
-    };
-
-    const background = app.refreshMarketScan({ refreshMode: "auto" });
-    const sharedWaiter = app.refreshMarketScan({ refreshMode: "auto" });
-    await Promise.resolve();
-    delete global.document;
-    rejectFetch(new DOMException("caller aborted", "AbortError"));
-    const results = await Promise.all([background, sharedWaiter]);
-
-    console.log(JSON.stringify({
-      available,
-      fetchCalls,
-      sameLastGood: results[0] === base && results[1] === base && app.state.marketScan === base,
-      warning: app.state.marketScanWarning,
-    }));
-  })();
-}
-"""
-    )
-
-    assert payload["available"] is True
-    assert payload["fetchCalls"] == 1
-    assert payload["sameLastGood"] is True
-    assert "伺服器暫時無法處理請求" in payload["warning"]
 
 
 def test_api_client_does_not_direct_fallback_for_account_mutations():
@@ -2215,21 +2149,31 @@ def test_app_v2_integration_keeps_legacy_state_separate_and_exports_bounded():
     assert "marketWindow:" in source
     assert "marketQueryWarning:" in source
     assert 'MARKET_API_VERSION === "v2"' in source
-    assert 'MARKET_API_VERSION !== "v2" && state.schedulerAutoScan?.scan' in source
+    assert "state.schedulerAutoScan?.scan" not in source
     assert "loadWindow" not in export_body
     assert "state.marketIndex" in source[source.index("function refreshHoldingsDependentViews") : source.index("function upsertHolding")]
 
 
-def test_app_loads_runtime_config_before_initial_data_and_has_v1_fallback():
+def test_app_loads_runtime_config_before_initial_data_and_is_v2_only():
     source = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    market_query_source = (ROOT / "frontend" / "market_query.js").read_text(encoding="utf-8")
+    index_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     init_start = source.index("async function init")
     init_body = source[init_start : source.index('if (typeof document !== "undefined")', init_start)]
 
     assert "let MARKET_API_VERSION" in source
     assert "async function loadRuntimeConfig" in source
     assert 'apiJson("/api/runtime-config", { method: "GET" })' in source
-    assert "function fallbackMarketApiToV1" in source
     assert init_body.index("await loadRuntimeConfig();") < init_body.index("await Promise.all")
+
+    # v1 is retired: app.js must carry no downgrade path at all (not even the literal),
+    # and neither module may request the retired whole-scan route.
+    assert '"v1"' not in source
+    for js_source in (source, market_query_source):
+        assert '"/api/scan/market"' not in js_source
+        assert "'/api/scan/market'" not in js_source
+        assert "`/api/scan/market`" not in js_source
+    assert 'name="stock-scanner-market-api-version" content="v2"' in index_html
 
 
 def test_app_market_query_storage_getter_security_error_is_fail_soft():

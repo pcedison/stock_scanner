@@ -818,47 +818,6 @@ def test_worker_cache_status_redacts_refresh_job_error(monkeypatch):
     assert "private cache path" not in str(payload)
 
 
-def test_worker_market_scan_uses_precomputed_summary(monkeypatch):
-    worker = load_worker_module(monkeypatch)
-    cache = FakeR2Cache(
-        {
-            "public/manifest.json": FakeR2Object('{"generatedAt":"2026-05-19T00:00:00+00:00"}'),
-            "public/market_scan_summary.json": FakeR2Object(
-                json.dumps(
-                    {
-                        "generatedAt": "2026-05-19T00:00:00+00:00",
-                        "dataSource": "cloudflare_r2_seed",
-                        "entry": [{"stockCode": "1234", "companyName": "Demo", "status": "ENTRY", "summary": "ok"}],
-                        "watch": [],
-                        "excluded": [],
-                    }
-                )
-            ),
-            "public/market_scan_latest.json": FakeR2Object('{"entry":[{"stockCode":"9999"}]}'),
-        }
-    )
-    api = worker.Api(env=types.SimpleNamespace(CACHE=cache))
-
-    refresh_forces = []
-
-    async def fake_refresh_job(manifest, force=False):
-        refresh_forces.append(force)
-        return {"status": "fresh", "reason": "test"}
-
-    api.ensure_refresh_job = fake_refresh_job
-
-    request = SingleReadRequest('{"refreshMode":"force"}')
-    request.method = "POST"
-    response = asyncio.run(api.route(request, "/api/scan/market", {}))
-    payload = json.loads(response.body)
-
-    assert payload["entry"][0]["stockCode"] == "1234"
-    assert payload["detailMode"] == "summary"
-    assert payload["cacheStatus"]["refreshStatus"] == "fresh"
-    assert refresh_forces == [True]
-    assert "public/market_scan_latest.json" not in cache.calls
-
-
 def test_worker_holdings_scan_prefers_holding_exit_analysis(monkeypatch):
     worker = load_worker_module(monkeypatch)
     api = worker.Api(env=None)
@@ -1636,26 +1595,9 @@ def test_worker_companies_list_and_search(monkeypatch):
     assert len(empty_q["items"]) == 3
 
 
-def test_worker_scan_market_get_and_post_queue_refresh(monkeypatch):
-    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    scan = {"entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "好"}], "watch": [], "excluded": []}
-    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan})
-    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
-
-    get_response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market")))
-    get = json.loads(get_response.body)
-    assert get["detailMode"] == "summary"
-    assert get["cacheStatus"]["isStale"] is True
-    assert get_response.headers["cache-control"] == "no-store"
-
-    post = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body=""))).body)
-    assert post["cacheStatus"]["refreshStatus"] == "queued"
-    assert len(db.refresh_jobs) == 1
-
-
-def test_runtime_config_defaults_invalid_values_to_v1_and_has_short_edge_ttl(monkeypatch):
+def test_runtime_config_is_always_v2_and_has_short_edge_ttl(monkeypatch):
     _worker, api, _db = build_router_api(monkeypatch)
-    api.env.MARKET_SCAN_API_VERSION = "future"
+    # There is no market API switch any more; the retired v1 read cannot come back.
     api.env.EDGE_CACHE_ENABLED = "true"
 
     response = asyncio.run(api.fetch(RouteRequest(path="/api/runtime-config")))
@@ -1663,7 +1605,7 @@ def test_runtime_config_defaults_invalid_values_to_v1_and_has_short_edge_ttl(mon
     edge_cache = response.headers["cloudflare-cdn-cache-control"]
 
     assert response.init["status"] == 200
-    assert payload == {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": True}
+    assert payload == {"schemaVersion": 1, "marketScanApiVersion": "v2", "edgeCacheEnabled": True}
     assert response.headers["cache-control"] == "public, max-age=0"
     assert "max-age=60" in edge_cache
     assert "s-maxage" not in edge_cache
@@ -1726,7 +1668,6 @@ def test_worker_market_v2_edge_cache_headers_are_opt_in_and_errors_stay_no_store
         monkeypatch,
         r2={"public/market_scan_index.json": generation.index, **_worker_generation_r2(generation)},
     )
-    api.env.MARKET_SCAN_API_VERSION = "v2"
     api.env.EDGE_CACHE_ENABLED = "true"
     pin_worker_time(monkeypatch, worker, "2026-07-13T00:05:00+00:00")
 
@@ -2036,174 +1977,6 @@ def test_worker_market_v2_malformed_manifest_is_safe_503(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("stage", "retryable"),
-    (("d1_read", True), ("d1_write", False)),
-)
-def test_worker_scan_market_post_serves_last_good_when_refresh_queue_fails(
-    monkeypatch, capsys, stage, retryable
-):
-    manifest = {
-        "generatedAt": "2026-02-19T00:00:00+00:00",
-        "counts": {"companies": 1000, "analysis": 1000},
-    }
-    scan = {
-        "entry": [
-            {
-                "stockCode": "2330",
-                "status": "ENTRY",
-                "summary": "last good",
-            }
-        ],
-        "watch": [{"stockCode": "2454", "status": "WATCH", "summary": "observe"}],
-        "excluded": [{"stockCode": "2603", "status": "EXCLUDED", "summary": "skip"}],
-    }
-    worker, api, _db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
-    expected_get = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
-
-    async def fail_refresh(_manifest, force=False):
-        assert force is True
-        failure = worker.DependencyFailure(stage, retryable, RuntimeError("secret sentinel"))
-        failure.error_code = "NETWORK_LOST"
-        raise failure
-
-    api.ensure_refresh_job = fail_refresh
-    response = asyncio.run(
-        api.fetch(
-            RouteRequest(
-                method="POST",
-                path="/api/scan/market",
-                body='{"refreshMode":"force"}',
-            )
-        )
-    )
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 200
-    for category in ("entry", "watch", "excluded"):
-        assert payload[category] == expected_get[category]
-    assert payload["detailMode"] == "summary"
-    assert payload["cacheStatus"]["refreshStatus"] == "unavailable"
-    assert payload["cacheStatus"]["retryable"] is retryable
-    assert payload["cacheStatus"]["requestId"] == response.headers["x-request-id"]
-    assert re.fullmatch(r"[0-9a-f]{24}", response.headers["x-request-id"])
-
-    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert record["event"] == "worker_dependency_degraded"
-    assert record["method"] == "POST"
-    assert record["path"] == "/api/scan/market"
-    assert record["stage"] == "refresh_queue"
-    assert record["status"] == response.init["status"] == 200
-    assert record["errorType"] == "RuntimeError"
-    assert record["errorCode"] == "NETWORK_LOST"
-    assert record["requestId"] == response.headers["x-request-id"]
-    assert record["durationMs"] >= 0
-    assert "secret sentinel" not in json.dumps(record)
-
-
-@pytest.mark.parametrize(
-    "scan",
-    (
-        None,
-        {"entry": [], "watch": [], "excluded": "not-a-list"},
-    ),
-    ids=("missing", "malformed"),
-)
-def test_worker_scan_market_post_requires_verified_last_good_for_fail_open(monkeypatch, capsys, scan):
-    manifest = {
-        "generatedAt": "2026-02-19T00:00:00+00:00",
-        "counts": {"companies": 1000, "analysis": 1000},
-    }
-    r2 = {"public/manifest.json": manifest}
-    if scan is not None:
-        r2["public/market_scan_summary.json"] = scan
-    worker, api, _db = build_router_api(monkeypatch, r2=r2)
-
-    async def fail_refresh(_manifest, force=False):
-        failure = worker.DependencyFailure("d1_read", True, RuntimeError("missing scan sentinel"))
-        failure.error_code = "NETWORK_LOST"
-        raise failure
-
-    api.ensure_refresh_job = fail_refresh
-    response = asyncio.run(
-        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
-    )
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 503
-    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
-    assert payload["stage"] == "d1_read"
-    assert "cacheStatus" not in payload
-    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert record["event"] == "worker_request_failed"
-    assert record["status"] == 503
-    assert "missing scan sentinel" not in json.dumps(record)
-
-
-def test_worker_scan_market_post_rejects_non_d1_refresh_failure(monkeypatch, capsys):
-    manifest = {
-        "generatedAt": "2026-02-19T00:00:00+00:00",
-        "counts": {"companies": 1000, "analysis": 1000},
-    }
-    scan: dict[str, list[dict[str, object]]] = {"entry": [], "watch": [], "excluded": []}
-    worker, api, _db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
-
-    async def fail_refresh(_manifest, force=False):
-        failure = worker.DependencyFailure("r2_read", True, RuntimeError("wrong boundary sentinel"))
-        failure.error_code = "RESET"
-        raise failure
-
-    api.ensure_refresh_job = fail_refresh
-    response = asyncio.run(
-        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
-    )
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 503
-    assert payload["stage"] == "r2_read"
-    assert "cacheStatus" not in payload
-    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert record["event"] == "worker_request_failed"
-    assert record["stage"] == "r2_read"
-    assert "wrong boundary sentinel" not in json.dumps(record)
-
-
-def test_worker_scan_market_post_rejects_unexpected_refresh_failure(monkeypatch, capsys):
-    manifest = {
-        "generatedAt": "2026-02-19T00:00:00+00:00",
-        "counts": {"companies": 1000, "analysis": 1000},
-    }
-    scan: dict[str, list[dict[str, object]]] = {"entry": [], "watch": [], "excluded": []}
-    _worker, api, _db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
-
-    async def fail_refresh(_manifest, force=False):
-        raise RuntimeError("unexpected refresh sentinel")
-
-    api.ensure_refresh_job = fail_refresh
-    response = asyncio.run(
-        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
-    )
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 500
-    assert payload["code"] == "INTERNAL_ERROR"
-    assert payload["stage"] == "route"
-    assert "cacheStatus" not in payload
-    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert record["event"] == "worker_request_failed"
-    assert record["status"] == 500
-    assert "unexpected refresh sentinel" not in json.dumps(record)
-
-
-@pytest.mark.parametrize(
     ("method", "path", "failure_method", "stage", "retryable", "expected_status"),
     (
         ("POST", "/api/cache/refresh", "ensure_refresh_job", "d1_write", False, 500),
@@ -2243,14 +2016,6 @@ def test_worker_non_market_routes_do_not_fail_open_for_dependency_failure(
     assert record["stage"] == stage
     assert record["status"] == expected_status
     assert "sibling route sentinel" not in json.dumps(record)
-
-
-def test_worker_scan_market_get_serves_empty_when_seed_missing(monkeypatch):
-    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": {}})
-    pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
-    payload = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
-    assert payload["entry"] == []
-    assert payload["dataSource"] == "cloudflare_r2_seed"
 
 
 def test_worker_analyze_and_holdings_scan(monkeypatch):
@@ -2485,49 +2250,6 @@ def test_refresh_job_missing_read_back_raises_invariant_without_returning_candid
     assert len(db.refresh_jobs) == 1
 
 
-def test_refresh_job_read_back_invariant_serves_verified_last_good(monkeypatch):
-    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    scan = {
-        "entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "last good"}],
-        "watch": [],
-        "excluded": [],
-    }
-    worker, api, db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
-    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
-    db.hide_refresh_job_reads = True
-
-    response = asyncio.run(
-        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
-    )
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 200
-    assert payload["entry"][0]["stockCode"] == "2330"
-    assert payload["cacheStatus"]["refreshStatus"] == "unavailable"
-    assert payload["cacheStatus"]["retryable"] is True
-
-
-def test_refresh_job_read_back_invariant_without_last_good_is_safe_503(monkeypatch):
-    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
-    db.hide_refresh_job_reads = True
-
-    response = asyncio.run(
-        api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}'))
-    )
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 503
-    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
-    assert payload["stage"] == "d1_read"
-    assert payload["retryable"] is True
-    assert "cacheStatus" not in payload
-
-
 def test_ensure_refresh_job_read_back_failure_drops_cause_and_client_key(monkeypatch):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
     worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
@@ -2726,13 +2448,9 @@ def test_refresh_command_different_cache_generation_reuses_global_active_job(mon
     assert len(db.refresh_jobs) == 1
 
 
-def test_refresh_command_idempotent_enqueue_failure_is_safe_503_and_legacy_keeps_lkg(monkeypatch):
+def test_refresh_command_idempotent_enqueue_failure_is_safe_503(monkeypatch):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    scan = {"entry": [{"stockCode": "2330", "summary": "last good"}], "watch": [], "excluded": []}
-    worker, api, _db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
     pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
 
     async def fail_idempotent_insert(_sql, *_params):
@@ -2755,8 +2473,6 @@ def test_refresh_command_idempotent_enqueue_failure_is_safe_503_and_legacy_keeps
         )
     )
     command_payload = json.loads(command.body)
-    legacy = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body='{"refreshMode":"force"}')))
-    legacy_payload = json.loads(legacy.body)
 
     assert command.init["status"] == 503
     assert command_payload["code"] == "DEPENDENCY_UNAVAILABLE"
@@ -2765,10 +2481,6 @@ def test_refresh_command_idempotent_enqueue_failure_is_safe_503_and_legacy_keeps
     assert command_payload["requestId"] == command.headers["x-request-id"]
     assert "Bearer secret" not in command.body
     assert "/Users/private" not in command.body
-    assert legacy.init["status"] == 200
-    assert legacy_payload["entry"][0]["stockCode"] == "2330"
-    assert legacy_payload["cacheStatus"]["refreshStatus"] == "unavailable"
-    assert legacy_payload["cacheStatus"]["retryable"] is True
 
 
 @pytest.mark.parametrize(
@@ -2955,24 +2667,6 @@ def test_refresh_command_coalesced_loser_key_is_cooldown_limited_after_terminal(
 
     assert retried_loser["detail"] == "Market refresh is cooling down; try again later."
     assert len(db.refresh_jobs) == 1
-
-
-def test_legacy_market_post_keeps_payload_and_adds_refresh_successor_headers(monkeypatch):
-    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    scan = {"entry": [], "watch": [{"stockCode": "2330"}], "excluded": []}
-    worker, api, _db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
-    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
-
-    response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body="{}")))
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 200
-    assert payload["watch"][0]["stockCode"] == "2330"
-    assert response.headers["Deprecation"] == "true"
-    assert response.headers["Link"] == '</api/scan/market/refresh>; rel="successor-version"'
 
 
 def test_refresh_job_request_path_has_no_cleanup_delete_and_worker_delegates():
@@ -3315,14 +3009,24 @@ def test_worker_subrouter_not_found_fallbacks(monkeypatch):
         assert response.init["status"] == 404, f"{method} {path}"
 
 
-def test_worker_scan_market_post_without_seed_queues_refresh(monkeypatch):
+def test_worker_retired_v1_market_scan_routes_are_not_found(monkeypatch):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+    scan = {"entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "好"}], "watch": [], "excluded": []}
+    worker, api, db = build_router_api(
+        monkeypatch,
+        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
+    )
     pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
-    payload = json.loads(asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body=""))).body)
-    assert payload["entry"] == []
-    assert payload["cacheStatus"]["refreshStatus"] == "queued"
-    assert len(db.refresh_jobs) == 1
+
+    get_response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market")))
+    post_response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/scan/market", body="{}")))
+
+    assert get_response.init["status"] == 404
+    assert post_response.init["status"] == 404
+    # The retired v1 route was the only request-time reader of the multi-megabyte summary.
+    assert "public/market_scan_summary.json" not in api.env.CACHE.calls
+    assert db.refresh_jobs == []
+    assert not hasattr(api, "r2_text")
 
 
 def test_worker_holding_analysis_rejects_invalid_code(monkeypatch):
@@ -3344,60 +3048,6 @@ def test_worker_require_auth_attempt_allowed_clears_expired_lock(monkeypatch):
     })
     asyncio.run(api.require_auth_attempt_allowed("u@example.com", request))
     assert db.auth_attempts == []
-
-
-def test_worker_scan_market_get_streams_summary_without_reparsing(monkeypatch):
-    """The legacy v1 payload must not be JSON-decoded inside the Worker (resource limits)."""
-    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    raw = '{"generatedAt":"2026-02-19T00:00:00+00:00","entry":[{"stockCode":"2330","status":"ENTRY"}],"watch":[],"excluded":[]}'
-    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    api.env.CACHE.objects["public/market_scan_summary.json"] = FakeR2Object(raw)
-
-    def explode(*_args, **_kwargs):
-        raise AssertionError("market summary must not be JSON-decoded in the Worker")
-
-    monkeypatch.setattr(worker, "compact_market_scan", explode)
-    response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market")))
-    payload = json.loads(response.body)
-
-    assert response.init["status"] == 200
-    assert response.headers["content-type"].startswith("application/json")
-    assert payload["entry"][0]["stockCode"] == "2330"
-    assert payload["detailMode"] == "summary"
-    assert payload["cacheStatus"]["source"] == "cloudflare_r2"
-
-
-def test_worker_scan_market_get_falls_back_when_summary_missing_or_malformed(monkeypatch):
-    manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
-    missing = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
-    assert missing["entry"] == [] and missing["detailMode"] == "summary"
-    assert missing["cacheStatus"]["source"] == "cloudflare_r2"
-
-    api.env.CACHE.objects["public/market_scan_summary.json"] = FakeR2Object("not json at all")
-    api._r2_cache.clear()
-    malformed = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/scan/market"))).body)
-    assert malformed["entry"] == [] and malformed["detailMode"] == "summary"
-
-
-def test_splice_market_summary_helper():
-    from cloudflare.worker_market_legacy import looks_like_market_scan_text, splice_market_summary
-
-    status = {"isStale": False}
-    assert json.loads(splice_market_summary('{"entry":[]}', status)) == {
-        "entry": [],
-        "detailMode": "summary",
-        "cacheStatus": status,
-    }
-    assert json.loads(splice_market_summary("{}", status)) == {"detailMode": "summary", "cacheStatus": status}
-    assert json.loads(splice_market_summary('  {"a":1}\n', status))["a"] == 1
-    assert splice_market_summary(None, status) is None
-    assert splice_market_summary("[]", status) is None
-    assert splice_market_summary('{"entry":[]}', status, max_bytes=4) is None
-    assert looks_like_market_scan_text('{"entry":[],"watch":[],"excluded":[]}') is True
-    assert looks_like_market_scan_text('{"entry":[]}') is False
-    assert looks_like_market_scan_text('{"entry":[],"watch":[],"excluded":"not-a-list"}') is False
-    assert looks_like_market_scan_text(None) is False
 
 
 def test_worker_health_reports_refresh_dispatch_state(monkeypatch):

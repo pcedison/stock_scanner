@@ -26,6 +26,14 @@ def health() -> dict:
     }
 
 
+@router.get("/api/runtime-config")
+def runtime_config() -> dict:
+    # Parity with the Worker's /api/runtime-config so local development follows the
+    # same contract. The v1 whole-scan read is retired, so the version is always v2;
+    # FastAPI never sits behind the Cloudflare edge cache.
+    return {"schemaVersion": 1, "marketScanApiVersion": "v2", "edgeCacheEnabled": False}
+
+
 @router.get("/api/integrations/status")
 def integrations_status() -> dict:
     return integration_status()

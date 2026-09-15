@@ -14,8 +14,10 @@
 正式環境是 Cloudflare Python Worker(`cloudflare/worker.py`)+ R2(快取)+ D1(資料庫),
 採 stale-while-revalidate:
 
-1. 使用者打 `/api/scan/market` → Worker 先回 R2 既有快取,並往 D1 `refresh_jobs`
-   塞一筆 `queued`。**Worker 自己不抓資料、不重建 manifest。**
+1. 使用者打 `/api/scan/market/index` 與 `/api/scan/market/results`(v2 分頁讀取)→ Worker
+   直接回 R2 既有快取;明確要求重新整理時打 `/api/scan/market/refresh`,Worker 才往 D1
+   `refresh_jobs` 塞一筆 `queued`。**Worker 自己不抓資料、不重建 manifest。**
+   (整包掃描的 v1 `GET/POST /api/scan/market` 已於 2026-09-15 退場,現在回 404。)
 2. 真正重建 R2 manifest 的是 GitHub Actions `cloudflare-r2-seed-refresh.yml`(每 15 分鐘):
    撈 queued job → 標 running → `build_cloudflare_seed.py`(線上抓 TWSE/MOPS)→ 上傳 R2 → 標 success。
 3. 部署由 `cloudflare-deploy.yml`(push main 觸發)負責:D1 migration、部署 Worker/Pages、

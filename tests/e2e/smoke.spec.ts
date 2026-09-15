@@ -68,31 +68,16 @@ async function registerViaApi(page, username: string, password = "test-password-
   );
 }
 
-function withActiveOfficialQuarter(item: any, activePeriod: string, overrides: Record<string, unknown> = {}) {
-  const reasons = (item.reasons || []).filter((reason: any) => reason?.code !== "OFFICIAL_Q");
-  reasons.push({
-    code: "OFFICIAL_Q",
-    passed: true,
-    severity: "INFO",
-    message: `${activePeriod} 官方財報已公告`,
-  });
-  return { ...item, ...overrides, reasons };
-}
-
-test("overview auto-refreshes market counts on load and after login", async ({ page }) => {
-  const scanRequests: { method: string; body: any }[] = [];
-  await page.route("**/api/scan/market", async (route) => {
-    const request = route.request();
-    let body: any = null;
-    if (request.method() === "POST") {
-      try {
-        body = request.postDataJSON();
-      } catch {
-        body = {};
-      }
-    }
-    scanRequests.push({ method: request.method(), body });
+test("overview loads market counts once and login neither re-downloads nor re-scans", async ({ page }) => {
+  const indexRequests: string[] = [];
+  let refreshCommands = 0;
+  await page.route("**/api/scan/market/index", async (route) => {
+    indexRequests.push(route.request().method());
     await route.continue();
+  });
+  await page.route("**/api/scan/market/refresh", async (route) => {
+    refreshCommands += 1;
+    await route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
   });
 
   await page.goto("/");
@@ -100,10 +85,10 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
   await expect(page.locator("#overview-watch-count")).not.toHaveText("--", { timeout: 15_000 });
   await expect(page.locator("#overview-excluded-count")).not.toHaveText("--", { timeout: 15_000 });
-  // Passive/auto loads use the cacheable GET; only an explicit force refresh POSTs.
-  const autoCountBeforeLogin = scanRequests.filter((r) => r.method === "GET").length;
+  // Passive/auto loads only read the cacheable index; nothing queues a refresh job.
+  const autoCountBeforeLogin = indexRequests.filter((method) => method === "GET").length;
   expect(autoCountBeforeLogin).toBeGreaterThan(0);
-  expect(scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force")).toBeFalsy();
+  expect(refreshCommands).toBe(0);
 
   const overviewCounts = await page
     .locator("#overview-entry-count, #overview-watch-count, #overview-excluded-count")
@@ -119,97 +104,65 @@ test("overview auto-refreshes market counts on load and after login", async ({ p
   await page.locator("#auth-modal-username").fill(`overview-${Date.now()}@example.com`);
   await page.locator("#auth-modal-password").fill("test-password-123");
   await page.locator("#auth-modal-form").evaluate((form: HTMLFormElement) => form.requestSubmit());
-  await expect.poll(() => scanRequests.filter((r) => r.method === "GET").length).toBeGreaterThan(autoCountBeforeLogin);
-  expect(scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force")).toBeFalsy();
+  await expect(page.locator("#auth-modal")).toBeHidden();
+  // v2 reads are cacheable: logging in re-renders from the loaded generation instead of
+  // re-downloading the index, and it never queues a refresh job.
+  await expect(page.locator("#overview-entry-count")).not.toHaveText("--");
+  expect(indexRequests.filter((method) => method === "GET").length).toBe(autoCountBeforeLogin);
+  expect(refreshCommands).toBe(0);
 });
 
-test("manual refresh button forces a POST scan", async ({ page, isMobile }) => {
-  const scanRequests: { method: string; body: any }[] = [];
-  await page.route("**/api/scan/market", async (route) => {
-    const request = route.request();
-    let body: any = null;
-    if (request.method() === "POST") {
-      try {
-        body = request.postDataJSON();
-      } catch {
-        body = {};
-      }
-    }
-    scanRequests.push({ method: request.method(), body });
-    await route.continue();
-  });
-
-  await page.goto("/");
-  await closeBlockingModals(page);
-  await showView(page, isMobile, "scan");
-  await page.locator("#refresh-market-scan-btn").click();
-  await expect
-    .poll(() => scanRequests.some((r) => r.method === "POST" && r.body?.refreshMode === "force"))
-    .toBeTruthy();
-});
-
-test("manual refresh failure preserves last successful market scan", async ({ page, isMobile }) => {
-  await page.goto("/");
-  await closeBlockingModals(page);
-  await showView(page, isMobile, "scan");
-
-  const successfulScan = await page.evaluate(async () => (await fetch("/api/scan/market")).json());
-  const visiblePeriod =
-    successfulScan.filingContext?.freshnessFinancialReport?.period ||
-    successfulScan.filingContext?.activeFinancialReport?.period;
-  expect(visiblePeriod).toBeTruthy();
-  expect(successfulScan.entry?.length).toBeGreaterThan(0);
-  const template = successfulScan.entry[0];
-  const lastGoodScan = {
-    ...successfulScan,
-    generatedAt: "2026-07-12T01:00:00+00:00",
-    entry: Array.from({ length: 7 }, (_, index) =>
-      withActiveOfficialQuarter(template, visiblePeriod, {
-        stockCode: String(9100 + index),
-        companyName: `保留測試公司 ${index + 1}`,
-        detailsAvailable: false,
-        hasFullDetails: true,
-      }),
-    ),
-  };
-
-  let fail = false;
-  await page.route("**/api/scan/market", async (route) => {
-    if (route.request().method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    if (fail) {
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          detail: "不應顯示的上游機密錯誤",
-          code: "DEPENDENCY_UNAVAILABLE",
-          requestId: "test-request-id",
-          retryable: true,
-          stage: "r2_read",
-        }),
-      });
-      return;
-    }
-    await route.fulfill({
+test("manual refresh failure preserves the last-good market index", async ({ page, isMobile }) => {
+  await useMarketV2(page);
+  const index = marketV2Index(205, 0);
+  const jobId = "d".repeat(32);
+  let failRefresh = true;
+  await page.route("**/api/scan/market/index", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(index) }),
+  );
+  await page.route("**/api/scan/market/results?*", (route) => {
+    const url = new URL(route.request().url());
+    const category = url.searchParams.get("category") as "entry" | "watch" | "excluded";
+    const cursor = Number(url.searchParams.get("cursor"));
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(lastGoodScan),
+      body: JSON.stringify(marketV2Page(index, category, cursor)),
     });
   });
+  await page.route("**/api/scan/market/refresh", (route) =>
+    failRefresh
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            detail: "不應顯示的上游機密錯誤",
+            code: "DEPENDENCY_UNAVAILABLE",
+            requestId: "test-request-id",
+            retryable: true,
+            stage: "r2_read",
+          }),
+        })
+      : route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            jobId,
+            status: "success",
+            requestId: "e2e-refresh-ok",
+            statusUrl: `/api/scan/market/refresh/${jobId}`,
+          }),
+        }),
+  );
 
-  await page.locator("#refresh-market-scan-btn").click();
-  await expect(page.locator(".market-result-code strong").filter({ hasText: "9100" })).toHaveCount(1);
-  await page
-    .locator('[data-market-page-tab="announced"][data-market-page-column="entry"][data-market-page-dir="1"]')
-    .click();
-  await expect(page.locator(".market-pagination")).toContainText("第 2 / 2 頁");
-  const toggle = page.locator("[data-market-result-toggle]").first();
-  await toggle.click();
+  await page.goto("/");
+  await closeBlockingModals(page);
+  await showView(page, isMobile, "scan");
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1000");
+  await page.locator('[data-market-page-column="entry"][data-market-page-dir="1"]').click();
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1006");
+  await page.locator("[data-market-result-toggle]").first().click();
   await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator(".market-result-details").first()).toBeVisible();
 
   const oldTime = await page.locator("#scan-time").textContent();
   const oldFirstRow = await page.locator("#market-results .market-result-item").first().textContent();
@@ -218,9 +171,7 @@ test("manual refresh failure preserves last successful market scan", async ({ pa
     .locator("[data-market-result-toggle]")
     .first()
     .getAttribute("data-market-result-toggle");
-  const oldExpandedContent = await page.locator(".market-result-details").first().textContent();
 
-  fail = true;
   await page.locator("#refresh-market-scan-btn").click();
   const warning = page.locator(".market-scan-warning");
   await expect(warning).toBeVisible();
@@ -236,64 +187,27 @@ test("manual refresh failure preserves last successful market scan", async ({ pa
     oldExpandedId || "",
   );
   await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator(".market-result-details").first()).toContainText(oldExpandedContent || "");
   await expect(page.locator("#market-results > .form-error")).toHaveCount(0);
-
-  await showMarketColumn(page, isMobile, "watch");
-  await showMarketColumn(page, isMobile, "entry");
-  await expect(page.locator(".market-pagination")).toContainText("第 2 / 2 頁");
-  await expect(warning).toBeVisible();
-  expect(await warning.evaluate((element) => element.parentElement?.firstElementChild === element)).toBe(true);
+  // The warning must sit above the result list so it is seen before the stale rows.
+  expect(
+    await warning.evaluate((element) => {
+      const list = document.querySelector("#market-results .result-columns");
+      return Boolean(list) && element.compareDocumentPosition(list) === Node.DOCUMENT_POSITION_FOLLOWING;
+    }),
+  ).toBe(true);
   if (isMobile) {
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
     ).toBe(true);
     await expect(warning).toBeInViewport();
   }
-});
 
-test("successful market refresh clears last-good warning", async ({ page, isMobile }) => {
-  await page.goto("/");
-  await closeBlockingModals(page);
-  await showView(page, isMobile, "scan");
-  const successfulScan = await page.evaluate(async () => (await fetch("/api/scan/market")).json());
-  const visiblePeriod =
-    successfulScan.filingContext?.freshnessFinancialReport?.period ||
-    successfulScan.filingContext?.activeFinancialReport?.period;
-  expect(visiblePeriod).toBeTruthy();
-  expect(successfulScan.entry?.length).toBeGreaterThan(0);
-  successfulScan.entry = successfulScan.entry.map((item: any, index: number) =>
-    index === 0 ? withActiveOfficialQuarter(item, visiblePeriod, { stockCode: "2454", companyName: "聯發科" }) : item,
-  );
-  successfulScan.generatedAt = "2026-07-12T02:00:00+00:00";
-
-  let fail = false;
-  await page.route("**/api/scan/market", async (route) => {
-    if (route.request().method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    if (fail) {
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ detail: "不應顯示的上游錯誤", requestId: "retry-id" }),
-      });
-      return;
-    }
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(successfulScan) });
-  });
-
-  await page.locator("#refresh-market-scan-btn").click();
-  await expect(page.locator(".market-result-code strong").filter({ hasText: "2454" })).toHaveCount(1);
-  fail = true;
-  await page.locator("#refresh-market-scan-btn").click();
-  await expect(page.locator(".market-scan-warning")).toHaveCount(1);
-  await expect(page.locator(".market-scan-warning")).toContainText("retry-id");
-  fail = false;
+  failRefresh = false;
   await page.locator("#refresh-market-scan-btn").click();
   await expect(page.locator(".market-scan-warning")).toHaveCount(0);
-  await expect(page.locator(".market-result-code strong").filter({ hasText: "2454" })).toHaveCount(1);
+  // The generation did not change, so the reader keeps the page the user was on.
+  await expect(page.locator(".market-result-code strong").first()).toHaveText("1006");
+  await expect(page.locator("[data-market-result-toggle]").first()).toHaveAttribute("aria-expanded", "true");
 });
 
 test("settings stay read-only for non-admin users and CSP is strict", async ({ page, isMobile }) => {
@@ -652,24 +566,6 @@ test("last-known-good shell keeps validated market index offline", async ({ page
   await expect(page.locator("#market-results")).toContainText("2026Q1");
   await expect(page.locator(".market-scan-warning")).toBeVisible();
   await expect(page.locator("#market-results .form-error")).toBeVisible();
-});
-
-test("legacy market fallback uses v1 route only", async ({ page }) => {
-  let legacyCalls = 0;
-  let indexCalls = 0;
-  await page.route("**/api/scan/market/index", (route) => {
-    indexCalls += 1;
-    return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
-  });
-  await page.route("**/api/scan/market", async (route) => {
-    legacyCalls += 1;
-    return route.continue();
-  });
-  await page.goto("/");
-  await closeBlockingModals(page);
-  await expect(page.locator("#overview-entry-count")).not.toHaveText("--", { timeout: 15_000 });
-  expect(legacyCalls).toBeGreaterThan(0);
-  expect(indexCalls).toBe(0);
 });
 
 test("refresh command posts once and refresh polling preserves rows until generation changes", async ({

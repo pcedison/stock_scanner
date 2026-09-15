@@ -39,8 +39,6 @@ DEFAULT_BUDGETS = {
     # boundary for outbound GitHub calls, and getting that conversion wrong kills the
     # interpreter outright rather than raising.
     "cloudflare/worker_github_app.py": 200,
-    "cloudflare/worker_market_resilience.py": 160,
-    "cloudflare/worker_market_legacy.py": 120,
     "cloudflare/worker_observability.py": 200,
     "cloudflare/worker_support.py": 600,
     ".github/workflows/cloudflare-r2-seed-refresh.yml": 290,

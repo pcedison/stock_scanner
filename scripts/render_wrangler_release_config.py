@@ -22,7 +22,6 @@ UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 ALLOWED_PRODUCTION_SWITCHES = {
     ("triggers", "crons"),
     ("vars", "GITHUB_DISPATCH_ENABLED"),
-    ("vars", "MARKET_SCAN_API_VERSION"),
     ("vars", "EDGE_CACHE_ENABLED"),
     ("cache", "enabled"),
 }
@@ -176,17 +175,14 @@ def render_production_profile(
     production_config: Path = PRODUCTION_CONFIG,
     enable_production_cron: bool = False,
     enable_production_v2: bool = False,
-    confirm_production_v1_rollback: bool = False,
 ) -> str:
-    if profile not in {"production-cron", "production-v2", "production-v1-rollback"}:
+    if profile not in {"production-cron", "production-v2"}:
         raise ValueError("unsupported production profile")
     if not enable_production_cron:
         raise ValueError(f"{profile} requires --enable-production-cron")
     if profile == "production-v2" and not enable_production_v2:
         raise ValueError("production-v2 requires --enable-production-v2")
-    if profile == "production-v1-rollback" and not confirm_production_v1_rollback:
-        raise ValueError("production-v1-rollback requires --confirm-production-v1-rollback")
-    if profile == "production-cron" and (enable_production_v2 or confirm_production_v1_rollback):
+    if profile == "production-cron" and enable_production_v2:
         raise ValueError("production-cron accepts only --enable-production-cron")
 
     base = _load_toml(production_config)
@@ -194,7 +190,6 @@ def render_production_profile(
     rendered.setdefault("triggers", {})["crons"] = list(PRODUCTION_CRONS)
     rendered.setdefault("vars", {})["GITHUB_DISPATCH_ENABLED"] = "true"
     rendered.setdefault("cache", {})["enabled"] = profile == "production-v2"
-    rendered["vars"]["MARKET_SCAN_API_VERSION"] = "v2" if profile == "production-v2" else "v1"
     rendered["vars"]["EDGE_CACHE_ENABLED"] = "true" if profile == "production-v2" else "false"
     _validate_only_release_switches_changed(base, rendered)
     text = dumps_toml(rendered)
@@ -244,11 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     staging.add_argument("--bucket-name", required=True)
     staging.add_argument("--output", type=Path, required=True)
 
-    for profile in ("production-cron", "production-v2", "production-v1-rollback"):
+    for profile in ("production-cron", "production-v2"):
         release = subparsers.add_parser(profile)
         release.add_argument("--enable-production-cron", action="store_true")
         release.add_argument("--enable-production-v2", action="store_true")
-        release.add_argument("--confirm-production-v1-rollback", action="store_true")
         release.add_argument("--output", type=Path, required=True)
 
     args = parser.parse_args(argv)
@@ -263,7 +257,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.profile,
                 enable_production_cron=args.enable_production_cron,
                 enable_production_v2=args.enable_production_v2,
-                confirm_production_v1_rollback=args.confirm_production_v1_rollback,
             )
         write_config(output, text)
     except (RuntimeError, ValueError, TypeError, tomllib.TOMLDecodeError) as exc:

@@ -19,17 +19,13 @@ except ModuleNotFoundError:
 
 try:
     import worker_health
-    import worker_market_legacy as market_legacy
     import worker_market_query
-    import worker_market_resilience as market_resilience
     import worker_observability as observability
     import worker_refresh_control
     import worker_refresh_jobs
     import worker_trading_calendar as trading_calendar
 except ModuleNotFoundError:
     from cloudflare import worker_health, worker_market_query, worker_refresh_control, worker_refresh_jobs
-    from cloudflare import worker_market_legacy as market_legacy
-    from cloudflare import worker_market_resilience as market_resilience
     from cloudflare import worker_observability as observability
     from cloudflare import worker_trading_calendar as trading_calendar
 
@@ -280,26 +276,6 @@ class Api:
         if method == "GET" and path in worker_market_query.ROUTES:
             return await worker_market_query.route(
                 self, path, query, json_response, error_response, observability.dependency_call, DependencyFailure)
-        if path == "/api/scan/market" and method == "GET":
-            # Legacy v1 payload: streamed from R2 without JSON-decoding it (see worker_market_legacy).
-            manifest = await self.r2_json("public/manifest.json", {})
-            raw_scan = await self.r2_text("public/market_scan_summary.json")
-            policy = self.cache_policy()
-            cache_status = self.cache_status_from_manifest(manifest, {"status": "fresh", "reason": policy["reason"]})
-            return market_legacy.market_summary_response(raw_scan, cache_status)
-        if path == "/api/scan/market" and method == "POST":
-            payload = await self.request_json(request)
-            refresh_mode = str(payload.get("refreshMode") or "auto").strip().lower()
-            manifest = await self.r2_json("public/manifest.json", {})
-            raw_scan = await self.r2_text("public/market_scan_summary.json")
-            scan_marker = empty_market_scan() if market_legacy.looks_like_market_scan_text(raw_scan) else None
-            cache_status = await market_resilience.market_refresh_cache_status(
-                api=self, request=request, manifest=manifest, scan=scan_marker, force=refresh_mode == "force",
-                dependency_failure_type=DependencyFailure)
-            return market_legacy.market_summary_response(
-                raw_scan, cache_status,
-                headers={"Deprecation": "true", "Link": '</api/scan/market/refresh>; rel="successor-version"'},
-            )
         if path == "/api/scan/holdings" and method == "POST":
             return await self.scan_holdings(request)
         if path.startswith("/api/analyze/") and method == "POST":
@@ -372,9 +348,6 @@ class Api:
             raise BadRequestError("JSON 內容需為物件")
         return payload
 
-    async def r2_text(self, key: str):
-        return await market_legacy.r2_text(self, key, DependencyFailure)
-
     async def r2_json(self, key: str, fallback):
         if key in self._r2_cache:
             return self._r2_cache[key]
@@ -406,7 +379,8 @@ class Api:
         }
 
     def market_api_version(self):
-        return "v2" if str(env_value(self.env, "MARKET_SCAN_API_VERSION", "v1")).strip().lower() == "v2" else "v1"
+        # The whole-scan v1 read is retired; paginated v2 is the only market API.
+        return "v2"
 
     def edge_cache_enabled(self):
         return env_flag(self.env, "EDGE_CACHE_ENABLED")

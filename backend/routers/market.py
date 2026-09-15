@@ -17,7 +17,6 @@ from backend.dependencies import (
     AnalyzeRequest,
     ReportFormatRequest,
     ScanHoldingsRequest,
-    ScanMarketRequest,
     _active_provider,
     _auth_source,
     _check_scan_rate_limit,
@@ -162,29 +161,9 @@ def analyze_stock(stock_code: str, payload: AnalyzeRequest | None = Body(default
     return engine.evaluate_entry(snapshot, settings)
 
 
-@router.post("/api/scan/market")
-def scan_market(request: Request, payload: ScanMarketRequest | None = Body(default=None)) -> dict:
-    settings = _effective_settings(payload.settings if payload else None)
-    _ensure_manual_scan_enabled(settings)
-    if settings.use_mock_data:
-        return _scan_market_payload(settings)
-    _check_scan_rate_limit(_auth_source(request))
-    refresh_mode = payload.refreshMode if payload else "auto"
-    cache_context = _scan_market_cache_context(settings)
-    return scan_cache_service.get_or_refresh(
-        settings,
-        build_sync=lambda: jsonable_encoder(_scan_market_payload(settings)),
-        build_refresh=lambda: jsonable_encoder(_scan_market_payload_after_official_refresh(settings)),
-        refresh_mode=refresh_mode,
-        context=cache_context,
-    )
-
-
-@router.get("/api/scan/market")
 def scan_market_cached() -> dict:
-    # Pure read counterpart to the POST handler: serves the cached market scan
-    # without rate limiting or forcing a refresh, so it can be edge-cached.
-    # (See docs/archive/proposals/market-scan-cacheability.md.)
+    # Internal cached read backing the paginated v2 routes below. The whole-scan
+    # GET/POST /api/scan/market endpoints are retired, so this is no longer routed.
     settings = _effective_settings(None)
     if settings.use_mock_data:
         return _scan_market_payload(settings)

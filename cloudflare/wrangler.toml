@@ -25,7 +25,6 @@ GITHUB_REPOSITORY = "pcedison/stock_scanner"
 GITHUB_DISPATCH_ENABLED = "true"
 GITHUB_REFRESH_WORKFLOW_FILE = "cloudflare-r2-seed-refresh.yml"
 GITHUB_REFRESH_WORKFLOW_REF = "main"
-MARKET_SCAN_API_VERSION = "v2"
 EDGE_CACHE_ENABLED = "true"
 
 # Worker cron is the scheduled trigger for the R2 seed refresh. Each tick queues a

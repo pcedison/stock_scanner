@@ -96,18 +96,6 @@ class FakeClient:
             "cache-control": "public, max-age=0",
             "cloudflare-cdn-cache-control": "public, max-age=300, stale-while-revalidate=60, stale-if-error=3600",
         }
-        if path == "/api/scan/market":
-            return FetchResult(
-                200,
-                raw_json(
-                    {
-                        "entry": [{"stockCode": "1101"}],
-                        "watch": [{"stockCode": "2330"}],
-                        "excluded": [{"stockCode": "2882"}],
-                    }
-                ),
-                {"cache-control": "no-store"},
-            )
         if path == "/api/scan/market/index":
             return FetchResult(200, raw_json(self.index), public_headers)
         if path == "/api/scan/market/results":
@@ -119,7 +107,7 @@ class FakeClient:
         raise AssertionError(f"unexpected path {path} {query}")
 
 
-def test_canary_validates_v1_v2_parity_hashes_generations_and_no_store(monkeypatch):
+def test_canary_validates_v2_pages_hashes_generations_and_no_store(monkeypatch):
     monkeypatch.setattr(canary, "PublicClient", FakeClient)
 
     summary = canary.run_canary(base_url="https://worker.example")

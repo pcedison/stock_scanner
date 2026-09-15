@@ -138,7 +138,16 @@ def test_production_wrangler_runs_the_refresh_schedule_from_worker_cron():
     # GitHub `schedule` events were delayed/dropped for hours, so the Worker cron is the
     # only scheduled trigger and must ship with GitHub dispatch enabled.
     assert config["vars"]["GITHUB_DISPATCH_ENABLED"] == "true"
-    assert config["vars"]["MARKET_SCAN_API_VERSION"] == "v2"
+    # v1 is retired: the committed vars are exactly these, with no market API switch left.
+    assert set(config["vars"]) == {
+        "APP_ENV",
+        "APP_CORS_ALLOW_ORIGINS",
+        "GITHUB_REPOSITORY",
+        "GITHUB_DISPATCH_ENABLED",
+        "GITHUB_REFRESH_WORKFLOW_FILE",
+        "GITHUB_REFRESH_WORKFLOW_REF",
+        "EDGE_CACHE_ENABLED",
+    }
     assert config["vars"]["EDGE_CACHE_ENABLED"] == "true"
     assert config["cache"]["enabled"] is False
     # Cloudflare cron day-of-week is 1=Sunday (not 0), so weekdays are spelled by name.
@@ -156,7 +165,6 @@ def test_validate_worker_release_defaults_rejects_committed_release_switches(tmp
         """
 [vars]
 GITHUB_DISPATCH_ENABLED = "false"
-MARKET_SCAN_API_VERSION = "v1"
 EDGE_CACHE_ENABLED = "false"
 
 [cache]
@@ -171,7 +179,6 @@ crons = []
     problems = validate_worker_release_defaults(wrangler)
 
     assert any("GITHUB_DISPATCH_ENABLED" in problem for problem in problems)
-    assert any("MARKET_SCAN_API_VERSION" in problem for problem in problems)
     assert any("EDGE_CACHE_ENABLED" in problem for problem in problems)
     assert any("[cache].enabled" in problem for problem in problems)
     assert any("crons" in problem for problem in problems)
