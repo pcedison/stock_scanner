@@ -194,7 +194,7 @@ The workflow can still be dispatched manually; `force=true` bypasses the D1/fres
 6. Rebuild `cloudflare/seed/*` from official sources with `CLOUDFLARE_SEED_MODE=online`.
 7. Reject publication when fewer than 1,000 companies have consecutive revenue months or when more than 10% of scan rows lack the X2 previous-month signal.
 8. Package and validate the newest `data/official_cache_seed_*.zip` seed artifact with freshness, monthly-history, universe, and analysis gates.
-9. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and required official cache artifacts to R2.
+9. Generate the R2 upload manifest with `scripts/cloudflare_seed_upload_plan.py`, then upload the rebuilt manifest, market scan summary/latest payloads, analysis shards, holding shards, and required official cache artifacts to R2. Backup and publish run eight wrangler calls at a time; objects whose SHA-256 matches the backed-up copy are not re-uploaded, and public/manifest.json is always written last so the Worker never sees a new manifest before its shards.
 10. Verify the deployed Worker health endpoint and remote smoke checks against the rebuilt manifest.
 11. Mark D1 refresh jobs as `success`, or `failed` if any step in the rebuild/upload/verify flow fails.
 
