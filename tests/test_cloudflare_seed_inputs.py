@@ -1018,3 +1018,24 @@ def test_validate_seed_zip_rejects_archive_uncompressed_budget_before_json_reads
 
     with pytest.raises(ValueError, match="uncompressed size"):
         validate_seed_zip(archive_path)
+
+
+def test_default_failed_companies_csv_picks_the_latest_quarter(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    for label in ("2026Q1", "2026Q3", "2026Q2"):
+        (data_dir / f"official_history_failed_companies_{label}.csv").write_text("stock_code", encoding="utf-8")
+
+    chosen = validator_module.default_failed_companies_csv(data_dir)
+
+    assert chosen.name == "official_history_failed_companies_2026Q3.csv"
+
+
+def test_default_failed_companies_csv_without_reports_points_at_the_conventional_name(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    chosen = validator_module.default_failed_companies_csv(data_dir)
+
+    assert chosen == data_dir / "official_history_failed_companies_latest.csv"
+    assert validator_module.failed_company_summary(chosen)["failedCompanies"] == 0
