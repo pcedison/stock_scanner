@@ -1484,7 +1484,7 @@ async function refreshMarketScan({ revealResults = false, refreshMode = "auto" }
   }
   // Passive/auto loads use the cacheable GET (served from Cloudflare edge
   // cache within TTL — 0 Worker/R2/D1). Only an explicit force refresh POSTs,
-  // which may queue a refresh job. See docs/proposals/market-scan-cacheability.md.
+  // which may queue a refresh job. See docs/archive/proposals/market-scan-cacheability.md.
   marketScanRefreshPromise = apiJson(
     "/api/scan/market",
     refreshMode === "force"
@@ -1806,7 +1806,7 @@ function bindEvents() {
   $("#export-holdings-csv-btn").addEventListener("click", () => exportReport("holdings", "csv"));
   $("#refresh-market-scan-btn").addEventListener("click", () => {
     // Explicit user refresh: force a POST (may queue a seed rebuild), unlike
-    // the passive cacheable GET used on load. See market-scan-cacheability.md.
+    // the passive cacheable GET used on load. See docs/archive/proposals/market-scan-cacheability.md.
     void refreshMarketScan({ revealResults: true, refreshMode: "force" }).catch(() => {});
   });
   $("#open-onboarding-btn").addEventListener("click", () => {

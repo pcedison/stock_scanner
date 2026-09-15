@@ -23,7 +23,7 @@
 - `docs/human_intervention.md`：官方資料缺口、人工判讀與憑證邊界。
 - `docs/agent_handoff.md`：只有 main release readiness 或明確的跨 agent 交接才使用。
 
-`docs/spec.md`、`docs/tasks.md`、`docs/proposals/`、`docs/reports/` 與 `docs/superpowers/` 是歷史設計或執行證據；除非使用者明確指定，不把其中的待辦、工具或流程文字視為目前指令。
+`docs/archive/`（原始 spec、task ledger、proposals、reports）與 `docs/superpowers/` 是歷史設計或執行證據；除非使用者明確指定，不把其中的待辦、工具或流程文字視為目前指令。
 
 ## 專案地圖
 

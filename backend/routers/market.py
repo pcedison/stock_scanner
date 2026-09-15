@@ -184,7 +184,7 @@ def scan_market(request: Request, payload: ScanMarketRequest | None = Body(defau
 def scan_market_cached() -> dict:
     # Pure read counterpart to the POST handler: serves the cached market scan
     # without rate limiting or forcing a refresh, so it can be edge-cached.
-    # (See docs/proposals/market-scan-cacheability.md.)
+    # (See docs/archive/proposals/market-scan-cacheability.md.)
     settings = _effective_settings(None)
     if settings.use_mock_data:
         return _scan_market_payload(settings)

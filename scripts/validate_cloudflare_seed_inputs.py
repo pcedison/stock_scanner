@@ -25,7 +25,15 @@ from seed_utils import find_seed_zip  # noqa: E402
 from backend.services.market_query import build_market_generation, canonical_json_bytes  # noqa: E402
 
 DEFAULT_ZIP = find_seed_zip(Path("data"))
-DEFAULT_FAILED_COMPANIES_CSV = Path("data/official_history_failed_companies_2026Q1.csv")
+
+
+def default_failed_companies_csv(data_dir: Path = Path("data")) -> Path:
+    """The newest quarterly follow-up CSV; labels are ``YYYYQn`` so lexical order is chronological."""
+    candidates = sorted(data_dir.glob("official_history_failed_companies_*.csv"))
+    return candidates[-1] if candidates else data_dir / "official_history_failed_companies_latest.csv"
+
+
+DEFAULT_FAILED_COMPANIES_CSV = default_failed_companies_csv()
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
@@ -799,6 +807,7 @@ def render_seed_summary(summary: dict[str, Any], failed_summary: dict[str, Any] 
         f"- seed universe rows: {summary['seedUniverse']}",
         f"- seed shards: {summary['seedShards']}",
         f"- seed holding shards: {summary['seedHoldingShards']}",
+        f"- failed companies report: `{Path(str(failed_summary.get('path') or 'unknown')).as_posix()}`",
         f"- failed companies needing review: {failed_summary['failedCompanies']}",
         "",
         "## Manual follow-up status",
