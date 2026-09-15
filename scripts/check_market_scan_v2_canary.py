@@ -78,15 +78,6 @@ def _stock_code(item: dict[str, Any]) -> str:
     return value
 
 
-def legacy_identity_sets(payload: dict[str, Any]) -> dict[str, set[str]]:
-    result: dict[str, set[str]] = {}
-    for category in CATEGORIES:
-        rows = payload.get(category) or []
-        _require(isinstance(rows, list), f"legacy {category} is not a list")
-        result[category] = {_stock_code(item) for item in rows}
-    return result
-
-
 def _validate_public_cache_headers(result: FetchResult, *, require_edge_hit: bool = False) -> None:
     cache_control = result.headers.get("cache-control", "")
     edge_control = result.headers.get("cloudflare-cdn-cache-control", "")
@@ -179,7 +170,6 @@ def fetch_v2_identity_sets(
 def run_canary(
     *,
     base_url: str,
-    legacy_path: str = "/api/scan/market",
     index_path: str = "/api/scan/market/index",
     results_path: str = "/api/scan/market/results",
     expected_generation: str | None = None,
@@ -187,10 +177,6 @@ def run_canary(
     timeout_seconds: int = 20,
 ) -> dict[str, Any]:
     client = PublicClient(base_url, timeout_seconds)
-    legacy_result = client.get(legacy_path)
-    _require(legacy_result.status == 200, f"legacy market returned HTTP {legacy_result.status}")
-    _validate_no_store(legacy_result, "legacy market")
-    legacy_sets = legacy_identity_sets(legacy_result.json())
     v2_sets, summary = fetch_v2_identity_sets(
         client,
         index_path=index_path,
@@ -198,7 +184,6 @@ def run_canary(
         expected_generation=expected_generation,
         require_edge_hit=require_edge_hit,
     )
-    _require(legacy_sets == v2_sets, "v1/v2 market identity parity mismatch")
     private_result = client.get("/api/auth/me")
     _validate_no_store(private_result, "auth/me")
     return {
@@ -209,9 +194,8 @@ def run_canary(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate deployed market scan v1/v2 parity and cache boundaries.")
+    parser = argparse.ArgumentParser(description="Validate deployed market scan v2 pages and cache boundaries.")
     parser.add_argument("--base-url", required=True)
-    parser.add_argument("--legacy-path", default="/api/scan/market")
     parser.add_argument("--index-path", default="/api/scan/market/index")
     parser.add_argument("--results-path", default="/api/scan/market/results")
     parser.add_argument("--expected-generation")
@@ -222,7 +206,6 @@ def main(argv: list[str] | None = None) -> int:
         start = time.monotonic()
         summary = run_canary(
             base_url=args.base_url,
-            legacy_path=args.legacy_path,
             index_path=args.index_path,
             results_path=args.results_path,
             expected_generation=args.expected_generation,

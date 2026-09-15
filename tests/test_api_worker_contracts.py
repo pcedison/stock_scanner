@@ -82,11 +82,7 @@ def make_worker_api(worker):
     async def fake_get_settings():
         return ScannerSettings(use_mock_data=True).model_dump()
 
-    async def fake_r2_text(key):
-        return None
-
     api.r2_json = fake_r2_json
-    api.r2_text = fake_r2_text
     api.get_settings = fake_get_settings
     return api
 
@@ -291,24 +287,27 @@ def contract_holdings(monkeypatch, worker, tmp_path):
     assert fastapi_get.json()["holdings"] == worker_payload(worker_get)["holdings"] == holdings
 
 
-def contract_scan_market_get(monkeypatch, worker):
+def contract_runtime_config(monkeypatch, worker):
     monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
-    fastapi_response = client.get("/api/scan/market")
-    worker_response = run_worker_fetch(api, "GET", "/api/scan/market")
-    assert_status_and_keys_match(
-        fastapi_response,
-        worker_response,
-        {"entry", "watch", "excluded", "generatedAt", "dataSource"},
-    )
+    fastapi_response = client.get("/api/runtime-config")
+    worker_response = run_worker_fetch(api, "GET", "/api/runtime-config")
+    fastapi_payload, worker_response_payload = assert_status_and_keys_match(fastapi_response, worker_response)
+
+    assert set(fastapi_payload) == {"schemaVersion", "marketScanApiVersion", "edgeCacheEnabled"}
+    assert fastapi_payload["schemaVersion"] == worker_response_payload["schemaVersion"] == 1
+    # v1 is retired: both runtimes must advertise v2 so the browser never asks for the whole scan.
+    assert fastapi_payload["marketScanApiVersion"] == worker_response_payload["marketScanApiVersion"] == "v2"
+    assert isinstance(fastapi_payload["edgeCacheEnabled"], bool)
+    assert isinstance(worker_response_payload["edgeCacheEnabled"], bool)
 
 
 ENDPOINT_CONTRACT_MATRIX = [
     EndpointContractCase("app-status", contract_app_status),
     EndpointContractCase("data-sources/status", contract_data_sources_status),
-    EndpointContractCase("scan/market GET", contract_scan_market_get),
+    EndpointContractCase("runtime-config", contract_runtime_config),
     EndpointContractCase("scheduler/wakeup", contract_scheduler_wakeup),
     EndpointContractCase("scheduler/auto-scan", contract_scheduler_auto_scan),
     EndpointContractCase("backtest", contract_backtest),
@@ -502,8 +501,11 @@ def test_production_csrf_behavior_matches_fastapi_and_worker(monkeypatch):
 
     api.route = fake_route
 
-    fastapi_response = client.post("/api/scan/market", json={"settings": ScannerSettings(use_mock_data=True).model_dump()})
-    worker_response = asyncio.run(api.fetch(ContractRequest("POST", "/api/scan/market", {"settings": {}})))
+    fastapi_response = client.post(
+        "/api/scan/holdings",
+        json={"holdings": [], "settings": ScannerSettings(use_mock_data=True).model_dump()},
+    )
+    worker_response = asyncio.run(api.fetch(ContractRequest("POST", "/api/scan/holdings", {"holdings": []})))
 
     assert fastapi_response.status_code == worker_status(worker_response) == 403
     assert fastapi_response.json()["detail"] == worker_payload(worker_response)["detail"] == "CSRF header required"

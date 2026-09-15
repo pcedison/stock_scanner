@@ -736,7 +736,7 @@ def test_validate_seed_zip_requires_v1_v2_identity_and_freshness_classification_
     page["items"][1]["stockCode"] = page["items"][0]["stockCode"]
     _replace_v2_page(members, pointer, reference, page)
 
-    with pytest.raises(ValueError, match="duplicate market identity|identity parity"):
+    with pytest.raises(ValueError, match="duplicate market identity|do not match market_scan_latest.json"):
         validate_seed_zip(_zip_from(tmp_path, members))
 
 
@@ -893,7 +893,7 @@ def test_validate_seed_zip_rejects_same_generation_unreferenced_page_and_unique_
     page = json.loads(bytes(members[page_name]))
     page["items"][0]["stockCode"] = "UNIQUE-NOT-IN-V1"
     _replace_v2_page(members, pointer, reference, page)
-    with pytest.raises(ValueError, match="identity parity"):
+    with pytest.raises(ValueError, match="do not match market_scan_latest.json"):
         validate_seed_zip(_zip_from(tmp_path, members, name="identity-gap.zip"))
 
 

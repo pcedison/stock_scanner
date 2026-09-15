@@ -250,10 +250,9 @@
     error.code = "STALE_MARKET_GENERATION";
     return error;
   }
-  function marketApiVersion(root = typeof globalThis !== "undefined" ? globalThis : {}) {
-    const configured = root.StockScannerConfig?.marketApiVersion;
-    const meta = root.document?.querySelector('meta[name="stock-scanner-market-api-version"]')?.getAttribute("content");
-    return configured === "v2" || meta === "v2" ? "v2" : "v1";
+  function marketApiVersion() {
+    // The whole-scan v1 read is retired; paginated v2 is the only market API.
+    return "v2";
   }
   function createMarketQueryClient({ apiJson, storage, apiPageSize = API_PAGE_SIZE, uiPageSize = UI_PAGE_SIZE }) {
     requireValue(typeof apiJson === "function", "apiJson is required");

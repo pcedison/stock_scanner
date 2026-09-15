@@ -4,6 +4,21 @@ from scripts import run_remote_smoke as remote_smoke
 from scripts.run_remote_smoke import REMOTE_SMOKE_USER_AGENT, base_url_from_health_url, validate_public_smoke_payloads
 
 
+def _market_index(*, entry: int = 0, watch: int = 0, excluded: int = 0, generation_id: str = "a" * 24) -> dict:
+    return {
+        "schemaVersion": 2,
+        "generationId": generation_id,
+        "pageSize": 100,
+        "counts": {
+            "universeSize": entry + watch + excluded,
+            "announced": entry + watch + excluded,
+            "pending": 0,
+            "categories": {"entry": entry, "watch": watch, "excluded": excluded},
+        },
+        "cacheStatus": {"cacheHit": True},
+    }
+
+
 class SuccessfulRemoteClient:
     def __init__(self, base_url, timeout):
         self.base_url = base_url
@@ -14,12 +29,9 @@ class SuccessfulRemoteClient:
             "/api/health": {"runtime": "cloudflare-python-worker", "status": "degraded"},
             "/api/auth/me": {"authenticated": False, "user": None},
             "/api/app-status": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
-            "/api/runtime-config": {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": False},
+            "/api/runtime-config": {"schemaVersion": 1, "marketScanApiVersion": "v2", "edgeCacheEnabled": False},
             "/api/data-sources/status": {"activeProvider": "CloudflareR2Seed"},
-            "/api/scan/market": {
-                "entry": [{"stockCode": str(index)} for index in range(1000)],
-                "cacheStatus": {"cacheHit": True},
-            },
+            "/api/scan/market/index": _market_index(entry=1000),
         }
         return responses[path]
 
@@ -97,20 +109,47 @@ def test_validate_public_smoke_payloads_accepts_expected_shapes():
             "authMe": {"authenticated": False, "user": None},
             "badLogin": {"status": 401},
             "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
-            "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": False},
+            "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "v2", "edgeCacheEnabled": False},
             "dataSources": {"activeProvider": "CloudflareR2Seed"},
-            "marketScan": {
-                "entry": [{"stockCode": str(index)} for index in range(10)],
-                "watch": [{"stockCode": str(index)} for index in range(990)],
-                "excluded": [],
-                "cacheStatus": {"cacheHit": True},
-            },
+            "marketIndex": _market_index(entry=10, watch=990, generation_id="b" * 24),
         }
     )
 
     assert summary["runtime"] == "cloudflare-python-worker"
     assert summary["activeProvider"] == "CloudflareR2Seed"
     assert summary["marketScanRows"] == 1000
+    assert summary["marketGenerationId"] == "b" * 24
+    assert summary["marketScanApiVersion"] == "v2"
+
+
+def test_validate_public_smoke_payloads_rejects_a_non_v2_runtime_config():
+    with pytest.raises(RuntimeError, match="marketScanApiVersion"):
+        validate_public_smoke_payloads(
+            {
+                "health": {"runtime": "cloudflare-python-worker", "status": "ok"},
+                "authMe": {"authenticated": False, "user": None},
+                "badLogin": {"status": 401},
+                "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
+                "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "v1", "edgeCacheEnabled": False},
+                "dataSources": {"activeProvider": "CloudflareR2Seed"},
+                "marketIndex": _market_index(entry=1000),
+            }
+        )
+
+
+def test_validate_public_smoke_payloads_rejects_an_index_without_a_generation():
+    with pytest.raises(RuntimeError, match="generationId"):
+        validate_public_smoke_payloads(
+            {
+                "health": {"runtime": "cloudflare-python-worker", "status": "ok"},
+                "authMe": {"authenticated": False, "user": None},
+                "badLogin": {"status": 401},
+                "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {"action": "sleep"}},
+                "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "v2", "edgeCacheEnabled": False},
+                "dataSources": {"activeProvider": "CloudflareR2Seed"},
+                "marketIndex": {**_market_index(entry=1000), "generationId": "short"},
+            }
+        )
 
 
 def test_validate_public_smoke_payloads_rejects_wrong_runtime():
@@ -121,8 +160,8 @@ def test_validate_public_smoke_payloads_rejects_wrong_runtime():
                 "authMe": {"authenticated": False, "user": None},
                 "badLogin": {"status": 401},
             "appStatus": {"dataSourceStatus": {}, "schedulerAutoScan": {}},
-            "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "future", "edgeCacheEnabled": False},
+            "runtimeConfig": {"schemaVersion": 1, "marketScanApiVersion": "v2", "edgeCacheEnabled": False},
             "dataSources": {"activeProvider": "CloudflareR2Seed"},
-                "marketScan": {"entry": [{"stockCode": str(index)} for index in range(1000)], "cacheStatus": {}},
+                "marketIndex": _market_index(entry=1000),
             }
         )

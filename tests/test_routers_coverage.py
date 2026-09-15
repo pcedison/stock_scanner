@@ -128,10 +128,12 @@ def test_analyze_unknown_stock_returns_404():
 
 def test_scan_market_official_mode_uses_cache(monkeypatch):
     _use_official_mode(monkeypatch)
-    post = client.post("/api/scan/market", json={"refreshMode": "cache_only"})
-    get = client.get("/api/scan/market")
-    assert post.status_code == 200
-    assert get.status_code == 200
+    index = client.get("/api/scan/market/index")
+    assert index.status_code == 200
+    # The retired whole-scan routes are gone: the path falls through to the static mount,
+    # which answers GET with 404 and refuses every write method with 405.
+    assert client.get("/api/scan/market").status_code == 404
+    assert client.post("/api/scan/market", json={"refreshMode": "cache_only"}).status_code == 405
 
 
 def test_market_v2_excludes_volatile_cache_status_and_spans_physical_pages(monkeypatch):

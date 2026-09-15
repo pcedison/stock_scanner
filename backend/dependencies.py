@@ -173,11 +173,6 @@ class AnalyzeRequest(BaseModel):
     settings: ScannerSettings | None = None
 
 
-class ScanMarketRequest(BaseModel):
-    settings: ScannerSettings | None = None
-    refreshMode: str = Field(default="auto", pattern="^(auto|force|cache_only)$")
-
-
 class ScanHoldingsRequest(BaseModel):
     holdings: list[Holding] = Field(default_factory=list, max_length=500)
     settings: ScannerSettings | None = None

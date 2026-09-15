@@ -135,7 +135,7 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert f'src="/storage.js?v={STORAGE_VERSION}"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
     assert f'src="/api_client.js?v={API_CLIENT_VERSION}"' in index_html
-    assert '<meta name="stock-scanner-market-api-version" content="v1" />' in index_html
+    assert '<meta name="stock-scanner-market-api-version" content="v2" />' in index_html
     assert f'src="/market_query.js?v={MARKET_QUERY_VERSION}"' in index_html
     assert index_html.index('src="/market_query.js') < index_html.index('src="/market_scan.js')
     assert f'src="/market_refresh.js?v={MARKET_REFRESH_VERSION}"' in index_html

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from http.cookiejar import CookieJar
@@ -81,7 +82,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
     health = payloads.get("health") or {}
     app_status = payloads.get("appStatus") or {}
     data_sources = payloads.get("dataSources") or {}
-    market_scan = payloads.get("marketScan") or {}
+    market_index = payloads.get("marketIndex") or {}
     auth_me = payloads.get("authMe") or {}
     bad_login = payloads.get("badLogin") or {}
     runtime_config = payloads.get("runtimeConfig") or {}
@@ -98,13 +99,25 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         problems.append("app-status is missing schedulerAutoScan")
     if not data_sources.get("activeProvider"):
         problems.append("data-sources status is missing activeProvider")
-    market_rows = sum(len(market_scan.get(category) or []) for category in ("entry", "watch", "excluded", "results"))
+    generation_id = market_index.get("generationId")
+    if not isinstance(generation_id, str) or not re.fullmatch(r"[0-9a-f]{24}", generation_id):
+        problems.append("market index is missing a valid generationId")
+    counts = market_index.get("counts")
+    categories = counts.get("categories") if isinstance(counts, dict) else None
+    if not isinstance(categories, dict):
+        problems.append("market index is missing per-category counts")
+        market_rows = 0
+    else:
+        market_rows = sum(
+            value for value in (categories.get(category) for category in ("entry", "watch", "excluded"))
+            if isinstance(value, int)
+        )
     if market_rows < 1000:
-        problems.append(f"market scan returned only {market_rows} rows")
-    if not isinstance(market_scan.get("cacheStatus"), dict):
-        problems.append("market scan is missing cacheStatus")
-    if runtime_config.get("marketScanApiVersion") not in {"v1", "v2"}:
-        problems.append("runtime-config is missing a valid marketScanApiVersion")
+        problems.append(f"market index reports only {market_rows} rows")
+    if not isinstance(market_index.get("cacheStatus"), dict):
+        problems.append("market index is missing cacheStatus")
+    if runtime_config.get("marketScanApiVersion") != "v2":
+        problems.append("runtime-config must advertise marketScanApiVersion=v2")
     if not isinstance(runtime_config.get("edgeCacheEnabled"), bool):
         problems.append("runtime-config is missing edgeCacheEnabled")
     if problems:
@@ -115,6 +128,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         "activeProvider": data_sources.get("activeProvider"),
         "schedulerAction": app_status.get("schedulerAutoScan", {}).get("action"),
         "marketScanRows": market_rows,
+        "marketGenerationId": generation_id,
         "marketScanApiVersion": runtime_config.get("marketScanApiVersion"),
         "edgeCacheEnabled": runtime_config.get("edgeCacheEnabled"),
     }
@@ -158,21 +172,7 @@ def run_public_smoke(
                 "appStatus": client.request_json("/api/app-status"),
                 "runtimeConfig": client.request_json("/api/runtime-config"),
                 "dataSources": client.request_json("/api/data-sources/status"),
-                "marketScan": client.request_json(
-                    "/api/scan/market",
-                    method="POST",
-                    payload={
-                        "settings": {
-                            "manual_scan_enabled": True,
-                            "use_mock_data": False,
-                            "scan_twse": True,
-                            "scan_tpex": True,
-                            "exclude_financial_industry": True,
-                            "spring_festival_guard": True,
-                            "revenue_growth_mode": "cumulative_ytd",
-                        }
-                    },
-                ),
+                "marketIndex": client.request_json("/api/scan/market/index"),
             }
             return validate_public_smoke_payloads(payloads)
         except RuntimeError as exc:

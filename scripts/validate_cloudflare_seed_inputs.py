@@ -248,7 +248,7 @@ def _market_disclosure(item: dict[str, Any], expected_period: str | None) -> str
     return "pending"
 
 
-def _legacy_market_identities(market_scan: dict[str, Any]) -> Counter[tuple[str, str, str]]:
+def _market_scan_identities(market_scan: dict[str, Any]) -> Counter[tuple[str, str, str]]:
     expected_period = _market_expected_period(market_scan)
     identities: list[tuple[str, str, str]] = []
     for category in MARKET_SCAN_CATEGORIES:
@@ -257,14 +257,14 @@ def _legacy_market_identities(market_scan: dict[str, Any]) -> Counter[tuple[str,
             raise ValueError(f"cloudflare_seed/market_scan_latest.json {category} must be a JSON list")
         for index, item in enumerate(rows):
             if not isinstance(item, dict):
-                raise ValueError(f"legacy market {category} item {index} must be an object")
+                raise ValueError(f"market_scan_latest.json {category} item {index} must be an object")
             stock_code = item.get("stockCode")
             if not isinstance(stock_code, str) or not stock_code:
-                raise ValueError(f"legacy market {category} item {index} requires stockCode")
+                raise ValueError(f"market_scan_latest.json {category} item {index} requires stockCode")
             identities.append((stock_code, _market_disclosure(item, expected_period), category))
     counts = Counter(identities)
     if any(count != 1 for count in counts.values()):
-        raise ValueError("legacy scan contains a duplicate market identity")
+        raise ValueError("market_scan_latest.json contains a duplicate market identity")
     return counts
 
 
@@ -277,7 +277,7 @@ def _compact_market_scan_for_generation(market_scan: dict[str, Any]) -> dict[str
         compact_items = []
         for index, item in enumerate(items):
             if not isinstance(item, dict):
-                raise ValueError(f"legacy market {category} item {index} must be an object")
+                raise ValueError(f"market_scan_latest.json {category} item {index} must be an object")
             result = {key: item.get(key) for key in SUMMARY_RESULT_KEYS if key in item}
             reasons = item.get("reasons")
             if isinstance(reasons, list):
@@ -328,7 +328,7 @@ def _validate_market_v2(
         raise ValueError("market index cacheStatusInputs must be an object")
     expected_cache_status_inputs = _expected_cache_status_inputs(market_scan)
     if cache_status_inputs != expected_cache_status_inputs:
-        raise ValueError("market index cacheStatusInputs do not match the legacy scan")
+        raise ValueError("market index cacheStatusInputs do not match market_scan_latest.json")
     content_generation = build_market_generation(
         _compact_market_scan_for_generation(market_scan),
         cache_status_inputs=expected_cache_status_inputs,
@@ -478,8 +478,8 @@ def _validate_market_v2(
     v2_counter = Counter(v2_identities)
     if any(count != 1 for count in v2_counter.values()):
         raise ValueError("market v2 pages contain a duplicate market identity")
-    if v2_counter != _legacy_market_identities(market_scan):
-        raise ValueError("market v1/v2 identity parity mismatch")
+    if v2_counter != _market_scan_identities(market_scan):
+        raise ValueError("market v2 pages do not match market_scan_latest.json")
 
     expected_counts = {
         "universeSize": sum(disclosure_counts.values()),

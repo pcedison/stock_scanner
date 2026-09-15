@@ -29,7 +29,6 @@ const API_CLIENT = API_CLIENT_HELPERS.createApiClient({
   csrfHeaderValue: CSRF_HEADER_VALUE,
 });
 let MARKET_API_VERSION = MARKET_QUERY_HELPERS.marketApiVersion();
-let marketApiVersionFallbackApplied = MARKET_API_VERSION !== "v2";
 const APP_STORAGE = STORAGE_HELPERS.safeStorage();
 const MARKET_QUERY_CLIENT = MARKET_QUERY_HELPERS.createMarketQueryClient({ apiJson, storage: APP_STORAGE });
 
@@ -90,7 +89,6 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const MOBILE_NAV_BREAKPOINT = 680;
 let holdingsScanRefreshTimer = null;
-let marketScanRefreshPromise = null;
 
 const NAVIGATION_HELPERS = _mod("StockScannerNavigation", "./navigation.js");
 const {
@@ -538,28 +536,19 @@ async function apiJson(url, options = {}) {
   }
   return text ? JSON.parse(text) : {};
 }
-function acceptRuntimeConfig(payload) {
-  const version = payload?.marketScanApiVersion === "v2" ? "v2" : "v1";
-  MARKET_API_VERSION = version;
-  marketApiVersionFallbackApplied = version !== "v2";
-  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: version };
-  return version;
+function acceptRuntimeConfig() {
+  // The whole-scan v1 read is retired, so the client is v2 whatever the server advertises.
+  MARKET_API_VERSION = "v2";
+  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: "v2" };
+  return MARKET_API_VERSION;
 }
 async function loadRuntimeConfig() {
   try {
-    return acceptRuntimeConfig(await apiJson("/api/runtime-config", { method: "GET" }));
+    await apiJson("/api/runtime-config", { method: "GET" });
   } catch {
-    return acceptRuntimeConfig({ marketScanApiVersion: "v1" });
+    // Runtime config is advisory; a failure must not change which market API we use.
   }
-}
-function fallbackMarketApiToV1(message) {
-  if (marketApiVersionFallbackApplied) return false;
-  marketApiVersionFallbackApplied = true;
-  MARKET_API_VERSION = "v1";
-  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: "v1" };
-  MARKET_QUERY_CLIENT.clearGeneration();
-  state.marketQueryWarning = message || state.marketQueryWarning;
-  return true;
+  return acceptRuntimeConfig();
 }
 async function apiFetch(url, options = {}) {
   try {
@@ -961,7 +950,7 @@ function renderSelectedCompany() {
 
 function renderHoldings() {
   renderHoldingExitAlerts();
-  renderOverviewOpsStatus(state.marketScan);
+  renderOverviewOpsStatus(state.marketIndex);
   const target = $("#holdings-list");
   if (!state.holdings.length) {
     setEmptyState(target, "尚未儲存持股");
@@ -1318,10 +1307,6 @@ async function loadDataStatus() {
     state.schedulerAutoScan = status.schedulerAutoScan;
     state.integrationStatus = status.integrationStatus;
     state.backtestStatus = status.backtestStatus;
-    if (MARKET_API_VERSION !== "v2" && state.schedulerAutoScan?.scan) {
-      acceptMarketScan(state.schedulerAutoScan.scan, { resetUi: true });
-      renderMarketResults();
-    }
   } catch {
     state.dataSourceStatus = null;
     state.schedulerStatus = null;
@@ -1330,7 +1315,7 @@ async function loadDataStatus() {
     state.backtestStatus = null;
   }
   renderDataAndScheduler();
-  renderOverviewOpsStatus(state.marketScan);
+  renderOverviewOpsStatus(state.marketIndex);
 }
 
 async function saveSettings() {
@@ -1433,12 +1418,10 @@ async function refreshMarketQuery({ revealResults = false, refreshMode = "auto" 
   } catch (error) {
     if (error?.name === "AbortError") return state.marketIndex;
     state.marketQueryWarning = error?.message || "市場索引暫時無法載入";
-    fallbackMarketApiToV1(state.marketQueryWarning);
     if (state.marketIndex) {
       renderMarketResults();
       return state.marketIndex;
     }
-    if (MARKET_API_VERSION === "v1") return refreshMarketScan({ revealResults, refreshMode: "auto" });
     if (revealResults && target) setFormError(target, state.marketQueryWarning);
     return null;
   }
@@ -1447,61 +1430,10 @@ async function refreshMarketQuery({ revealResults = false, refreshMode = "auto" 
 async function scanMarket() {
   return refreshMarketScan({ revealResults: true });
 }
-function handleMarketScanFailure(error, { revealResults = false, target = null } = {}) {
-  if (state.marketScan) {
-    state.marketScanWarning = error?.message || "市場掃描暫時失敗，請稍後再試。";
-    if (typeof document !== "undefined") renderMarketResults();
-    return state.marketScan;
-  }
-  if (revealResults && target) setFormError(target, error.message || "掃描失敗");
-  return null;
-}
+// Kept as the single entry point used by the scan button, the overview refresh and
+// the scheduler: the market API is v2-only, so it just delegates to the paged reader.
 async function refreshMarketScan({ revealResults = false, refreshMode = "auto" } = {}) {
-  if (MARKET_API_VERSION === "v2") return refreshMarketQuery({ revealResults, refreshMode });
-  const target = $("#market-results");
-  if (revealResults) {
-    if (!state.marketScan) setEmptyState(target, "掃描中");
-    showView("scan");
-    showTab("market");
-  }
-  // A force refresh must not be swallowed by an in-flight passive GET: wait for
-  // it to settle, then fall through to issue a fresh POST.
-  if (refreshMode === "force" && marketScanRefreshPromise) {
-    try {
-      await marketScanRefreshPromise;
-    } catch {
-      // ignore; we are about to re-scan anyway
-    }
-  }
-  if (marketScanRefreshPromise) {
-    try {
-      await marketScanRefreshPromise;
-      renderMarketResults();
-    } catch (error) {
-      return handleMarketScanFailure(error, { revealResults, target });
-    }
-    return state.marketScan;
-  }
-  // Passive/auto loads use the cacheable GET (served from Cloudflare edge
-  // cache within TTL — 0 Worker/R2/D1). Only an explicit force refresh POSTs,
-  // which may queue a refresh job. See docs/archive/proposals/market-scan-cacheability.md.
-  marketScanRefreshPromise = apiJson(
-    "/api/scan/market",
-    refreshMode === "force"
-      ? { method: "POST", body: JSON.stringify({ settings: state.settings, refreshMode }) }
-      : { method: "GET" },
-  )
-    .then((scan) => acceptMarketScan(scan, { resetUi: true }))
-    .finally(() => {
-      marketScanRefreshPromise = null;
-    });
-  try {
-    await marketScanRefreshPromise;
-  } catch (error) {
-    return handleMarketScanFailure(error, { revealResults, target });
-  }
-  renderMarketResults();
-  return state.marketScan;
+  return refreshMarketQuery({ revealResults, refreshMode });
 }
 
 function refreshOverviewMarketScan() {
@@ -1992,7 +1924,6 @@ if (typeof module !== "undefined") {
     API_CLIENT,
     acceptRuntimeConfig,
     loadRuntimeConfig,
-    fallbackMarketApiToV1,
     marketApiVersion: () => MARKET_API_VERSION,
     normalizeAuthUsername,
     normalizeAuthUser,
@@ -2035,7 +1966,6 @@ if (typeof module !== "undefined") {
     setEmptyState,
     saveHoldings,
     acceptMarketScan,
-    handleMarketScanFailure,
     refreshMarketScan,
   };
 }
