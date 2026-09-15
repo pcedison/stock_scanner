@@ -3261,3 +3261,66 @@ def test_worker_report_response_matches_the_shared_renderer(monkeypatch):
 
     assert csv_report.body == report_render.render_market_report_csv(payload)
     assert markdown.body == report_render.render_market_report_markdown(payload, "台股市場掃描報告")
+
+
+def test_worker_calendar_serves_the_manifest_calendar_for_a_published_year(monkeypatch):
+    manifest = _healthy_worker_manifest("2026-09-15T10:00:00+00:00")
+    manifest["marketClosedDates"] = ["2026-01-01", "2026-02-16", "2027-01-01"]
+    manifest["marketCalendars"] = {
+        "2026": {
+            "source": "TWSE holiday schedule 115 year",
+            "sourceUrl": "https://example.test/holidaySchedule?queryYear=115",
+            "closedDates": ["2026-02-16", "2026-01-01"],
+            "springFestivalDates": ["2026-02-16"],
+        }
+    }
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+
+    response = asyncio.run(api.fetch(RouteRequest(path="/api/calendar/2026")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 200
+    assert payload == {
+        "year": 2026,
+        "source": "TWSE holiday schedule 115 year",
+        "sourceUrl": "https://example.test/holidaySchedule?queryYear=115",
+        "closedDates": ["2026-01-01", "2026-02-16"],
+        "springFestivalDates": ["2026-02-16"],
+    }
+
+
+def test_worker_calendar_falls_back_to_manifest_closed_dates_and_new_years_day(monkeypatch):
+    # Manifests built before marketCalendars existed still carry marketClosedDates; a year
+    # with no data at all mirrors the FastAPI weekend-only fallback (New Year's Day only).
+    manifest = _healthy_worker_manifest("2026-09-15T10:00:00+00:00")
+    manifest["marketClosedDates"] = ["2026-01-01", "2026-02-16", "2027-01-01"]
+    manifest.pop("marketCalendars", None)
+    worker, api, _db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
+
+    older = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/calendar/2027"))).body)
+    unknown = json.loads(asyncio.run(api.fetch(RouteRequest(path="/api/calendar/2030"))).body)
+
+    assert older == {
+        "year": 2027,
+        "source": "seed manifest closed dates",
+        "sourceUrl": "",
+        "closedDates": ["2027-01-01"],
+        "springFestivalDates": [],
+    }
+    assert unknown == {
+        "year": 2030,
+        "source": "weekend-only fallback",
+        "sourceUrl": "",
+        "closedDates": ["2030-01-01"],
+        "springFestivalDates": [],
+    }
+
+
+def test_worker_calendar_rejects_non_year_paths_with_404(monkeypatch):
+    worker, api, _db = build_router_api(
+        monkeypatch, r2={"public/manifest.json": _healthy_worker_manifest("2026-09-15T10:00:00+00:00")}
+    )
+
+    for path in ("/api/calendar/status", "/api/calendar/", "/api/calendar/2026/update", "/api/calendar/20261"):
+        response = asyncio.run(api.fetch(RouteRequest(path=path)))
+        assert response.init["status"] == 404, path

@@ -12,6 +12,7 @@ The Worker cannot import ``backend``, so these are duplicated and
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta, timezone
 
 # Taiwan has had no daylight saving since 1979, so a fixed offset is exact here and
@@ -76,3 +77,37 @@ def refresh_reason(day: date, closed_dates=frozenset()) -> str:
     if day <= next_open_day(date(day.year, day.month, MONTHLY_REVENUE_DEADLINE_DAY), closed_dates):
         return "monthly_revenue_window"
     return "routine_refresh"
+
+
+CALENDAR_YEAR = re.compile(r"[0-9]{4}")
+
+
+def _iso_list(values) -> list:
+    return sorted(str(day) for day in values) if isinstance(values, (list, tuple)) else []
+
+
+def calendar_payload(manifest, year_text: str):
+    """``/api/calendar/{year}`` from the seed manifest, shaped like the FastAPI route.
+
+    The seed build ships ``marketCalendars`` (per-year TWSE schedule); older manifests only
+    carry ``marketClosedDates``; a year with no data mirrors the backend's weekend-only
+    fallback (New Year's Day only). Anything but a four-digit year yields None (404).
+    """
+    if not CALENDAR_YEAR.fullmatch(year_text):
+        return None
+    year = int(year_text)
+    manifest = manifest if isinstance(manifest, dict) else {}
+    calendars = manifest.get("marketCalendars")
+    entry = calendars.get(year_text) if isinstance(calendars, dict) else None
+    if isinstance(entry, dict):
+        return {
+            "year": year,
+            "source": str(entry.get("source") or "seed manifest"),
+            "sourceUrl": str(entry.get("sourceUrl") or ""),
+            "closedDates": _iso_list(entry.get("closedDates")),
+            "springFestivalDates": _iso_list(entry.get("springFestivalDates")),
+        }
+    closed = sorted(str(day) for day in manifest.get("marketClosedDates") or [] if str(day).startswith(f"{year_text}-"))
+    if closed:
+        return {"year": year, "source": "seed manifest closed dates", "sourceUrl": "", "closedDates": closed, "springFestivalDates": []}
+    return {"year": year, "source": "weekend-only fallback", "sourceUrl": "", "closedDates": [f"{year_text}-01-01"], "springFestivalDates": []}

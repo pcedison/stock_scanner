@@ -324,9 +324,11 @@ class Api:
         return error_response("Not found", status=404)
 
     async def _route_calendar(self, method: str, path: str):
-        if path.startswith("/api/calendar/") and method == "GET":
-            year = path.rsplit("/", 1)[-1]
-            return json_response({"year": int(year), "source": "cloudflare-cache", "closedDates": [], "springFestivalDates": []})
+        if method == "GET":
+            manifest = await self.r2_json("public/manifest.json", {})
+            payload = trading_calendar.calendar_payload(manifest, path.removeprefix("/api/calendar/"))
+            if payload:
+                return json_response(payload)
         return error_response("Not found", status=404)
 
     async def _route_companies(self, method: str, path: str, query):

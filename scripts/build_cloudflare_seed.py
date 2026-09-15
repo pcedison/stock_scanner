@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -120,6 +120,33 @@ def market_closed_dates(year: int) -> set:
     for value in (year, year + 1):
         closed |= load_market_calendar(value).closed_dates
     return closed
+
+
+def _payload_year(*payloads: dict) -> int:
+    """Year of the first usable generatedAt, else the current UTC year."""
+    for payload in payloads:
+        raw = payload.get("generatedAt") if isinstance(payload, dict) else None
+        if raw:
+            try:
+                return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).year
+            except ValueError:
+                continue
+    return datetime.now(UTC).year
+
+
+def market_calendars(year: int) -> dict[str, dict]:
+    """Per-year calendars for the Worker's /api/calendar/{year}, same years as market_closed_dates."""
+    calendars: dict[str, dict] = {}
+    for value in (year, year + 1):
+        calendar = load_market_calendar(value)
+        calendars[str(value)] = {
+            "source": calendar.source,
+            "sourceUrl": calendar.source_url,
+            "closedDates": sorted(day.isoformat() for day in calendar.closed_dates),
+            "springFestivalDates": sorted(day.isoformat() for day in calendar.spring_festival_dates),
+        }
+    return calendars
+
 
 def clear_seed_output() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -637,6 +664,7 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
     write_market_reports(scan_payload)
     manifest = _drop_retired_manifest_files(manifest)
     manifest = add_market_reports_to_manifest(manifest)
+    manifest["marketCalendars"] = market_calendars(_payload_year(scan_payload, manifest))
     manifest = write_market_generation(scan_payload, manifest)
     manifest["companiesByMarket"] = company_market_counts(companies)
     counts = manifest.get("counts", {})
@@ -783,6 +811,7 @@ def main() -> None:
         # The Worker applies the same trading-day rule and has no access to the repo
         # calendar, so the closed days ride along with every rebuild.
         "marketClosedDates": sorted(day.isoformat() for day in closed_dates),
+        "marketCalendars": market_calendars(generated_at.year),
         "files": [
             "market_scan_latest.json",
             MARKET_REPORT_CSV,
