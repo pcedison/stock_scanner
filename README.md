@@ -113,10 +113,10 @@ Production health/smoke checks reject stale cache data older than 36 hours and o
 
 目前 committed seed 由 `python scripts\seed_utils.py data --print` 解析最新 dated seed zip。`.github/workflows/refresh-cloudflare-seed.yml` 會定期從官方來源重建 seed、封裝 zip、驗證品質、產生缺漏公司摘要，並開 PR 更新 committed seed。
 
-缺漏與人工補資料追蹤：
+缺漏與人工補資料追蹤（每次 seed 重建只保留最新一季，舊季度在 git 歷史）：
 
-- `data/official_history_failed_companies_2026Q1.csv`
-- `docs/official_history_failed_companies_2026Q1.md`
+- `data/official_history_failed_companies_<YYYYQn>.csv`
+- `docs/official_history_failed_companies_<YYYYQn>.md`
 
 ## 開發約定
 
