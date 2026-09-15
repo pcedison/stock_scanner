@@ -15,6 +15,7 @@ faked; the client treats all of them as optional.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections import OrderedDict
 from collections.abc import Callable
@@ -29,6 +30,7 @@ IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,80}\Z", re.ASCII)
 JOB_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
 JOB_REASONS = frozenset({"financial_report_window", "monthly_revenue_window", "routine_refresh"})
 ACTIVE_STATUSES = frozenset({"queued", "running"})
+TERMINAL_COOLDOWN_STATUSES = frozenset({"success", "failed"})
 MAX_TRACKED_JOBS = 32
 
 
@@ -42,6 +44,20 @@ def normalize_idempotency_key(value: str | None) -> str | None:
     if IDEMPOTENCY_KEY_PATTERN.fullmatch(value) is None:
         raise ValueError("Idempotency-Key must be 1..80 ASCII letters, digits, '.', '_', ':', or '-'")
     return value
+
+
+class RefreshCooldownError(Exception):
+    """Raised when a forced refresh lands inside the cooldown after a recent terminal job.
+
+    Same rule as the Worker's terminal-job cooldown (``cloudflare/worker_refresh_jobs.py``,
+    ``RefreshCooldownError``): a success or failed job both start it, shorter window for local
+    development (60s vs the Worker's 3600s). A single-flight rejection with a caller-facing
+    retry hint, not a job-runtime failure.
+    """
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+        super().__init__("市場掃描剛完成，請稍後再重新整理")
 
 
 def _public_job(job: dict) -> dict:
@@ -66,13 +82,28 @@ class RefreshJobService:
         self._max_jobs = max(1, max_jobs)
 
     def start(
-        self, run: Callable[[], object], *, scope: str, reason: str, idempotency_key: str | None = None
+        self,
+        run: Callable[[], object],
+        *,
+        scope: str,
+        reason: str,
+        idempotency_key: str | None = None,
+        cooldown_seconds: int = 0,
     ) -> dict:
-        """Queue ``run`` unless the same key, or an active job for ``scope``, already covers it."""
+        """Queue ``run`` unless the same key, an active job for ``scope``, or a post-terminal-job
+        cooldown for ``scope`` already covers it.
+
+        The idempotency/active-job lookup runs first, so a repeat of the same key still returns
+        the earlier job even while its scope is cooling down.
+        """
         with self._lock:
             existing = self._reusable_job(scope, idempotency_key)
             if existing is not None:
                 return _public_job(existing)
+            if cooldown_seconds > 0:
+                remaining = self._cooldown_remaining_seconds(scope, cooldown_seconds)
+                if remaining is not None:
+                    raise RefreshCooldownError(remaining)
             job_id = uuid4().hex
             job: dict = {
                 "id": job_id,
@@ -114,6 +145,20 @@ class RefreshJobService:
         for job in reversed(self._jobs.values()):
             if job["scope"] == scope and job["status"] in ACTIVE_STATUSES:
                 return job
+        return None
+
+    def _cooldown_remaining_seconds(self, scope: str, cooldown_seconds: int) -> int | None:
+        # The reusable-job lookup already ruled out an active job in `scope`, so the newest
+        # job here (if any) is terminal. Same rule as the Worker's terminal-job cooldown
+        # (success or failed), shorter window for local development (60s vs 3600s).
+        for job in reversed(self._jobs.values()):
+            if job["scope"] != scope:
+                continue
+            if job["status"] not in TERMINAL_COOLDOWN_STATUSES or job["finishedAt"] is None:
+                return None
+            elapsed = (datetime.now(UTC) - datetime.fromisoformat(job["finishedAt"])).total_seconds()
+            remaining = cooldown_seconds - elapsed
+            return math.ceil(remaining) if remaining > 0 else None
         return None
 
     def _run(self, job_id: str, run: Callable[[], object]) -> None:
