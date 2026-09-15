@@ -97,7 +97,7 @@ Every source the seed is built from - daily valuation ratios (`BWIBBU_d`, TPEX P
 | TPEX OpenAPI `mopsfin_*_O`, P/E | ~16:00 |
 | TWSE `BWIBBU_d` | after the 13:30 close, same day |
 
-So the seed is rebuilt only at **publication slots** (`backend/services/cache_policy.py`): **18:00** every trading day, plus **06:30** inside filing windows. `next_refresh_after(generatedAt)` is the first active slot after a build; the seed build writes it to the manifest as `nextRefreshAfter` and the Worker uses that value as-is (legacy manifests without it fall back to the old interval rule). Nothing is queued ahead of a slot (`REFRESH_AHEAD_SECONDS = 0`) - before it the datasets are the ones the seed already has.
+So the seed is rebuilt only at **publication slots** (`backend/services/cache_policy.py`): **18:00** every trading day, plus **06:30** inside filing windows. `next_refresh_after(generatedAt)` is the first active slot after a build; the seed build writes it to the manifest as `nextRefreshAfter` and the Worker uses that value as-is. Nothing is queued ahead of a slot (`REFRESH_AHEAD_SECONDS = 0`) - before it the datasets are the ones the seed already has.
 
 Filing windows follow the statutory calendar (`backend/services/filing_calendar.py`; 證券交易法 §36 and the FSC special-scope rules), with a deadline on a closed day moved to the next business day:
 

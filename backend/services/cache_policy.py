@@ -32,9 +32,6 @@ ANNUAL_WINDOW_LEAD_DAYS = 30
 # itself is decided by `next_refresh_after`, not by this interval.
 TERMINAL_JOB_COOLDOWN_SECONDS = 3600
 
-# Kept for backend.services.cache_policy.next_publication_time and its Worker mirror.
-TRADING_DAY_PUBLISH_HOUR = 15
-
 
 def in_monthly_revenue_window(day: date) -> bool:
     """Day 1 through the (holiday-extended) 10th, when last month's revenue is being filed."""
@@ -96,22 +93,3 @@ def next_refresh_after(
                 return candidate.astimezone(generated_at.tzinfo) if generated_at.tzinfo else candidate
         day += timedelta(days=1)
     raise ValueError(f"no trading day within 60 days after {generated_at.isoformat()}")
-
-
-def next_publication_time(
-    candidate: datetime, closed_dates: frozenset[date] | set[date] = frozenset()
-) -> datetime:
-    """Move a refresh deadline forward to when new data could actually exist.
-
-    A deadline that already falls on a trading day is left alone. One that falls on a
-    weekend or a market holiday is pushed to the next trading day's publish hour. The
-    Worker mirrors this for legacy manifests that carry no ``nextRefreshAfter``.
-    """
-    local = candidate.astimezone(TAIPEI_TZ)
-    if is_trading_day(local.date(), closed_dates):
-        return candidate
-    day = local.date() + timedelta(days=1)
-    while not is_trading_day(day, closed_dates):
-        day += timedelta(days=1)
-    publish = datetime.combine(day, time(TRADING_DAY_PUBLISH_HOUR, 0), tzinfo=TAIPEI_TZ)
-    return publish.astimezone(candidate.tzinfo) if candidate.tzinfo else publish
