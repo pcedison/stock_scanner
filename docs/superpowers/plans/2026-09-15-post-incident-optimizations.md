@@ -685,3 +685,18 @@ and load `https://stock-scanner-beta.pages.dev` once in a browser session (gstac
 - Spec coverage: Task 1 → PR E; Task 2 → PR D; Task 3, 4 → PR A; Task 5 → PR B; Task 6 → PR F; Task 7 → PR C. Live verifications are in PR C step 5, PR E step 6, PR F step 5.
 - Placeholders: PR E step 1 gives test intents rather than full bodies because the concurrency assertions depend on the runner closure the implementer writes; every other code step is complete. PR F lists exact files and line ranges; the implementer must grep before finishing (criterion 1).
 - Type consistency: `default_failed_companies_csv(data_dir: Path) -> Path` is used identically in test and implementation; `BackupEntry.sha256` is optional in both loader and writer; `MANIFEST_KEY == "public/manifest.json"` matches the plan builder (`scripts/cloudflare_seed_upload_plan.py:81`).
+
+---
+
+## Addendum (2026-09-15, after PRs #167-#173 merged): follow-ups the user asked to finish
+
+The reviews of PRs D-F surfaced five items outside the original scope. The user chose to complete all of them the same day. Same delivery protocol as above.
+
+| PR | Item | Branch |
+|---|---|---|
+| G | (3) Weekly seed-cache workflow dispatches `Validate` on the PR it opens (GITHUB_TOKEN-created PRs get no CI otherwise); (4) post-deploy smoke compares v2 index counts with the `/api/reports/market` CSV | `ci/seed-pr-validate-and-smoke-parity` |
+| H | (2) Frontend: remove `state.marketScan` and every v1 fallback branch, `acceptMarketScan`, the unused API-version meta/switch, and the discarded runtime-config fetch | `refactor/frontend-drop-v1-scan-state` |
+| I | (1) FastAPI serves `POST /api/scan/market/refresh` and `GET /api/scan/market/refresh/{jobId}` with the Worker's payload shapes, so the manual refresh button works in local development | `feat/fastapi-market-refresh-command` |
+| J | (5) Flaky `Run local Worker runtime smoke` CI step: investigate the timeout on `pull_request` runs, then fix the readiness wait / timeout in `scripts/run_wrangler_dev_smoke.py` or `ci.yml` | `ci/stabilize-wrangler-dev-smoke` |
+
+Acceptance for each PR is the same shape as PRs A-F: targeted tests first, full gates, fresh-context verification of the criteria, CI green, squash merge, and a post-merge check (G: one live smoke run against production; H/I: e2e suite plus the Pages site rendering; J: the next few `pull_request` runs of Validate pass the smoke step).
