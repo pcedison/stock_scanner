@@ -143,7 +143,9 @@ def test_production_wrangler_runs_the_refresh_schedule_from_worker_cron():
     assert config["cache"]["enabled"] is False
     # Cloudflare cron day-of-week is 1=Sunday (not 0), so weekdays are spelled by name.
     # The morning slot (06:30 Taipei) on Monday is still Sunday in UTC, hence SUN-THU.
-    assert config["triggers"]["crons"] == ["*/20 21-23 * * SUN-THU", "*/20 0-15 * * MON-FRI"]
+    # Evening slot is 18:00 Taipei (10:00 UTC); a failed build retries hourly, so ticks stop
+    # after three retries (21:59 Taipei = 13:59 UTC) instead of running until midnight.
+    assert config["triggers"]["crons"] == ["*/20 21-23 * * SUN-THU", "*/20 0-13 * * MON-FRI"]
     assert validate_worker_release_defaults(Path("cloudflare/wrangler.toml")) == []
     assert "cloudflare/wrangler.*.generated.toml" in Path(".gitignore").read_text(encoding="utf-8")
 
@@ -289,9 +291,9 @@ def test_active_cloudflare_schedules_and_refresh_options_are_policy_aligned():
     # Backstop ticks land just after the 06:30 / 18:00 Taipei publication slots only.
     assert _workflow_schedule_crons(r2_path) == ["7 23 * * 0-4", "7 10,12 * * 1-5"]
     assert "workflow_dispatch" in r2_on
-    # The monitor still polls from GitHub every 4 hours and now also fails fast on a dead
-    # dispatch token, before the seed itself goes stale.
-    assert _workflow_schedule_crons(health_path) == ["11 */4 * * *"]
+    # Weekdays every 4 hours; weekends only twice a day (nothing is published, but a dead
+    # Worker or a revoked dispatch credential should still be noticed within 12 hours).
+    assert _workflow_schedule_crons(health_path) == ["11 */4 * * 1-5", "11 8,20 * * 0,6"]
     # Never rebuild before the publication slot: the datasets have not changed yet.
     assert "--refresh-ahead-minutes 0" in r2_workflow
     assert "--job-check-error" in r2_workflow
