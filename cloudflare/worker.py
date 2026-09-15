@@ -397,10 +397,13 @@ class Api:
 
     def cache_policy(self):
         reason = trading_calendar.refresh_reason(datetime.now(TAIPEI_TZ).date())
-        # Freshness follows the manifest's publication slot; this interval is only the
-        # legacy-manifest deadline and the terminal-job cooldown ceiling.
-        legacy_interval = {"financial_report_window": 7200, "monthly_revenue_window": 10800}.get(reason, 43200)
-        return {"strategy": "stale_while_revalidate", "reason": reason, "minIntervalSeconds": legacy_interval}
+        # Freshness follows the manifest's publication slot (nextRefreshAfter); the interval
+        # is only the terminal-job cooldown ceiling read by worker_refresh_jobs.
+        return {
+            "strategy": "stale_while_revalidate",
+            "reason": reason,
+            "minIntervalSeconds": worker_refresh_jobs.TERMINAL_JOB_COOLDOWN_SECONDS,
+        }
 
     def market_api_version(self):
         return "v2" if str(env_value(self.env, "MARKET_SCAN_API_VERSION", "v1")).strip().lower() == "v2" else "v1"
@@ -428,10 +431,9 @@ class Api:
         next_refresh = None
         is_stale = True
         if generated_time:
-            # The seed builder's publication slot; legacy manifests fall back to the interval rule.
-            next_refresh_time = trading_calendar.manifest_next_refresh(
-                manifest, generated_time
-            ) or trading_calendar.next_refresh_deadline(generated_time.astimezone(UTC), policy["minIntervalSeconds"], manifest)
+            # The seed builder writes the next publication slot; a manifest without a
+            # trusted one (pre-#163 build, or garbage) is stale and gets rebuilt.
+            next_refresh_time = trading_calendar.manifest_next_refresh(manifest, generated_time) or generated_time.astimezone(UTC)
             next_refresh = next_refresh_time.isoformat()
             is_stale = datetime.now(UTC) >= next_refresh_time
         return {
