@@ -142,7 +142,7 @@ The files maintain themselves: `.github/workflows/update-market-calendar.yml` ru
 10. Deploy Worker and Pages.
 11. Verify deployed `/api/health` data safety.
 12. Verify Worker CORS for `https://stock-scanner-beta.pages.dev`, including the POST preflight used by the browser fallback.
-13. Run deployed public smoke against the Worker `/api/health`, `/api/app-status`, `/api/data-sources/status`, `/api/runtime-config` (must advertise `marketScanApiVersion=v2`), and `/api/scan/market/index` (must carry a 24-character `generationId`, a `cacheStatus`, and at least 1,000 rows across the category counts).
+13. Run deployed public smoke against the Worker `/api/health`, `/api/app-status`, `/api/data-sources/status`, `/api/runtime-config` (must advertise `marketScanApiVersion=v2`), and `/api/scan/market/index` (must carry a 24-character `generationId`, a `cacheStatus`, and at least 1,000 rows across the category counts). It also POSTs `/api/reports/market?report_format=csv` and checks that its per-category (`entry`/`watch`/`excluded`) row counts match the index's `counts.categories`, since both are meant to describe the same generation but only the index is served from the immutable v2 pages.
 14. Verify `https://stock-scanner-beta.pages.dev/api/health` returns the healthy Worker JSON through the status-preserving Pages proxy.
 15. Roll back the Worker with `wrangler rollback --yes` if post-deploy verification fails.
 
