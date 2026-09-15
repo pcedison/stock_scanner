@@ -45,6 +45,7 @@ from backend.services.calendar import load_market_calendar  # noqa: E402
 from backend.services.market_query import build_market_generation, canonical_json_bytes  # noqa: E402
 from backend.services.market_scan import data_sources_status_payload, scan_market_payload  # noqa: E402
 from backend.services.official_data_provider import OfficialDataProvider, _is_financial_company  # noqa: E402
+from backend.services.report_render import render_market_report_csv, render_market_report_markdown  # noqa: E402
 from backend.services.rules import RuleEngine  # noqa: E402
 from backend.services.settings_service import load_settings  # noqa: E402
 
@@ -69,6 +70,9 @@ MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
 MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
 MAX_X2_MISSING_RATIO = min(1.0, max(0.0, float(os.getenv("MAX_X2_MISSING_RATIO", "0.10"))))
 MARKET_SCAN_SUMMARY_FILE = "market_scan_summary.json"
+MARKET_REPORT_CSV = "reports/market_scan.csv"
+MARKET_REPORT_MD = "reports/market_scan.md"
+MARKET_REPORT_TITLE = "台股市場掃描報告"
 MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded", "results")
 SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
 REQUIRED_SCAN_SUMMARY_KEYS = ("stockCode", "companyName", "status")
@@ -178,6 +182,24 @@ def add_market_scan_summary_to_manifest(manifest: dict) -> dict:
 
 def write_market_scan_summary(scan_payload: dict) -> None:
     write_json(OUT_DIR / MARKET_SCAN_SUMMARY_FILE, compact_market_scan_payload(scan_payload))
+
+
+def add_market_reports_to_manifest(manifest: dict) -> dict:
+    """Declare the static report exports in a manifest copied from an older seed."""
+    updated = dict(manifest)
+    files = list(updated.get("files") or [])
+    for name in (MARKET_REPORT_CSV, MARKET_REPORT_MD):
+        if name not in files:
+            files.append(name)
+    updated["files"] = files
+    return updated
+
+
+def write_market_reports(scan_payload: dict) -> None:
+    """Static market report exports: the Worker streams these instead of decoding the scan."""
+    compact = compact_market_scan_payload(scan_payload)
+    _atomic_write_bytes(OUT_DIR / MARKET_REPORT_CSV, render_market_report_csv(compact).encode("utf-8"))
+    _atomic_write_bytes(OUT_DIR / MARKET_REPORT_MD, render_market_report_markdown(compact, MARKET_REPORT_TITLE).encode("utf-8"))
 
 
 def _atomic_write_bytes(path: Path, content: bytes) -> None:
@@ -618,7 +640,9 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
     if not isinstance(companies, list):
         raise RuntimeError("Offline seed companies.json must contain an items list")
     write_market_scan_summary(scan_payload)
+    write_market_reports(scan_payload)
     manifest = add_market_scan_summary_to_manifest(manifest)
+    manifest = add_market_reports_to_manifest(manifest)
     manifest = write_market_generation(scan_payload, manifest)
     manifest["companiesByMarket"] = company_market_counts(companies)
     counts = manifest.get("counts", {})
@@ -744,6 +768,7 @@ def main() -> None:
 
     write_json(OUT_DIR / "market_scan_latest.json", scan_payload)
     write_market_scan_summary(scan_payload)
+    write_market_reports(scan_payload)
     write_json(OUT_DIR / "companies.json", {"items": companies})
     write_json(OUT_DIR / "analysis_by_code.json", analysis_by_code)
     write_json(OUT_DIR / "holding_analysis_by_code.json", holding_analysis_by_code)
@@ -768,6 +793,8 @@ def main() -> None:
         "files": [
             "market_scan_latest.json",
             MARKET_SCAN_SUMMARY_FILE,
+            MARKET_REPORT_CSV,
+            MARKET_REPORT_MD,
             "companies.json",
             "analysis_by_code.json",
             "analysis_shards/*.json",
