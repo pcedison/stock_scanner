@@ -38,6 +38,13 @@ MARKET_REPORT_CSV_ENTRY = "cloudflare_seed/reports/market_scan.csv"
 MARKET_REPORT_MD_ENTRY = "cloudflare_seed/reports/market_scan.md"
 MARKET_REPORT_ENTRIES = {MARKET_REPORT_CSV_ENTRY, MARKET_REPORT_MD_ENTRY}
 MARKET_REPORT_CSV_HEADER = "category,stockCode,companyName,status,summary"
+# Members the builder stopped producing, keyed by the moment that change reached main.
+# A zip generated before that moment may still carry the member (tolerated and reported);
+# a zip generated after it must not, because only a builder regression can put it back.
+RETIRED_SEED_MEMBERS = {
+    # Merge time of #181 (ba243d1), the commit whose builder stopped writing the summary.
+    "cloudflare_seed/market_scan_summary.json": datetime(2026, 9, 15, 7, 18, 5, tzinfo=UTC),
+}
 
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",
@@ -187,9 +194,8 @@ def _validate_archive_budget(member_infos: list[zipfile.ZipInfo]) -> None:
 def _is_allowed_seed_member(name: str) -> bool:
     static_names = {
         *REQUIRED_ENTRIES,
-        # Retired by the report-streaming change; tolerated for one refresh cycle so a zip
-        # built by the previous builder still validates, then droppable from this allow-list.
-        "cloudflare_seed/market_scan_summary.json",
+        # Structurally allowed so _validate_retired_members can decide by build time.
+        *RETIRED_SEED_MEMBERS,
         *MARKET_REPORT_ENTRIES,
     }
     if name in static_names or name.startswith("cloudflare_seed/market_scan/v2/"):
@@ -529,6 +535,31 @@ def _validate_market_report_entries(archive: zipfile.ZipFile, names: set[str]) -
         raise ValueError(f"{MARKET_REPORT_CSV_ENTRY} must start with the header {MARKET_REPORT_CSV_HEADER}")
 
 
+def _parse_generated_at(raw: Any) -> datetime:
+    """Manifest ``generatedAt`` as an aware UTC datetime; naive values are read as UTC."""
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Seed manifest generatedAt is not a valid ISO datetime: {raw}") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _validate_retired_members(names: set[str], manifest: dict[str, Any]) -> list[str]:
+    """Reject retired members in builds made after their retirement; report tolerated ones."""
+    present = sorted(name for name in RETIRED_SEED_MEMBERS if name in names)
+    if not present:
+        return []
+    generated_at = _parse_generated_at(manifest.get("generatedAt"))
+    for name in present:
+        retired_at = RETIRED_SEED_MEMBERS[name]
+        if generated_at >= retired_at:
+            raise ValueError(
+                f"{name} was retired on {retired_at.date().isoformat()} but a seed generated at "
+                f"{generated_at.isoformat()} still contains it; the seed builder has regressed"
+            )
+    return present
+
+
 def validate_seed_zip(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ValueError(f"Seed zip does not exist: {path}")
@@ -559,6 +590,7 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         companies_payload = _load_json_from_zip(archive, "cloudflare_seed/companies.json")
         if not isinstance(manifest, dict):
             raise ValueError("cloudflare_seed/manifest.json must be a JSON object")
+        tolerated_retired_members = _validate_retired_members(names, manifest)
         if not isinstance(market_scan, dict):
             raise ValueError("cloudflare_seed/market_scan_latest.json must be a JSON object")
         preflight_category_counts: dict[str, int] = {}
@@ -766,6 +798,7 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         "latestFinancialPeriod": manifest.get("latestFinancialPeriod"),
         **v2_summary,
         "requiredEntries": sorted(REQUIRED_ENTRIES),
+        "toleratedRetiredMembers": tolerated_retired_members,
     }
 
 
@@ -775,12 +808,7 @@ def validate_seed_freshness(summary: dict[str, Any], max_age_days: int | None, n
     generated_at = summary.get("generatedAt")
     if not generated_at:
         raise ValueError("Seed manifest is missing generatedAt; cannot enforce freshness")
-    try:
-        generated = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"Seed manifest generatedAt is not a valid ISO datetime: {generated_at}") from exc
-    if generated.tzinfo is None:
-        generated = generated.replace(tzinfo=UTC)
+    generated = _parse_generated_at(generated_at)
     current = now or datetime.now(UTC)
     age_days = (current - generated).total_seconds() / 86400
     if age_days > max_age_days:
@@ -818,6 +846,7 @@ def render_seed_summary(summary: dict[str, Any], failed_summary: dict[str, Any] 
         f"- latest monthly revenue history: {summary.get('latestRevenueHistoryMonth') or 'unknown'}",
         f"- consecutive monthly revenue coverage: {summary.get('consecutiveRevenueHistoryCompanies') or 0}",
         f"- manifest generated at: {summary.get('generatedAt') or 'unknown'}",
+        f"- retired members tolerated: {', '.join(summary.get('toleratedRetiredMembers') or []) or 'none'}",
         f"- latest revenue period: {summary.get('latestRevenuePeriod') or 'unknown'}",
         f"- latest financial period: {summary.get('latestFinancialPeriod') or 'unknown'}",
         f"- market generation: {summary.get('marketGenerationId') or 'unknown'}",

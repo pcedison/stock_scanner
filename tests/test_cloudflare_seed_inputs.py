@@ -4,7 +4,7 @@ import hashlib
 import json
 import stat
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1075,3 +1075,60 @@ def test_validate_seed_zip_rejects_a_market_report_csv_with_the_wrong_header(tmp
 
     with pytest.raises(ValueError, match="must start with the header category,stockCode,companyName,status,summary"):
         validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def _members_generated_at(generated_at: str) -> dict[str, str | bytes]:
+    members = _seed_members()
+    manifest = json.loads(members["cloudflare_seed/manifest.json"])
+    manifest["generatedAt"] = generated_at
+    members["cloudflare_seed/manifest.json"] = json.dumps(manifest)
+    return members
+
+
+def test_validate_seed_zip_reports_a_tolerated_retired_member_for_a_pre_retirement_build(tmp_path):
+    members = _members_generated_at("2026-09-15T06:42:33+00:00")
+    members["cloudflare_seed/market_scan_summary.json"] = json.dumps({"entry": [], "watch": [], "excluded": []})
+
+    summary = validate_seed_zip(_zip_from(tmp_path, members))
+
+    assert summary["toleratedRetiredMembers"] == ["cloudflare_seed/market_scan_summary.json"]
+    assert "retired members tolerated: cloudflare_seed/market_scan_summary.json" in render_seed_summary(
+        summary, {"failedCompanies": 0, "manualStatus": {}, "reasons": {}}
+    )
+
+
+def test_validate_seed_zip_rejects_a_retired_member_in_a_post_retirement_build(tmp_path):
+    # The builder stopped writing the summary on 2026-09-15; a newer zip that still has it
+    # means the builder regressed, and the validator must say so before the zip is committed.
+    members = _members_generated_at("2026-09-20T20:35:00+00:00")
+    members["cloudflare_seed/market_scan_summary.json"] = json.dumps({"entry": [], "watch": [], "excluded": []})
+
+    with pytest.raises(ValueError, match="cloudflare_seed/market_scan_summary.json was retired on 2026-09-15"):
+        validate_seed_zip(_zip_from(tmp_path, members))
+
+
+def test_validate_seed_zip_accepts_a_post_retirement_build_without_retired_members(tmp_path):
+    members = _members_generated_at("2026-09-20T20:35:00+00:00")
+
+    summary = validate_seed_zip(_zip_from(tmp_path, members))
+
+    assert summary["toleratedRetiredMembers"] == []
+    assert "retired members tolerated: none" in render_seed_summary(
+        summary, {"failedCompanies": 0, "manualStatus": {}, "reasons": {}}
+    )
+
+
+def test_retirement_boundary_is_inclusive_on_the_reject_side(tmp_path):
+    retired_at = validator_module.RETIRED_SEED_MEMBERS["cloudflare_seed/market_scan_summary.json"]
+    summary_member = json.dumps({"entry": [], "watch": [], "excluded": []})
+
+    just_before = _members_generated_at((retired_at - timedelta(seconds=1)).isoformat())
+    just_before["cloudflare_seed/market_scan_summary.json"] = summary_member
+    assert validate_seed_zip(_zip_from(tmp_path, just_before, "before.zip"))["toleratedRetiredMembers"] == [
+        "cloudflare_seed/market_scan_summary.json"
+    ]
+
+    exactly = _members_generated_at(retired_at.isoformat())
+    exactly["cloudflare_seed/market_scan_summary.json"] = summary_member
+    with pytest.raises(ValueError, match="the seed builder has regressed"):
+        validate_seed_zip(_zip_from(tmp_path, exactly, "exactly.zip"))
