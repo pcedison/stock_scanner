@@ -209,10 +209,10 @@ def contract_reports(monkeypatch, worker):
     client = TestClient(main_module.app)
     api = make_worker_api(worker)
 
-    async def fake_r2_json(key, fallback):
-        return {"generatedAt": "2026-05-18T00:00:00+00:00", "dataSource": "contract", "entry": [], "watch": [], "excluded": []}
+    async def fake_r2_text(key):
+        return "# 台股市場掃描報告\n\n- 產生時間：2026-05-18T00:00:00+00:00\n"
 
-    api.r2_json = fake_r2_json
+    api.r2_text = fake_r2_text
 
     fastapi_response = client.post(
         "/api/reports/market?report_format=markdown",

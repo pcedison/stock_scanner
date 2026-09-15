@@ -69,9 +69,11 @@ MIN_SEED_TPEX_COMPANIES = int(os.getenv("MIN_SEED_TPEX_COMPANIES", "700"))
 MIN_SEED_UNIVERSE_SIZE = int(os.getenv("MIN_SEED_UNIVERSE_SIZE", "1000"))
 MIN_SEED_ANALYSIS_SIZE = int(os.getenv("MIN_SEED_ANALYSIS_SIZE", "1000"))
 MAX_X2_MISSING_RATIO = min(1.0, max(0.0, float(os.getenv("MAX_X2_MISSING_RATIO", "0.10"))))
-MARKET_SCAN_SUMMARY_FILE = "market_scan_summary.json"
 MARKET_REPORT_CSV = "reports/market_scan.csv"
 MARKET_REPORT_MD = "reports/market_scan.md"
+# Retired when the Worker started streaming the report exports; zips built before that still
+# ship the member and declare it in their manifest, so the offline copy drops both.
+RETIRED_SEED_FILE = "market_scan_summary.json"
 MARKET_REPORT_TITLE = "台股市場掃描報告"
 MARKET_SCAN_CATEGORIES = ("entry", "watch", "excluded", "results")
 SUMMARY_RESULT_KEYS = ("stockCode", "companyName", "status", "summary")
@@ -166,22 +168,6 @@ def compact_market_scan_payload(scan_payload: dict) -> dict:
             compact[category] = [compact_scan_result(item) for item in items]
     compact["detailMode"] = "summary"
     return compact
-
-
-def add_market_scan_summary_to_manifest(manifest: dict) -> dict:
-    updated = dict(manifest)
-    files = list(updated.get("files") or [])
-    if MARKET_SCAN_SUMMARY_FILE not in files:
-        if "market_scan_latest.json" in files:
-            files.insert(files.index("market_scan_latest.json") + 1, MARKET_SCAN_SUMMARY_FILE)
-        else:
-            files.append(MARKET_SCAN_SUMMARY_FILE)
-    updated["files"] = files
-    return updated
-
-
-def write_market_scan_summary(scan_payload: dict) -> None:
-    write_json(OUT_DIR / MARKET_SCAN_SUMMARY_FILE, compact_market_scan_payload(scan_payload))
 
 
 def add_market_reports_to_manifest(manifest: dict) -> dict:
@@ -611,6 +597,13 @@ def has_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> bool:
     return has_required_files and has_analysis_shards and has_holding_analysis_shards
 
 
+def _drop_retired_manifest_files(manifest: dict) -> dict:
+    """Drop entries an older seed's manifest still declares but this builder no longer writes."""
+    updated = dict(manifest)
+    updated["files"] = [name for name in (updated.get("files") or []) if name != RETIRED_SEED_FILE]
+    return updated
+
+
 def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
     clear_seed_output()
     with zipfile.ZipFile(path) as archive:
@@ -626,6 +619,8 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
         for name in names:
             if not name.startswith(OFFLINE_SEED_PREFIX) or name.endswith("/"):
                 continue
+            if name == f"{OFFLINE_SEED_PREFIX}{RETIRED_SEED_FILE}":
+                continue
             relative = Path(name.removeprefix(OFFLINE_SEED_PREFIX))
             if relative.is_absolute() or ".." in relative.parts:
                 raise RuntimeError(f"Unsafe offline seed entry path: {name}")
@@ -639,9 +634,8 @@ def copy_offline_seed_payload(path: Path = SEED_CACHE_ZIP) -> dict:
     companies = companies_payload.get("items") if isinstance(companies_payload, dict) else None
     if not isinstance(companies, list):
         raise RuntimeError("Offline seed companies.json must contain an items list")
-    write_market_scan_summary(scan_payload)
     write_market_reports(scan_payload)
-    manifest = add_market_scan_summary_to_manifest(manifest)
+    manifest = _drop_retired_manifest_files(manifest)
     manifest = add_market_reports_to_manifest(manifest)
     manifest = write_market_generation(scan_payload, manifest)
     manifest["companiesByMarket"] = company_market_counts(companies)
@@ -767,7 +761,6 @@ def main() -> None:
     assert_seed_quality(scan_payload, companies, analysis_by_code, fallback_source)
 
     write_json(OUT_DIR / "market_scan_latest.json", scan_payload)
-    write_market_scan_summary(scan_payload)
     write_market_reports(scan_payload)
     write_json(OUT_DIR / "companies.json", {"items": companies})
     write_json(OUT_DIR / "analysis_by_code.json", analysis_by_code)
@@ -792,7 +785,6 @@ def main() -> None:
         "marketClosedDates": sorted(day.isoformat() for day in closed_dates),
         "files": [
             "market_scan_latest.json",
-            MARKET_SCAN_SUMMARY_FILE,
             MARKET_REPORT_CSV,
             MARKET_REPORT_MD,
             "companies.json",

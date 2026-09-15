@@ -187,6 +187,8 @@ def _validate_archive_budget(member_infos: list[zipfile.ZipInfo]) -> None:
 def _is_allowed_seed_member(name: str) -> bool:
     static_names = {
         *REQUIRED_ENTRIES,
+        # Retired by the report-streaming change; tolerated for one refresh cycle so a zip
+        # built by the previous builder still validates, then droppable from this allow-list.
         "cloudflare_seed/market_scan_summary.json",
         *MARKET_REPORT_ENTRIES,
     }
@@ -515,14 +517,10 @@ def _validate_market_v2(
 
 
 def _validate_market_report_entries(archive: zipfile.ZipFile, names: set[str]) -> None:
-    """The Worker streams these exports verbatim, so a seed that ships them must ship both in the fixed format.
+    """The Worker streams these exports verbatim, so every seed must ship both in the fixed format.
 
-    A seed built before the exports existed is still accepted until the committed zip has been
-    regenerated; the Worker keeps its fallback until then.
+    Without them /api/reports/market has nothing to serve and returns 503.
     """
-    present = MARKET_REPORT_ENTRIES & names
-    if not present:
-        return
     missing_reports = sorted(MARKET_REPORT_ENTRIES - names)
     if missing_reports:
         raise ValueError(f"Seed zip is missing market report exports: {', '.join(missing_reports)}")

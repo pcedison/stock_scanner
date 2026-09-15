@@ -368,6 +368,20 @@ class Api:
         self._r2_cache[key] = result
         return result
 
+    async def r2_text(self, key: str):
+        """Read an R2 object as text without parsing or caching it, or None when it is missing.
+
+        The static exports are hundreds of KB, so this skips both the json.loads and the
+        per-request _r2_cache that r2_json keeps: nothing decodes them inside the Worker.
+        """
+        async def get():
+            return js_to_py(await self.env.CACHE.get(key))
+
+        obj = await observability.dependency_call(get, DependencyFailure, "r2_read", True)
+        if obj is None:
+            return None
+        return await observability.dependency_call(lambda: obj.text(), DependencyFailure, "r2_read", True)
+
     def cache_policy(self):
         reason = trading_calendar.refresh_reason(datetime.now(TAIPEI_TZ).date())
         # Freshness follows the manifest's publication slot (nextRefreshAfter); the interval
@@ -866,8 +880,15 @@ class Api:
 
     async def market_report(self, query):
         report_format = (query.get("report_format") or ["markdown"])[0]
-        scan = await self.r2_json("public/market_scan_summary.json", empty_market_scan())
-        return report_response(scan, report_format, "台股市場掃描報告", "market_scan")
+        # The seed build renders both exports; the Worker passes the text through unparsed.
+        # Unknown formats fall back to Markdown, as report_response does for the holdings report.
+        extension, media_type = ("csv", "text/csv") if report_format == "csv" else ("md", "text/markdown")
+        text = await self.r2_text(f"public/reports/market_scan.{extension}")
+        if not text:  # A missing or truncated export is a retry, never an empty 200.
+            return error_response("市場報表尚未產生，請稍後再試", status=503, code="report_unavailable", retryable=True, request_id=self._request_id)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        disposition = f'attachment; filename="market_scan_{timestamp}.{extension}"'
+        return text_response(text, media_type=f"{media_type}; charset=utf-8", headers={"content-disposition": disposition})
 
     async def holdings_report(self, request, query):
         report_format = (query.get("report_format") or ["markdown"])[0]

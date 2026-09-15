@@ -1983,7 +1983,7 @@ def test_worker_market_v2_malformed_manifest_is_safe_503(monkeypatch):
         ("GET", "/api/auth/me", "current_user", "d1_read", True, 503),
         ("GET", "/api/settings", "get_settings", "d1_read", True, 503),
         ("GET", "/api/me/holdings", "require_user", "d1_read", True, 503),
-        ("POST", "/api/reports/market", "market_report", "d1_read", True, 503),
+        ("POST", "/api/reports/market", "market_report", "r2_read", True, 503),
         ("GET", "/api/admin/users", "require_super_user", "d1_read", True, 503),
     ),
 )
@@ -2043,9 +2043,77 @@ def test_worker_analyze_and_holdings_scan(monkeypatch):
     assert [m["stockCode"] for m in payload["missing"]] == ["1111"]
 
 
+MARKET_REPORT_CSV_EXPORT = "category,stockCode,companyName,status,summary\r\nentry,2330,台積電,ENTRY,好\r\n"
+MARKET_REPORT_MD_EXPORT = "# 台股市場掃描報告\n\n- 產生時間：2026-09-15T00:00:00+00:00\n\n## 適合進場 (1)\n- 2330 台積電：好\n"
+MARKET_REPORT_EXPORTS = {
+    "public/reports/market_scan.csv": MARKET_REPORT_CSV_EXPORT,
+    "public/reports/market_scan.md": MARKET_REPORT_MD_EXPORT,
+}
+
+
+def test_worker_market_report_streams_the_static_exports(monkeypatch):
+    _worker, api, _db = build_router_api(monkeypatch, r2=dict(MARKET_REPORT_EXPORTS))
+
+    csv_response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=csv", body="")))
+    markdown_response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=markdown", body="")))
+
+    assert csv_response.init["status"] == 200
+    assert csv_response.body == MARKET_REPORT_CSV_EXPORT
+    assert csv_response.headers["content-type"].startswith("text/csv")
+    assert csv_response.headers["content-disposition"].startswith('attachment; filename="market_scan_')
+    assert csv_response.headers["content-disposition"].endswith('.csv"')
+    assert csv_response.headers["cache-control"] == "no-store"
+
+    assert markdown_response.init["status"] == 200
+    assert markdown_response.body == MARKET_REPORT_MD_EXPORT
+    assert markdown_response.headers["content-type"].startswith("text/markdown")
+    assert markdown_response.headers["content-disposition"].startswith('attachment; filename="market_scan_')
+    assert markdown_response.headers["content-disposition"].endswith('.md"')
+    assert markdown_response.headers["cache-control"] == "no-store"
+
+    # The 3 MB summary is never decoded in Pyodide any more; the exports are streamed verbatim.
+    assert "public/market_scan_summary.json" not in api.env.CACHE.calls
+    assert api.env.CACHE.calls == ["public/reports/market_scan.csv", "public/reports/market_scan.md"]
+
+
+def test_worker_market_report_is_503_until_the_seed_publishes_the_exports(monkeypatch):
+    _worker, api, _db = build_router_api(monkeypatch, r2={})
+
+    response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=csv", body="")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "report_unavailable"
+    assert payload["retryable"] is True
+    assert response.headers["cache-control"] == "no-store"
+    assert "public/market_scan_summary.json" not in api.env.CACHE.calls
+
+    # A truncated export is a retry too, never a 200 with an empty body.
+    _worker, empty_api, _db = build_router_api(monkeypatch, r2={"public/reports/market_scan.csv": ""})
+    empty = asyncio.run(empty_api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=csv", body="")))
+
+    assert empty.init["status"] == 503
+    assert json.loads(empty.body)["code"] == "report_unavailable"
+
+
+def test_worker_market_report_r2_outage_is_a_dependency_failure(monkeypatch):
+    _worker, api, _db = build_router_api(monkeypatch, r2=dict(MARKET_REPORT_EXPORTS))
+
+    async def fail_get(_key):
+        raise RuntimeError("R2 temporarily unavailable")
+
+    api.env.CACHE.get = fail_get
+    response = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=csv", body="")))
+    payload = json.loads(response.body)
+
+    assert response.init["status"] == 503
+    assert payload["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert payload["retryable"] is True
+    assert payload["stage"] == "r2_read"
+
+
 def test_worker_reports_market_and_holdings(monkeypatch):
-    scan = {"entry": [{"stockCode": "2330", "companyName": "台積電", "status": "ENTRY", "summary": "好"}], "watch": [], "excluded": []}
-    worker, api, _db = build_router_api(monkeypatch, r2={"public/market_scan_summary.json": scan, "public/analysis_shards/23.json": {"2330": {"stockCode": "2330", "status": "ENTRY", "reasons": []}}})
+    worker, api, _db = build_router_api(monkeypatch, r2={**MARKET_REPORT_EXPORTS, "public/analysis_shards/23.json": {"2330": {"stockCode": "2330", "status": "ENTRY", "reasons": []}}})
 
     market = asyncio.run(api.fetch(RouteRequest(method="POST", path="/api/reports/market?report_format=markdown", body="")))
     assert "台股市場掃描報告" in market.body
@@ -3011,11 +3079,7 @@ def test_worker_subrouter_not_found_fallbacks(monkeypatch):
 
 def test_worker_retired_v1_market_scan_routes_are_not_found(monkeypatch):
     manifest = {"generatedAt": "2026-02-19T00:00:00+00:00", "counts": {"companies": 1000, "analysis": 1000}}
-    scan = {"entry": [{"stockCode": "2330", "status": "ENTRY", "summary": "好"}], "watch": [], "excluded": []}
-    worker, api, db = build_router_api(
-        monkeypatch,
-        r2={"public/manifest.json": manifest, "public/market_scan_summary.json": scan},
-    )
+    worker, api, db = build_router_api(monkeypatch, r2={"public/manifest.json": manifest})
     pin_worker_time(monkeypatch, worker, "2026-02-20T00:00:00+00:00")
 
     get_response = asyncio.run(api.fetch(RouteRequest(path="/api/scan/market")))
@@ -3026,7 +3090,6 @@ def test_worker_retired_v1_market_scan_routes_are_not_found(monkeypatch):
     # The retired v1 route was the only request-time reader of the multi-megabyte summary.
     assert "public/market_scan_summary.json" not in api.env.CACHE.calls
     assert db.refresh_jobs == []
-    assert not hasattr(api, "r2_text")
 
 
 def test_worker_holding_analysis_rejects_invalid_code(monkeypatch):

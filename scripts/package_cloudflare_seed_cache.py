@@ -29,7 +29,6 @@ SEED_FILES = (
     "companies.json",
     "data_sources_status.json",
     "market_scan_latest.json",
-    "market_scan_summary.json",
     "reports/market_scan.csv",
     "reports/market_scan.md",
     "analysis_by_code.json",
