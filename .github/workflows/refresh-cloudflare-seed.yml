@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 concurrency:
   group: cloudflare-seed-refresh
@@ -140,4 +141,19 @@ jobs:
                 echo "Seed rebuild and validation completed before PR creation."
               } >> "$GITHUB_STEP_SUMMARY"
             fi
+          fi
+
+      - name: Open or update a failure issue
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly seed cache refresh is failing"
+          existing="$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "The scheduled committed-seed refresh failed: $RUN_URL
+
+          Three consecutive failures went unnoticed in 2026-08/09, so this issue is opened automatically. Close it once a run succeeds (the workflow does not close it by itself)."
           fi
