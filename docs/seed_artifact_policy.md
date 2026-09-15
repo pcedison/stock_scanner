@@ -22,6 +22,16 @@ Rules:
   legacy scan payload is unchanged and `scripts/validate_cloudflare_seed_inputs.py`
   passes afterwards.
 
+- Retired members are date-gated: `RETIRED_SEED_MEMBERS` in
+  `scripts/validate_cloudflare_seed_inputs.py` maps a member (for example
+  `cloudflare_seed/market_scan_summary.json`) to the moment the builder stopped
+  producing it (the merge time of the retiring PR). A zip whose manifest `generatedAt` predates that moment may still
+  carry the member (the validation summary lists it under "retired members
+  tolerated"); a newer zip that still carries it fails validation, because only a
+  builder regression can put it back. The check runs wherever the validator runs:
+  the weekly committed-seed refresh before it opens its PR, every R2 refresh, and
+  CI on every push and PR against the committed zip.
+
 The `.gitignore` rule blocks accidental future `official_cache_seed_*.zip` and
 `official_cache_seed_*.sha256` additions while preserving the current bootstrap
 artifact.
