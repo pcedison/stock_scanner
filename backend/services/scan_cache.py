@@ -137,6 +137,8 @@ class ScanCacheService:
         due = self._is_due(stored_at, policy)
         refresh_status = "fresh"
         if refresh_mode != "cache_only" and due:
+            # Known drift: a build_refresh that rewrites the files the caller's context fingerprints
+            # stores under this pre-refresh key (the refresh command recomputes it; see routers/market.py).
             refresh_status = self._queue_refresh(key, settings, build_refresh or build_sync, policy, context)
         elif refresh_mode == "cache_only":
             refresh_status = "cache_only"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 import types
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -304,6 +305,136 @@ def contract_runtime_config(monkeypatch, worker):
     assert isinstance(worker_response_payload["edgeCacheEnabled"], bool)
 
 
+def _poll_fastapi_refresh_job(client, status_url: str, timeout: float = 30.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        response = client.get(status_url)
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] in {"success", "failed"}:
+            return payload
+        assert time.monotonic() < deadline, f"refresh job never reached a terminal state: {payload}"
+        time.sleep(0.05)
+
+
+def _raise_market_scan_failure(settings):
+    raise RuntimeError("upstream detail that must not be exposed")
+
+
+def _assert_job_status_payloads_match(client, api, db, job: dict, error: str | None) -> None:
+    """Mirror a finished FastAPI job into the Worker's D1 row and compare both status reads."""
+    db.refresh_jobs.append(
+        {
+            "id": job["jobId"],
+            "job_type": "market_scan",
+            "cache_key": "contract-cache-key",
+            "idempotency_key": f"contract-idempotency-hash-{job['jobId']}",
+            "status": job["status"],
+            "reason": job["reason"],
+            "queued_at": job["queuedAt"],
+            "started_at": job["startedAt"],
+            "finished_at": job["finishedAt"],
+            "updated_at": job["updatedAt"],
+            "error": error,
+        }
+    )
+    status_url = f"/api/scan/market/refresh/{job['jobId']}"
+    fastapi_status = client.get(status_url)
+    worker_response = run_worker_fetch(api, "GET", status_url)
+
+    assert fastapi_status.status_code == worker_status(worker_response) == 200
+    assert fastapi_status.json() == worker_payload(worker_response) == job
+    assert fastapi_status.headers["cache-control"] == worker_response.headers["cache-control"] == "no-store"
+    if error is not None:
+        assert error not in fastapi_status.text
+        assert error not in worker_response.body
+
+
+def contract_market_refresh_command(monkeypatch, worker):
+    # The Worker queues the rebuild in D1 for a GitHub Actions run; FastAPI runs it on a
+    # background thread. Both must answer the command and the job read the same way, because
+    # frontend/market_refresh.js validates the exact key set of both payloads.
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=True))
+    client = TestClient(main_module.app)
+    worker_module, api, db = build_router_api(
+        monkeypatch, r2={"public/manifest.json": {"generatedAt": "2026-07-13T00:00:00+00:00"}}
+    )
+    pin_worker_time(monkeypatch, worker_module, "2026-07-13T12:01:00+00:00")
+    idempotency_key = "contract-refresh-matrix"
+
+    fastapi_command = client.post("/api/scan/market/refresh", headers={"idempotency-key": idempotency_key})
+    worker_command = run_worker_fetch(
+        api, "POST", "/api/scan/market/refresh", headers={"idempotency-key": idempotency_key}
+    )
+    fastapi_command_payload = fastapi_command.json()
+    worker_command_payload = worker_payload(worker_command)
+
+    assert fastapi_command.status_code == worker_status(worker_command) == 202
+    assert set(fastapi_command_payload) == set(worker_command_payload) == {"jobId", "status", "requestId", "statusUrl"}
+    assert fastapi_command_payload["status"] == worker_command_payload["status"] == "queued"
+    assert fastapi_command.headers["location"] == fastapi_command_payload["statusUrl"]
+    assert worker_command.headers["Location"] == worker_command_payload["statusUrl"]
+    assert fastapi_command.headers["cache-control"] == worker_command.headers["cache-control"] == "no-store"
+
+    # Read the FastAPI job to a terminal state, then mirror it into the Worker's D1 row so the
+    # two status payloads are compared on the same job, field for field.
+    succeeded = _poll_fastapi_refresh_job(client, fastapi_command_payload["statusUrl"])
+
+    assert succeeded["status"] == "success"
+    assert succeeded["hasError"] is False
+    _assert_job_status_payloads_match(client, api, db, succeeded, error=None)
+
+    # A failed rebuild must render `hasError` the same way on both sides.
+    monkeypatch.setattr(market_module, "_scan_market_payload", _raise_market_scan_failure)
+    failed_command = client.post("/api/scan/market/refresh", headers={"idempotency-key": "contract-refresh-failed"})
+    failed = _poll_fastapi_refresh_job(client, failed_command.json()["statusUrl"])
+
+    assert failed["status"] == "failed"
+    assert failed["hasError"] is True
+    _assert_job_status_payloads_match(client, api, db, failed, error="upstream detail that must not be exposed")
+
+    unknown_status_url = f"/api/scan/market/refresh/{'f' * 32}"
+    fastapi_unknown = client.get(unknown_status_url)
+    worker_unknown = run_worker_fetch(api, "GET", unknown_status_url)
+
+    assert fastapi_unknown.status_code == worker_status(worker_unknown) == 404
+    assert fastapi_unknown.json()["detail"] == worker_payload(worker_unknown)["detail"] == "Not found"
+
+    fastapi_invalid = client.post("/api/scan/market/refresh", headers={"idempotency-key": "not a safe key"})
+    worker_invalid = run_worker_fetch(
+        api, "POST", "/api/scan/market/refresh", headers={"idempotency-key": "not a safe key"}
+    )
+
+    assert fastapi_invalid.status_code == worker_status(worker_invalid) == 422
+    assert "detail" in fastapi_invalid.json()
+    assert "detail" in worker_payload(worker_invalid)
+
+
+def contract_market_refresh_csrf(monkeypatch, worker):
+    monkeypatch.setenv("APP_ENV", "production")
+    client = TestClient(main_module.app)
+    api = worker.Api(
+        env=types.SimpleNamespace(
+            APP_ENV="production",
+            APP_CORS_ALLOW_ORIGINS="https://stock-scanner-beta.pages.dev",
+            SUPER_USER_USERNAME="contract-admin@example.com",
+        )
+    )
+
+    async def fake_route(request, path, query):
+        return worker.json_response({"ok": True})
+
+    api.route = fake_route
+
+    fastapi_response = client.post("/api/scan/market/refresh", headers={"idempotency-key": "contract-refresh-csrf"})
+    worker_response = run_worker_fetch(
+        api, "POST", "/api/scan/market/refresh", headers={"idempotency-key": "contract-refresh-csrf"}
+    )
+
+    assert fastapi_response.status_code == worker_status(worker_response) == 403
+    assert fastapi_response.json()["detail"] == worker_payload(worker_response)["detail"] == "CSRF header required"
+
+
 ENDPOINT_CONTRACT_MATRIX = [
     EndpointContractCase("app-status", contract_app_status),
     EndpointContractCase("data-sources/status", contract_data_sources_status),
@@ -316,6 +447,8 @@ ENDPOINT_CONTRACT_MATRIX = [
     EndpointContractCase("reports", contract_reports),
     EndpointContractCase("admin delete", contract_admin_delete),
     EndpointContractCase("holdings", contract_holdings),
+    EndpointContractCase("scan/market/refresh", contract_market_refresh_command),
+    EndpointContractCase("scan/market/refresh csrf", contract_market_refresh_csrf),
 ]
 
 
