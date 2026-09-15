@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import re
 import sys
@@ -76,8 +78,53 @@ class RemoteClient:
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"{method} {path} did not return valid JSON") from exc
 
+    def request_text(self, path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> str:
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Accept": "text/csv, text/plain;q=0.9, */*;q=0.8",
+            "User-Agent": REMOTE_SMOKE_USER_AGENT,
+            "X-Stock-Scanner-CSRF": "1",
+        }
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(urljoin(self.base_url, path.lstrip("/")), data=body, headers=headers, method=method)
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                return response.read().decode("utf-8")
+        except HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {path} returned HTTP {exc.code}: {body_text[:500]}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"{method} {path} failed to connect: {exc.reason}") from exc
 
-def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+
+MARKET_REPORT_CSV_HEADER = ["category", "stockCode", "companyName", "status", "summary"]
+
+# /api/reports/market (cloudflare/worker.py market_report -> report_response) writes one CSV
+# row per item across ("entry", "watch", "excluded", "results"), reading the same
+# market_scan_summary.json snapshot that scripts/build_cloudflare_seed.py writes from the
+# identical scan_payload used to build the v2 market index/results pages, so per-category row
+# counts must match /api/scan/market/index counts.categories exactly. "results" is a
+# holdings-only category (used by /api/reports/holdings) and never appears in the market
+# report, so it is intentionally excluded from this comparison.
+MARKET_REPORT_INDEX_CATEGORIES = ("entry", "watch", "excluded")
+
+
+def market_report_category_counts(csv_text: str) -> dict[str, int]:
+    reader = csv.reader(io.StringIO(csv_text))
+    header = next(reader, None)
+    if header != MARKET_REPORT_CSV_HEADER:
+        raise RuntimeError(f"market report CSV has unexpected header: {header!r}")
+    counts: dict[str, int] = {}
+    for row in reader:
+        if not row:
+            continue
+        category = row[0]
+        counts[category] = counts.get(category, 0) + 1
+    return counts
+
+
+def validate_public_smoke_payloads(payloads: dict[str, Any]) -> dict[str, Any]:
     problems: list[str] = []
     health = payloads.get("health") or {}
     app_status = payloads.get("appStatus") or {}
@@ -116,6 +163,29 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         problems.append(f"market index reports only {market_rows} rows")
     if not isinstance(market_index.get("cacheStatus"), dict):
         problems.append("market index is missing cacheStatus")
+    market_report_csv = payloads.get("marketReportCsv")
+    market_report_rows: int | None = None
+    if not isinstance(market_report_csv, str) or not market_report_csv.strip():
+        problems.append("market report CSV export (/api/reports/market) is missing or empty")
+    else:
+        try:
+            report_counts = market_report_category_counts(market_report_csv)
+        except RuntimeError as exc:
+            problems.append(str(exc))
+        else:
+            market_report_rows = sum(report_counts.values())
+            if isinstance(categories, dict):
+                for category in MARKET_REPORT_INDEX_CATEGORIES:
+                    expected = categories.get(category)
+                    actual = report_counts.get(category, 0)
+                    if expected != actual:
+                        problems.append(
+                            f"market report CSV has {actual} '{category}' rows but "
+                            f"market index counts.categories.{category}={expected}"
+                        )
+            unexpected_categories = sorted(set(report_counts) - set(MARKET_REPORT_INDEX_CATEGORIES))
+            if unexpected_categories:
+                problems.append(f"market report CSV has unexpected categories: {unexpected_categories}")
     if runtime_config.get("marketScanApiVersion") != "v2":
         problems.append("runtime-config must advertise marketScanApiVersion=v2")
     if not isinstance(runtime_config.get("edgeCacheEnabled"), bool):
@@ -128,6 +198,7 @@ def validate_public_smoke_payloads(payloads: dict[str, dict[str, Any]]) -> dict[
         "activeProvider": data_sources.get("activeProvider"),
         "schedulerAction": app_status.get("schedulerAutoScan", {}).get("action"),
         "marketScanRows": market_rows,
+        "marketReportRows": market_report_rows,
         "marketGenerationId": generation_id,
         "marketScanApiVersion": runtime_config.get("marketScanApiVersion"),
         "edgeCacheEnabled": runtime_config.get("edgeCacheEnabled"),
@@ -173,6 +244,7 @@ def run_public_smoke(
                 "runtimeConfig": client.request_json("/api/runtime-config"),
                 "dataSources": client.request_json("/api/data-sources/status"),
                 "marketIndex": client.request_json("/api/scan/market/index"),
+                "marketReportCsv": client.request_text("/api/reports/market?report_format=csv", method="POST"),
             }
             return validate_public_smoke_payloads(payloads)
         except RuntimeError as exc:

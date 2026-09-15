@@ -439,3 +439,13 @@ def test_weekly_seed_cache_refresh_opens_an_issue_when_it_fails():
     assert len(failure_steps) == 1
     assert "gh issue" in failure_steps[0]["run"]
     assert failure_steps[0] is steps[-1]
+
+
+def test_weekly_seed_cache_refresh_dispatches_validate_on_the_pr_branch():
+    path = Path(".github/workflows/refresh-cloudflare-seed.yml")
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert workflow["permissions"]["actions"] == "write"
+    steps = workflow["jobs"]["refresh"]["steps"]
+    pr_step = next(step for step in steps if step["name"] == "Open refresh pull request")
+    assert "gh workflow run ci.yml --ref" in pr_step["run"]

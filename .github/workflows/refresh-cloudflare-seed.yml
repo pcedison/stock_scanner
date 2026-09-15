@@ -9,6 +9,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 concurrency:
   group: cloudflare-seed-refresh
@@ -141,6 +142,17 @@ jobs:
                 echo "Seed rebuild and validation completed before PR creation."
               } >> "$GITHUB_STEP_SUMMARY"
             fi
+          fi
+          # GitHub does not trigger pull_request/push workflows for events created by
+          # GITHUB_TOKEN (seen on #170: the seed refresh PR got no checks and needed a
+          # manual `gh workflow run ci.yml --ref <branch>`), so dispatch Validate on the
+          # branch explicitly. This covers both the new-PR and existing-PR paths above,
+          # since the branch is pushed before either path runs.
+          if gh workflow run ci.yml --ref "$branch"; then
+            echo "Dispatched the Validate workflow for \`$branch\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Could not dispatch the Validate workflow for $branch; the PR may show no checks."
+            echo "Could not dispatch the Validate workflow for \`$branch\`; the PR may show no checks." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Open or update a failure issue
