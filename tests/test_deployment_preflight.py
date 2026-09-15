@@ -418,3 +418,15 @@ def test_nightly_date_sweep_covers_q2_freshness_boundaries():
     assert "2026-07-01" in text
     assert "2026-08-31" in text
     assert "2026-09-01" in text
+
+
+def test_weekly_seed_cache_refresh_opens_an_issue_when_it_fails():
+    path = Path(".github/workflows/refresh-cloudflare-seed.yml")
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert workflow["permissions"]["issues"] == "write"
+    steps = workflow["jobs"]["refresh"]["steps"]
+    failure_steps = [step for step in steps if str(step.get("if", "")).startswith("failure()")]
+    assert len(failure_steps) == 1
+    assert "gh issue" in failure_steps[0]["run"]
+    assert failure_steps[0] is steps[-1]
