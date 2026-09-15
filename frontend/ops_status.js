@@ -15,8 +15,8 @@
       if (target) target.textContent = value;
     }
 
-    function formatProviderState(state, marketScan) {
-      const provider = state.dataSourceStatus?.activeProvider || marketScan?.dataSource || "未載入";
+    function formatProviderState(state) {
+      const provider = state.dataSourceStatus?.activeProvider || "未載入";
       if (!state.dataSourceStatus) {
         return {
           label: provider,
@@ -32,8 +32,8 @@
       };
     }
 
-    function formatCacheState(marketScan) {
-      const cache = marketScan?.cacheStatus;
+    function formatCacheState(marketIndex) {
+      const cache = marketIndex?.cacheStatus;
       if (!cache) {
         return {
           label: "未知",
@@ -49,12 +49,12 @@
       };
     }
 
-    function financialFreshnessFrom(state, marketScan) {
-      return marketScan?.financialFreshness || state.dataSourceStatus?.financialFreshness || null;
+    function financialFreshnessFrom(state, marketIndex) {
+      return marketIndex?.financialFreshness || state.dataSourceStatus?.financialFreshness || null;
     }
 
-    function formatFilingState(state, marketScan) {
-      const freshness = financialFreshnessFrom(state, marketScan);
+    function formatFilingState(state, marketIndex) {
+      const freshness = financialFreshnessFrom(state, marketIndex);
       if (freshness?.status === "stale") {
         return {
           label: "財報快取落後",
@@ -67,7 +67,7 @@
           note: freshness.message || "財報期別已更新，但當期覆蓋數偏低",
         };
       }
-      const filing = marketScan?.filingContext?.activeFinancialReport;
+      const filing = marketIndex?.filingContext?.activeFinancialReport;
       if (filing) {
         const deadlines = [filing.generalDeadline, filing.financialDeadline].filter(Boolean).join(" / ");
         return {
@@ -75,7 +75,7 @@
           note: freshness?.message || (deadlines ? `申報期限 ${deadlines}` : "申報期限待確認"),
         };
       }
-      const monthlyRevenuePeriod = marketScan?.filingContext?.monthlyRevenuePeriod;
+      const monthlyRevenuePeriod = marketIndex?.filingContext?.monthlyRevenuePeriod;
       return {
         label: "申報資訊待定",
         note: monthlyRevenuePeriod ? `月營收期間 ${monthlyRevenuePeriod}` : "等待申報資訊",
@@ -118,29 +118,28 @@
       return "目前持股狀態穩定，可再複查一次。";
     }
 
-    function formatScanAction(marketScan) {
-      if (!marketScan) return "先更新市場掃描，再看篩選結果。";
-      const generatedAt = marketScan.generatedAt ? new Date(marketScan.generatedAt).toLocaleString() : "";
+    function formatScanAction(marketIndex) {
+      if (!marketIndex) return "先更新市場掃描，再看篩選結果。";
+      const generatedAt = marketIndex.generatedAt ? new Date(marketIndex.generatedAt).toLocaleString() : "";
       return generatedAt ? `市場掃描已更新於 ${generatedAt}。` : "市場掃描已就緒。";
     }
 
-    function formatDataAction(state, marketScan) {
+    function formatDataAction(state, marketIndex) {
       if (!state.schedulerStatus) return "資料來源與排程狀態尚未載入。";
       const status = state.schedulerStatus.status || "未知";
       const nextDay = state.schedulerStatus.nextTradingDay || "待確認";
       const autoAction = state.schedulerAutoScan?.action || "未排程";
-      const cacheHint = marketScan?.cacheStatus?.cacheHit ? "快取已命中" : "等待重新整理";
+      const cacheHint = marketIndex?.cacheStatus?.cacheHit ? "快取已命中" : "等待重新整理";
       return `排程 ${status}，下一交易日 ${nextDay}，自動掃描 ${autoAction}，${cacheHint}。`;
     }
 
-    function renderOverviewOpsStatus(scan = null) {
+    function renderOverviewOpsStatus(marketIndex = null) {
       const state = getState();
-      const marketScan = scan || state.marketScan;
       const alerts = holdingExitAlerts(state.holdingsScan);
       const holdingsCount = Array.isArray(state.holdings) ? state.holdings.length : 0;
-      const provider = formatProviderState(state, marketScan);
-      const cache = formatCacheState(marketScan);
-      const filing = formatFilingState(state, marketScan);
+      const provider = formatProviderState(state);
+      const cache = formatCacheState(marketIndex);
+      const filing = formatFilingState(state, marketIndex);
       const risk = formatRiskState(alerts, holdingsCount);
 
       setText("#overview-source-state", provider.label);
@@ -153,8 +152,8 @@
       setText("#overview-holding-risk-note", risk.note);
 
       setText("#overview-action-holdings", formatHoldingAction(alerts, holdingsCount));
-      setText("#overview-action-scan", formatScanAction(marketScan));
-      setText("#overview-action-data", formatDataAction(state, marketScan));
+      setText("#overview-action-scan", formatScanAction(marketIndex));
+      setText("#overview-action-data", formatDataAction(state, marketIndex));
 
       setText("#top-source-status", `資料來源：${provider.label}`);
       setText("#top-cache-status", `快取：${cache.label}`);

@@ -204,9 +204,6 @@ const renderer = createMarketRender({
   sortRulesForDisplay(rules) {
     return Array.isArray(rules) ? rules : [];
   },
-  sortMarketResultsForDisplay(_columnKey, results) {
-    return Array.isArray(results) ? results : [];
-  },
   marketColumnNote() {
     return "";
   },
@@ -214,12 +211,11 @@ const renderer = createMarketRender({
     return `${disclosureGroup}:${columnKey}:${result.stockCode}`;
   },
   MARKET_LIST_PAGE_SIZE: 12,
-  MARKET_RESULT_COLUMNS: [["watch", "Watch"]],
-  MARKET_DISCLOSURE_TABS: [{ key: "announced" }],
 });
-const html = renderer.renderMarketColumn("announced", "watch", "Watch", [
-  { stockCode: "1101", companyName: "台泥", status: "WATCH", reasons: [] },
-]);
+const html = renderer.renderMarketColumn("announced", "watch", "Watch", {
+  items: [{ stockCode: "1101", companyName: "台泥", status: "WATCH", reasons: [] }],
+  total: 1,
+});
 console.log(JSON.stringify({
   html,
   formatCacheTime: typeof renderer.formatCacheTime,
@@ -244,22 +240,12 @@ global.document = {
     return nodes.get(selector);
   },
 };
-const officialQ = { code: "OFFICIAL_Q", severity: "INFO", message: "2026Q1 EPS 1.23" };
-const oldQ = { code: "OFFICIAL_Q", severity: "INFO", message: "2025Q4 EPS 1.23" };
-const scan = {
+state.marketIndex = {
   generatedAt: "2026-05-20T00:00:00.000Z",
-  filingContext: { activeFinancialReport: { period: "2026Q1" } },
-  entry: [
-    { stockCode: "1001", status: "ENTRY", reasons: [officialQ] },
-    { stockCode: "1002", status: "ENTRY", reasons: [oldQ] },
-  ],
-  watch: [
-    { stockCode: "2001", status: "INSUFFICIENT_DATA", reasons: [officialQ, { code: "E3", severity: "WATCH" }] },
-    { stockCode: "2002", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "INSUFFICIENT_DATA" }] },
-  ],
-  excluded: [
-    { stockCode: "3001", status: "EXCLUDED", reasons: [officialQ] },
-  ],
+  disclosures: {
+    announced: { count: 3, entry: { count: 1 }, watch: { count: 1 }, excluded: { count: 1 } },
+    pending: { count: 2, entry: { count: 1 }, watch: { count: 1 }, excluded: { count: 0 } },
+  },
 };
 function counts() {
   return {
@@ -269,10 +255,10 @@ function counts() {
   };
 }
 state.activeMarketDisclosureTab = "announced";
-renderOverviewStats(scan);
+renderOverviewStats();
 const announced = counts();
 state.activeMarketDisclosureTab = "pending";
-renderOverviewStats(scan);
+renderOverviewStats();
 const pending = counts();
 console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosureKey("bogus") }));
 """
@@ -289,68 +275,6 @@ console.log(JSON.stringify({ announced, pending, fallback: activeMarketDisclosur
     assert payload["announced"] == {"entry": "1", "watch": "1", "excluded": "1"}
     assert payload["pending"] == {"entry": "1", "watch": "1", "excluded": "0"}
     assert payload["fallback"] == "announced"
-
-
-def test_market_scan_groups_by_freshness_financial_period_before_active_period():
-    script = r"""
-const { createMarketScan } = require("./frontend/market_scan.js");
-const { groupMarketScanResults } = createMarketScan({
-  getState: () => ({}),
-  safeText: (value, fallback = "") => String(value ?? "").trim() || fallback,
-});
-const officialQ = (stockCode, period, status = "INSUFFICIENT_DATA") => ({
-  stockCode,
-  status,
-  reasons: [
-    { code: "E3", severity: "WATCH" },
-    { code: "OFFICIAL_Q", severity: "INFO", message: `${period} EPS 1.23` },
-  ],
-});
-const stockCodes = (group) => Object.fromEntries(
-  Object.entries(group).map(([column, results]) => [column, results.map((result) => result.stockCode)])
-);
-
-const mixedContext = groupMarketScanResults({
-  filingContext: {
-    activeFinancialReport: { period: "2026Q2" },
-    freshnessFinancialReport: { period: "2026Q1" },
-  },
-  entry: [officialQ("1001", "2026Q1", "ENTRY"), officialQ("1002", "2026Q2", "ENTRY")],
-  watch: [officialQ("2001", "2026Q1"), officialQ("2002", "2025Q4")],
-  excluded: [],
-});
-const activeFallback = groupMarketScanResults({
-  filingContext: { activeFinancialReport: { period: "2026Q2" } },
-  entry: [officialQ("3001", "2026Q2", "ENTRY"), officialQ("3002", "2026Q1", "ENTRY")],
-  watch: [],
-  excluded: [],
-});
-const noPeriod = groupMarketScanResults({
-  filingContext: {},
-  entry: [],
-  watch: [{ stockCode: "4001", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }] }],
-  excluded: [],
-});
-console.log(JSON.stringify({
-  mixed: { announced: stockCodes(mixedContext.announced), pending: stockCodes(mixedContext.pending) },
-  fallback: { announced: stockCodes(activeFallback.announced), pending: stockCodes(activeFallback.pending) },
-  noPeriod: { announced: stockCodes(noPeriod.announced), pending: stockCodes(noPeriod.pending) },
-}));
-"""
-    payload = _run_node_json(script)
-
-    assert payload["mixed"] == {
-        "announced": {"entry": ["1001"], "watch": ["2001"], "excluded": []},
-        "pending": {"entry": ["1002"], "watch": ["2002"], "excluded": []},
-    }
-    assert payload["fallback"] == {
-        "announced": {"entry": ["3001"], "watch": [], "excluded": []},
-        "pending": {"entry": ["3002"], "watch": [], "excluded": []},
-    }
-    assert payload["noPeriod"] == {
-        "announced": {"entry": [], "watch": ["4001"], "excluded": []},
-        "pending": {"entry": [], "watch": [], "excluded": []},
-    }
 
 
 def test_api_client_replays_only_safe_reads_after_pages_proxy_5xx():
@@ -821,46 +745,12 @@ console.log(JSON.stringify({
     assert payload["nonJson"] == generic
 
 
-def test_market_scan_acceptance_helper_owns_its_warning_lifecycle():
-    source = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
-    market_render_source = (ROOT / "frontend" / "market_render.js").read_text(encoding="utf-8")
-    assert "state.marketScan = scan" not in source
-    assert market_render_source.count("state.marketScan = scan") == 1
-
-    payload = _run_node_json(
-        r"""
-const app = require("./frontend/app.js");
-const available = typeof app.acceptMarketScan === "function";
-if (!available) {
-  console.log(JSON.stringify({ available }));
-} else {
-  const base = {
-    generatedAt: "2026-07-12T00:00:00Z",
-    entry: [],
-    watch: [],
-    excluded: [],
-  };
-  app.state.marketScan = base;
-  app.state.marketScanWarning = null;
-  app.acceptMarketScan({
-    ...base,
-    cacheStatus: { refreshStatus: "unavailable", requestId: "task2-id" },
-  }, { resetUi: false });
-  const unavailableWarning = app.state.marketScanWarning;
-  app.acceptMarketScan({ ...base, cacheStatus: { refreshStatus: "fresh" } }, { resetUi: false });
-  console.log(JSON.stringify({
-    available,
-    unavailableWarning,
-    cleared: app.state.marketScanWarning === null,
-  }));
-}
-"""
-    )
-
-    assert payload["available"] is True
-    assert "暫時" in payload["unavailableWarning"]
-    assert "task2-id" in payload["unavailableWarning"]
-    assert payload["cleared"] is True
+def test_v1_market_scan_state_is_gone():
+    # The v1 whole-scan read is retired, so no module may keep or accept a `state.marketScan`.
+    for name in ("app.js", "market_render.js", "market_scan.js", "market_query.js", "ops_status.js"):
+        source = (ROOT / "frontend" / name).read_text(encoding="utf-8")
+        assert "marketScan" not in source, name
+        assert "acceptMarketScan" not in source, name
 
 
 def test_api_client_does_not_direct_fallback_for_account_mutations():
@@ -982,10 +872,12 @@ const client = createApiClient({
     assert payload["mode"] == "fallback"
 
 
-def test_api_client_allows_runtime_config_direct_fallback():
+def test_api_client_drops_the_unused_runtime_config_fallback_route():
+    # The client no longer calls /api/runtime-config, so the direct-fallback allowlist
+    # entry that only existed for that call is gone too.
     source = (ROOT / "frontend" / "api_client.js").read_text(encoding="utf-8")
 
-    assert 'GET \\/api\\/runtime-config' in source
+    assert "runtime-config" not in source
 
 
 def test_pages_dev_api_client_defaults_to_same_origin_for_account_routes():
@@ -1027,7 +919,7 @@ const client = createApiClient({
 
 def test_parse_stock_input_cases_do_not_return_undefined():
     script = r"""
-const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, groupMarketScanResults, sortMarketResultsForDisplay, e4PerValue, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
+const { DEFAULT_COMPANIES, STRATEGY_STATUS_DETAILS, state, findStrategyStatusDetail, parseStockInput, normalizeCompanies, renderAnalysisCard, renderMarketResultRow, renderMarketPagination, renderStrategyRuleCards, adminUsersErrorMessage, loadHoldingsFromStorage, normalizeHoldingRecords, apiErrorMessage, normalizeAuthUsername, normalizeAuthUser, authValidationMessage, isSuperUserIdentity, isSuperUser, hasInsufficientData, hasFinancialReportForContext, hasPublishedScanData, isPartialPublishedResult, formatEvidenceValue, renderRuleEvidence, renderRule, sortRulesForDisplay, settingsPermissionMessage, holdingExitCodes, holdingSignal, renderHoldingSignal, holdingExitAlerts, renderHoldingExitAlertBanner } = require("./frontend/app.js");
 const cases = DEFAULT_COMPANIES.flatMap((company) => [
   [company.stockCode, company.stockCode, company.name],
   [company.name, company.stockCode, company.name],
@@ -1089,32 +981,10 @@ const holdings = loadHoldingsFromStorage(fakeStorage, DEFAULT_COMPANIES);
 fakeStorage.value = "{bad json";
 const repaired = loadHoldingsFromStorage(fakeStorage, DEFAULT_COMPANIES);
 const normalizedHoldings = normalizeHoldingRecords([{ stockCode: "2357", name: "x", shares: 1 }, { stockCode: "2357", shares: 2 }], DEFAULT_COMPANIES);
-const marketGroups = groupMarketScanResults({
-  entry: [{ stockCode: "2357", status: "ENTRY", reasons: [{ severity: "INFO" }] }],
-  watch: [
-    { stockCode: "1101", status: "INSUFFICIENT_DATA", reasons: [{ code: "E1", severity: "INSUFFICIENT_DATA" }, { code: "E3", severity: "WATCH" }] },
-    { stockCode: "9999", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "INSUFFICIENT_DATA" }] }
-  ],
-  excluded: [{ stockCode: "2881", status: "EXCLUDED", reasons: [{ severity: "EXCLUDED" }] }],
-});
-const sortedEntryByPer = sortMarketResultsForDisplay("entry", [
-  { stockCode: "3000", reasons: [{ code: "E4", message: "PER 為 18.5。" }] },
-  { stockCode: "1000", reasons: [{ code: "E4", message: "PER 為 9.8。" }] },
-  { stockCode: "2000", reasons: [{ code: "E4", message: "PER 為 15.2。" }] },
-  { stockCode: "9999", reasons: [{ code: "E4", message: "PER 缺資料。" }] },
-]).map((item) => item.stockCode);
-const extractedPer = e4PerValue({ reasons: [{ code: "E4", message: "PER 為 12.34。" }] });
+const partialWatchResult = { stockCode: "1101", status: "INSUFFICIENT_DATA", reasons: [{ code: "E1", severity: "INSUFFICIENT_DATA" }, { code: "E3", severity: "WATCH" }] };
 const q1Context = { activeFinancialReport: { period: "2026Q1" } };
-const filingAwareGroups = groupMarketScanResults({
-  filingContext: q1Context,
-  entry: [],
-  watch: [
-    { stockCode: "1101", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }, { code: "OFFICIAL_Q", severity: "INFO", message: "2026Q1 EPS 0.1。" }] },
-    { stockCode: "1102", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }, { code: "OFFICIAL_Q", severity: "INFO", message: "2025Q4 EPS 0.1。" }] },
-    { stockCode: "1103", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }] }
-  ],
-  excluded: [],
-});
+const q1WatchResult = { stockCode: "1101", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }, { code: "OFFICIAL_Q", severity: "INFO", message: "2026Q1 EPS 0.1。" }] };
+const staleQWatchResult = { stockCode: "1102", status: "INSUFFICIENT_DATA", reasons: [{ code: "E3", severity: "WATCH" }, { code: "OFFICIAL_Q", severity: "INFO", message: "2025Q4 EPS 0.1。" }] };
 const evidenceRule = {
   code: "E1",
   title: "近 5 年沒有虧損",
@@ -1198,7 +1068,7 @@ const adminErrors = {
   notFound: adminUsersErrorMessage("Not found"),
   normal: adminUsersErrorMessage("請先登入"),
 };
-console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, marketGroups, sortedEntryByPer, extractedPer, filingAwareGroups, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, exitCodes, exitSignal, exitSignalHtml, exitAlerts, exitAlertBanner, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(marketGroups.announced.watch[0]), hasFinancialForContext: hasFinancialReportForContext(filingAwareGroups.announced.watch[0], q1Context), hasPublished: hasPublishedScanData(marketGroups.announced.watch[0]), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
+console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompleteParsed, incompleteHtml, partialHtml, pendingHtml, holdingPartialHtml, compactMarketRow, marketPagination, trackedAddHtml, untrackedAddHtml, holdings, repaired, repairedStorage: fakeStorage.value, normalizedHoldings, apiErrors, authValidation, adminErrors, auth: { normalizedSuperUsername: normalizeAuthUsername(" PCEDISON@GMAIL.COM "), pcedisonFromUsername, pcedisonMissingFlag, normalWithFlag, pcedisonIdentity: isSuperUserIdentity(pcedisonMissingFlag), normalIdentity: isSuperUserIdentity(normalWithFlag), superState, normalState, normalSettingsPermission, anonymousSettingsPermission }, evidenceValue, evidenceHtml, evidenceRuleHtml, orderedCodes, orderedHtml, exitCodes, exitSignal, exitSignalHtml, exitAlerts, exitAlertBanner, strategyCardsHtml, strategyDetailLabels: STRATEGY_STATUS_DETAILS.map((item) => item.label), entryDetail: findStrategyStatusDetail("entry"), addWatchDetail: findStrategyStatusDetail("addWatch"), tSeriesDetail: findStrategyStatusDetail("grossMargin"), hasInsufficient: hasInsufficientData(partialWatchResult), hasFinancialForContext: hasFinancialReportForContext(q1WatchResult, q1Context), staleFinancialForContext: hasFinancialReportForContext(staleQWatchResult, q1Context), hasPublished: hasPublishedScanData(partialWatchResult), isPartialPublished: isPartialPublishedResult(partialPublishedResult) }));
 """
     completed = subprocess.run(
         ["node", "-e", script],
@@ -1267,14 +1137,6 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert payload["auth"]["normalState"] is False
     assert payload["auth"]["normalSettingsPermission"] == "需要管理員"
     assert payload["auth"]["anonymousSettingsPermission"] == "需要登入管理員"
-    assert payload["marketGroups"]["announced"]["entry"][0]["stockCode"] == "2357"
-    assert payload["marketGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
-    assert payload["marketGroups"]["announced"]["excluded"][0]["stockCode"] == "2881"
-    assert payload["marketGroups"]["pending"]["watch"][0]["stockCode"] == "9999"
-    assert payload["sortedEntryByPer"] == ["1000", "2000", "3000", "9999"]
-    assert payload["extractedPer"] == 12.34
-    assert payload["filingAwareGroups"]["announced"]["watch"][0]["stockCode"] == "1101"
-    assert [item["stockCode"] for item in payload["filingAwareGroups"]["pending"]["watch"]] == ["1102", "1103"]
     assert payload["evidenceValue"] == "119.63 億"
     assert "evidence-table" in payload["evidenceHtml"]
     assert "data-evidence-width" in payload["evidenceHtml"]
@@ -1316,6 +1178,7 @@ console.log(JSON.stringify({ output, unknown, incompleteCompanies, incompletePar
     assert [item[0] for item in payload["tSeriesDetail"]["items"]][:2] == ["T1/T2", "T3"]
     assert payload["hasInsufficient"] is True
     assert payload["hasFinancialForContext"] is True
+    assert payload["staleFinancialForContext"] is False
     assert payload["hasPublished"] is True
     assert payload["isPartialPublished"] is True
 
@@ -2079,7 +1942,6 @@ def test_market_query_clear_generation_invalidates_pending_index_without_losing_
 def test_market_renderer_uses_server_window_without_sorting_or_slicing_again():
     script = r"""
 const { createMarketRender } = require("./frontend/market_render.js");
-let sortCalls = 0;
 const state = {
   marketListPages: { announced: { watch: 16 } },
   expandedMarketResultIds: new Set(),
@@ -2088,8 +1950,6 @@ const renderer = createMarketRender({
   getState: () => state,
   escapeHtml: (value) => String(value ?? ""),
   safeText: (value, fallback = "") => String(value ?? "").trim() || fallback,
-  safeRequestId: () => "",
-  appendRequestId: (message) => message,
   safeCompanyName: (result) => result.companyName || "",
   displayResultStatus: (result) => ({ status: result.status || "WATCH", summary: result.summary || "" }),
   statusClass: () => "watch",
@@ -2097,12 +1957,9 @@ const renderer = createMarketRender({
   renderRule: () => "",
   resultActionButtons: () => "",
   sortRulesForDisplay: (rules) => rules,
-  sortMarketResultsForDisplay: (_column, rows) => { sortCalls += 1; return [...rows].reverse(); },
   marketColumnNote: () => "",
   marketResultId: (result) => `announced:watch:${result.stockCode}`,
   MARKET_LIST_PAGE_SIZE: 6,
-  MARKET_RESULT_COLUMNS: [["watch", "Watch"]],
-  MARKET_DISCLOSURE_TABS: [{ key: "announced" }],
 });
 const rows = Array.from({ length: 6 }, (_, offset) => ({ stockCode: String(1096 + offset), companyName: `Row ${96 + offset}`, status: "WATCH", reasons: [] }));
 const html = renderer.renderMarketColumn("announced", "watch", "Watch", {
@@ -2112,13 +1969,14 @@ const html = renderer.renderMarketColumn("announced", "watch", "Watch", {
   loading: true,
   error: "temporary",
 });
-console.log(JSON.stringify({ html, sortCalls }));
+console.log(JSON.stringify({ html }));
 """
     payload = _run_node_json(script)
 
-    assert payload["sortCalls"] == 0
     assert "Row 96" in payload["html"]
     assert "Row 101" in payload["html"]
+    # The window is rendered in the order the server sent it, not re-sorted.
+    assert payload["html"].index("Row 96") < payload["html"].index("Row 101")
     assert "(205)" in payload["html"]
     assert "temporary" in payload["html"]
 
@@ -2129,7 +1987,7 @@ def test_market_scan_lookup_falls_back_to_loaded_v2_page_items():
 const { createMarketScan } = require("./frontend/market_scan.js");
 const loaded = { stockCode: "2330", companyName: "TSMC", status: "WATCH", reasons: [] };
 const helpers = createMarketScan({
-  getState: () => ({ marketScan: null }),
+  getState: () => ({}),
   safeText: (value, fallback = "") => String(value ?? "").trim() || fallback,
   findLoadedResult: (stockCode) => stockCode === "2330" ? loaded : null,
 });
@@ -2148,23 +2006,29 @@ def test_app_v2_integration_keeps_legacy_state_separate_and_exports_bounded():
     assert "marketIndex: null" in source
     assert "marketWindow:" in source
     assert "marketQueryWarning:" in source
-    assert 'MARKET_API_VERSION === "v2"' in source
     assert "state.schedulerAutoScan?.scan" not in source
     assert "loadWindow" not in export_body
     assert "state.marketIndex" in source[source.index("function refreshHoldingsDependentViews") : source.index("function upsertHolding")]
 
 
-def test_app_loads_runtime_config_before_initial_data_and_is_v2_only():
+def test_app_is_v2_only_and_carries_no_api_version_switch():
     source = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
     market_query_source = (ROOT / "frontend" / "market_query.js").read_text(encoding="utf-8")
+    api_client_source = (ROOT / "frontend" / "api_client.js").read_text(encoding="utf-8")
     index_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    init_start = source.index("async function init")
-    init_body = source[init_start : source.index('if (typeof document !== "undefined")', init_start)]
 
-    assert "let MARKET_API_VERSION" in source
-    assert "async function loadRuntimeConfig" in source
-    assert 'apiJson("/api/runtime-config", { method: "GET" })' in source
-    assert init_body.index("await loadRuntimeConfig();") < init_body.index("await Promise.all")
+    # The client no longer branches on a market API version, so the switch, the
+    # advisory runtime-config read that only fed it, and the meta that pinned it are gone.
+    # (The /api/runtime-config endpoint itself stays for the remote smoke.)
+    for js_source in (source, market_query_source):
+        assert "MARKET_API_VERSION" not in js_source
+        assert "marketApiVersion" not in js_source
+    # app.js made the call; api_client.js allowlisted it for the direct-worker fallback.
+    for js_source in (source, api_client_source):
+        assert "runtime-config" not in js_source
+    assert "loadRuntimeConfig" not in source
+    assert "acceptRuntimeConfig" not in source
+    assert "stock-scanner-market-api-version" not in index_html
 
     # v1 is retired: app.js must carry no downgrade path at all (not even the literal),
     # and neither module may request the retired whole-scan route.
@@ -2173,7 +2037,6 @@ def test_app_loads_runtime_config_before_initial_data_and_is_v2_only():
         assert '"/api/scan/market"' not in js_source
         assert "'/api/scan/market'" not in js_source
         assert "`/api/scan/market`" not in js_source
-    assert 'name="stock-scanner-market-api-version" content="v2"' in index_html
 
 
 def test_app_market_query_storage_getter_security_error_is_fail_soft():
@@ -2991,7 +2854,7 @@ def test_market_refresh_pagehide_abort_does_not_replace_app_warning():
 const listeners = new Map();
 globalThis.addEventListener = (name, listener) => listeners.set(name, listener);
 globalThis.removeEventListener = (name) => listeners.delete(name);
-globalThis.StockScannerConfig = { apiMode: "same-origin", marketApiVersion: "v2" };
+globalThis.StockScannerConfig = { apiMode: "same-origin" };
 globalThis.document = { querySelector: () => null, addEventListener() {} };
 const app = require("./frontend/app.js");
 app.state.marketIndex = { generationId: "a".repeat(24) };

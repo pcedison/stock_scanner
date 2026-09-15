@@ -11,11 +11,17 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 STYLE_VERSION = "20260519-design-refresh"
 OPS_DASHBOARD_VERSION = "20260622-ops-dashboard"
 TASK6_SCRIPT_VERSION = "20260713-market-refresh-command"
-API_CLIENT_VERSION = TASK6_SCRIPT_VERSION
-APP_VERSION = TASK6_SCRIPT_VERSION
-MARKET_RENDER_VERSION = TASK6_SCRIPT_VERSION
-MARKET_SCAN_VERSION = TASK6_SCRIPT_VERSION
-MARKET_QUERY_VERSION = TASK6_SCRIPT_VERSION
+# Modules touched by the v2-only cleanup. `frontend/_headers` serves `/app.js` and
+# `/api_client.js` with `max-age=31536000, immutable`, so a content change there is
+# invisible to returning browsers without a fresh `?v=`; the other changed modules
+# are bumped to the same value for consistency.
+V2_ONLY_SCRIPT_VERSION = "20260915-v2-only"
+API_CLIENT_VERSION = V2_ONLY_SCRIPT_VERSION
+APP_VERSION = V2_ONLY_SCRIPT_VERSION
+MARKET_RENDER_VERSION = V2_ONLY_SCRIPT_VERSION
+MARKET_SCAN_VERSION = V2_ONLY_SCRIPT_VERSION
+MARKET_QUERY_VERSION = V2_ONLY_SCRIPT_VERSION
+OPS_STATUS_VERSION = V2_ONLY_SCRIPT_VERSION
 MARKET_REFRESH_VERSION = TASK6_SCRIPT_VERSION
 STORAGE_VERSION = TASK6_SCRIPT_VERSION
 STRATEGY_CONTENT_VERSION = "20260612-x1-exit-rule"
@@ -135,7 +141,8 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert f'src="/storage.js?v={STORAGE_VERSION}"' in index_html
     assert 'src="/renderers.js?v=20260522-frontend-split"' in index_html
     assert f'src="/api_client.js?v={API_CLIENT_VERSION}"' in index_html
-    assert '<meta name="stock-scanner-market-api-version" content="v2" />' in index_html
+    # No market-api-version meta: nothing on the client branches on it any more.
+    assert "stock-scanner-market-api-version" not in index_html
     assert f'src="/market_query.js?v={MARKET_QUERY_VERSION}"' in index_html
     assert index_html.index('src="/market_query.js') < index_html.index('src="/market_scan.js')
     assert f'src="/market_refresh.js?v={MARKET_REFRESH_VERSION}"' in index_html
@@ -143,11 +150,13 @@ def test_frontend_css_cache_buster_includes_design_refresh_styles():
     assert index_html.index('src="/market_refresh.js') < index_html.index('src="/market_scan.js')
     assert f'src="/market_scan.js?v={MARKET_SCAN_VERSION}"' in index_html
     assert f'src="/market_render.js?v={MARKET_RENDER_VERSION}"' in index_html
-    assert f'src="/ops_status.js?v={OPS_DASHBOARD_VERSION}"' in index_html
+    assert f'src="/ops_status.js?v={OPS_STATUS_VERSION}"' in index_html
     assert f'src="/ops_view_renderers.js?v={OPS_DASHBOARD_VERSION}"' in index_html
     assert f'src="/app.js?v={APP_VERSION}"' in index_html
-    for script_name in ("api_client", "app", "storage", "market_query", "market_refresh", "market_scan", "market_render"):
+    for script_name in ("storage", "market_refresh"):
         assert f'src="/{script_name}.js?v={TASK6_SCRIPT_VERSION}"' in index_html
+    for script_name in ("api_client", "app", "market_query", "market_scan", "market_render", "ops_status"):
+        assert f'src="/{script_name}.js?v={V2_ONLY_SCRIPT_VERSION}"' in index_html
     assert ".kpi-card" in styles_css
     assert "Claude Design v2 port" in styles_css
     assert ".holding-exit-alert-banner.critical" in styles_css

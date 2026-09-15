@@ -28,7 +28,6 @@ const API_CLIENT = API_CLIENT_HELPERS.createApiClient({
   csrfHeaderName: CSRF_HEADER_NAME,
   csrfHeaderValue: CSRF_HEADER_VALUE,
 });
-let MARKET_API_VERSION = MARKET_QUERY_HELPERS.marketApiVersion();
 const APP_STORAGE = STORAGE_HELPERS.safeStorage();
 const MARKET_QUERY_CLIENT = MARKET_QUERY_HELPERS.createMarketQueryClient({ apiJson, storage: APP_STORAGE });
 
@@ -48,8 +47,6 @@ const state = {
   holdings: [],
   settings: { ...DEFAULT_SETTINGS },
   selectedCompany: null,
-  marketScan: null,
-  marketScanWarning: null,
   marketIndex: null,
   marketWindow: { items: [], total: 0, windowStart: 0, loading: false, error: null },
   marketQueryWarning: null,
@@ -120,7 +117,6 @@ const {
 
 const MARKET_SCAN_HELPERS = _mod("StockScannerMarketScan", "./market_scan.js");
 const {
-  MARKET_RESULT_COLUMNS,
   MARKET_LIST_PAGE_SIZE,
   MARKET_COLUMN_LABELS,
   MARKET_DISCLOSURE_TABS,
@@ -128,12 +124,8 @@ const {
   hasFinancialReportForContext,
   hasPublishedScanData,
   isPartialPublishedResult,
-  groupMarketScanResults,
-  countMarketGroup,
   activeMarketDisclosureKey,
   activeMarketColumnKey,
-  e4PerValue,
-  sortMarketResultsForDisplay,
   marketColumnNote,
   marketResultId,
   findMarketResultById,
@@ -253,19 +245,14 @@ const MARKET_RENDER_HELPERS = _mod("StockScannerMarketRender", "./market_render.
 const {
   getMarketPage,
   resetMarketListUi,
-  clampMarketListPages,
   renderMarketPagination,
   renderMarketResultRow,
   renderMarketColumn,
   renderScanCacheStatus,
-  acceptMarketScan,
-  renderMarketScanWarning,
 } = MARKET_RENDER_HELPERS.createMarketRender({
   getState: () => state,
   escapeHtml,
   safeText,
-  safeRequestId,
-  appendRequestId,
   safeCompanyName,
   displayResultStatus,
   statusClass,
@@ -273,12 +260,9 @@ const {
   renderRule,
   resultActionButtons,
   sortRulesForDisplay,
-  sortMarketResultsForDisplay,
   marketColumnNote,
   marketResultId,
   MARKET_LIST_PAGE_SIZE,
-  MARKET_RESULT_COLUMNS,
-  MARKET_DISCLOSURE_TABS,
 });
 const MARKET_QUERY_COORDINATOR = MARKET_QUERY_HELPERS.createMarketQueryCoordinator({
   client: MARKET_QUERY_CLIENT,
@@ -361,12 +345,10 @@ const { renderOverviewOpsStatus } = OPS_STATUS_HELPERS.createOpsStatus({
 const { renderOverview: renderOverviewStats, updateNavigation: updateMarketColumnNav } =
   MARKET_QUERY_HELPERS.createMarketCountUi({
     state,
-    getApiVersion: () => MARKET_API_VERSION,
     queryAll: $$,
     labels: MARKET_COLUMN_LABELS,
     activeTab: activeMarketDisclosureKey,
     activeColumn: activeMarketColumnKey,
-    groupScan: groupMarketScanResults,
     renderOps: renderOverviewOpsStatus,
   });
 function renderHoldingExitAlertBanner(alerts = holdingExitAlerts()) {
@@ -424,7 +406,7 @@ function renderHoldingExitAlerts() {
 function refreshHoldingsDependentViews() {
   renderHoldings();
   if (state.holdingsScan) renderHoldingResults();
-  if (state.marketScan || state.marketIndex) renderMarketResults();
+  if (state.marketIndex) renderMarketResults();
 }
 function upsertHolding(holding) {
   const normalizedCompany = normalizeCompany(holding);
@@ -535,20 +517,6 @@ async function apiJson(url, options = {}) {
     throw new Error(apiErrorMessage(response, text));
   }
   return text ? JSON.parse(text) : {};
-}
-function acceptRuntimeConfig() {
-  // The whole-scan v1 read is retired, so the client is v2 whatever the server advertises.
-  MARKET_API_VERSION = "v2";
-  globalThis.StockScannerConfig = { ...(globalThis.StockScannerConfig || {}), marketApiVersion: "v2" };
-  return MARKET_API_VERSION;
-}
-async function loadRuntimeConfig() {
-  try {
-    await apiJson("/api/runtime-config", { method: "GET" });
-  } catch {
-    // Runtime config is advisory; a failure must not change which market API we use.
-  }
-  return acceptRuntimeConfig();
 }
 async function apiFetch(url, options = {}) {
   try {
@@ -1107,61 +1075,48 @@ async function loadMarketResultDetails(resultId) {
 
 function renderMarketResults() {
   const target = $("#market-results");
-  const isV2 = MARKET_API_VERSION === "v2";
-  const source = isV2 ? state.marketIndex : state.marketScan;
+  const source = state.marketIndex;
   if (!source) {
-    setEmptyState(target, isV2 ? "等待市場索引" : "尚未掃描市場");
+    setEmptyState(target, "等待市場索引");
     updateMarketColumnNav();
     renderOverviewStats();
     return;
   }
   $("#scan-time").textContent = `更新 ${new Date(source.generatedAt).toLocaleString()}`;
-  const grouped = isV2 ? null : groupMarketScanResults(source);
-  if (grouped) clampMarketListPages(grouped);
   const activeTab = activeMarketDisclosureKey();
   const activeMeta = MARKET_DISCLOSURE_TABS.find((tab) => tab.key === activeTab);
   const activeColumn = activeMarketColumnKey();
   const activeColumnTitle = MARKET_COLUMN_LABELS[activeColumn] || "掃描結果";
-  updateMarketColumnNav(grouped, activeTab);
+  updateMarketColumnNav(activeTab);
   const page = getMarketPage(activeTab, activeColumn);
   const windowMatches =
     state.marketWindow.disclosure === activeTab &&
     state.marketWindow.category === activeColumn &&
     state.marketWindow.uiPage === page;
-  const activeResults = isV2
-    ? windowMatches
-      ? state.marketWindow
-      : {
-          items: [],
-          total: source.disclosures[activeTab][activeColumn].count,
-          loading: true,
-          error: null,
-        }
-    : grouped[activeTab][activeColumn] || [];
-  const report = source.filingContext?.activeFinancialReport;
-  const filingSummary = isV2
-    ? `財報期別 ${source.disclosurePeriod || "最新"}`
-    : report
-      ? `目前依 ${report.label}（一般公司期限 ${report.generalDeadline}${
-          report.financialDeadline ? `，金控期限 ${report.financialDeadline}` : ""
-        }）判斷當期已公告。`
-      : `目前非季報/年報申報窗口，主要依 ${source.filingContext?.monthlyRevenuePeriod || "最新"} 月營收公告判斷。`;
+  const activeResults = windowMatches
+    ? state.marketWindow
+    : {
+        items: [],
+        total: source.disclosures[activeTab][activeColumn].count,
+        loading: true,
+        error: null,
+      };
+  const filingSummary = `財報期別 ${source.disclosurePeriod || "最新"}`;
   const freshnessSummary = source.financialFreshness?.message ? `財報快取：${source.financialFreshness.message}` : "";
-  const sourceName = isV2 ? "官方分頁快取" : source.dataSource || "mock";
-  const sourceNote = isV2 ? filingSummary : source.note || "目前為示範樣本，不代表真實全台股即時掃描。";
-  const tabTotal = (tab) => (isV2 ? source.disclosures[tab].count : countMarketGroup(grouped[tab]));
+  const sourceName = "官方分頁快取";
+  const sourceNote = filingSummary;
+  const tabTotal = (tab) => source.disclosures[tab].count;
   setSafeHtml(
     target,
     `<div class="data-source-note"><strong>資料來源：${escapeHtml(sourceName)}</strong><span>${escapeHtml(sourceNote)}</span></div>
     ${renderScanCacheStatus(source)}
-    ${isV2 && state.marketQueryWarning ? `<p class="data-source-note market-scan-warning" role="status">${escapeHtml(state.marketQueryWarning)}</p>` : ""}
+    ${state.marketQueryWarning ? `<p class="data-source-note market-scan-warning" role="status">${escapeHtml(state.marketQueryWarning)}</p>` : ""}
     <div class="market-disclosure-tabs" aria-label="公告狀態分組">${MARKET_DISCLOSURE_TABS.map((tab) => `<button class="tab ${tab.key === activeTab ? "active" : ""}" type="button" data-market-disclosure-tab="${escapeHtml(tab.key)}">${escapeHtml(tab.title)} (${escapeHtml(tabTotal(tab.key))})</button>`).join("")}</div>
     <div class="data-source-note disclosure-note"><strong>${escapeHtml(activeMeta.title)}</strong><span>${escapeHtml(filingSummary)} ${escapeHtml(freshnessSummary)} ${escapeHtml(activeMeta.note)} 目前顯示「${escapeHtml(activeColumnTitle)}」；每頁最多顯示 ${escapeHtml(MARKET_LIST_PAGE_SIZE)} 家，按 + 展開條件細節，也可匯出完整清單。</span></div>
     <div class="result-columns single-result-column">${renderMarketColumn(activeTab, activeColumn, activeColumnTitle, activeResults)}</div>`,
   );
-  if (!isV2) renderMarketScanWarning(target);
   applyEvidenceBarWidths(target);
-  renderOverviewStats(source, activeTab);
+  renderOverviewStats(activeTab);
 }
 function renderDataAndScheduler() {
   const dataTarget = $("#data-source-status");
@@ -1261,11 +1216,8 @@ function showView(view) {
   if (view === "admin" && isSuperUser() && !state.adminUsers.length && !state.adminIsLoading) loadAdminUsers();
   if (view === "admin") renderAdminUsers();
   if (view === "data") renderDataAndScheduler();
-  updateMarketColumnNav(
-    state.marketScan ? groupMarketScanResults(state.marketScan) : null,
-    state.activeMarketDisclosureTab,
-  );
-  renderOverviewStats(state.marketScan, state.activeMarketDisclosureTab);
+  updateMarketColumnNav(state.activeMarketDisclosureTab);
+  renderOverviewStats(state.activeMarketDisclosureTab);
 }
 
 async function loadCompanies() {
@@ -1569,7 +1521,7 @@ function bindEvents() {
         showView("scan");
         showTab("market");
         renderMarketResults();
-        if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
+        void loadActiveMarketWindow();
         closeMobileMenu();
         return;
       }
@@ -1841,7 +1793,7 @@ function bindEvents() {
     if (tabButton) {
       state.activeMarketDisclosureTab = tabButton.dataset.marketDisclosureTab;
       renderMarketResults();
-      if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
+      void loadActiveMarketWindow();
       return;
     }
     const pageButton = event.target.closest("[data-market-page-column]");
@@ -1852,7 +1804,7 @@ function bindEvents() {
       if (state.marketListPages?.[tabKey] && columnKey in state.marketListPages[tabKey]) {
         state.marketListPages[tabKey][columnKey] = Math.max(0, getMarketPage(tabKey, columnKey) + direction);
         renderMarketResults();
-        if (MARKET_API_VERSION === "v2") void loadActiveMarketWindow();
+        void loadActiveMarketWindow();
       }
       return;
     }
@@ -1882,7 +1834,6 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
-  await loadRuntimeConfig();
   await Promise.all([loadSettings(), loadCompanies()]);
   await loadAccountState();
   await loadDataStatus();
@@ -1922,9 +1873,6 @@ if (typeof module !== "undefined") {
     apiFetch,
     apiJson,
     API_CLIENT,
-    acceptRuntimeConfig,
-    loadRuntimeConfig,
-    marketApiVersion: () => MARKET_API_VERSION,
     normalizeAuthUsername,
     normalizeAuthUser,
     isSuperUserIdentity,
@@ -1949,11 +1897,8 @@ if (typeof module !== "undefined") {
     renderStrategyStatusDetail,
     renderMarketResultRow,
     renderMarketPagination,
-    groupMarketScanResults,
     activeMarketDisclosureKey,
     renderOverviewStats,
-    sortMarketResultsForDisplay,
-    e4PerValue,
     isHoldingTracked,
     hasInsufficientData,
     hasFinancialReportForContext,
@@ -1965,7 +1910,6 @@ if (typeof module !== "undefined") {
     emptyStateHtml,
     setEmptyState,
     saveHoldings,
-    acceptMarketScan,
     refreshMarketScan,
   };
 }
