@@ -247,7 +247,7 @@ jobs:
       - name: Publish rebuilt seed cache to R2
         id: r2-publish
         if: steps.refresh-check.outputs.run_refresh == 'true'
-        run: python scripts/r2_publication_backup.py publish --plan-json .tmp/r2-upload-plan.json --bucket "$CF_R2_BUCKET"
+        run: python scripts/r2_publication_backup.py publish --plan-json .tmp/r2-upload-plan.json --bucket "$CF_R2_BUCKET" --backup-dir .tmp/r2-backup --manifest .tmp/r2-backup/manifest.json
 
       - name: Verify refreshed production seed
         if: steps.refresh-check.outputs.run_refresh == 'true'
