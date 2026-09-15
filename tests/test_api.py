@@ -12,6 +12,7 @@ import backend.main as main_module
 import backend.routers.market as market_module
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, SESSION_CLEANUP_INTERVAL_SECONDS, AuthService
+from backend.services.refresh_jobs import RefreshJobService
 from backend.services.scan_cache import ScanCacheService
 from backend.services.settings_service import load_settings, save_settings
 
@@ -722,6 +723,13 @@ def _wait_for_terminal_refresh_job(status_url: str, timeout: float = 30.0) -> di
         sleep(0.05)
 
 
+@pytest.fixture
+def no_refresh_cooldown(monkeypatch):
+    # Neutralizes the post-success cooldown for tests that issue several real-data POSTs and
+    # assert on job identity/state rather than on the cooldown itself.
+    monkeypatch.setattr(market_module, "LOCAL_REFRESH_COOLDOWN_SECONDS", 0)
+
+
 def test_market_refresh_command_queues_a_job_that_reaches_a_terminal_state():
     response = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
     payload = response.json()
@@ -789,11 +797,15 @@ def _stub_market_scan(company_name: str) -> dict:
     }
 
 
-def test_forced_refresh_job_caches_under_the_key_of_the_data_it_refreshed(tmp_path, monkeypatch):
+def test_forced_refresh_job_caches_under_the_key_of_the_data_it_refreshed(tmp_path, monkeypatch, no_refresh_cooldown):
     # The official refresh rewrites the files the cache context fingerprints, so a job that
     # keyed its store before the rebuild would leave the next index read with a cache miss.
     cache_service = ScanCacheService(tmp_path / "market_scan_cache.json", tmp_path / "cache_refresh_state.json")
     monkeypatch.setattr(market_module, "scan_cache_service", cache_service)
+    # Isolated the same way `real_data_refresh_stub` is: this test's job must not linger in the
+    # module singleton and cool down a later real-data test.
+    monkeypatch.setattr(market_module, "refresh_job_service", RefreshJobService())
+    deps_module._scan_rate_store.clear()
     monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=False))
     data_version = {"value": 1}
     official_refreshes: list[int] = []
@@ -840,6 +852,90 @@ def test_forced_refresh_job_caches_under_the_key_of_the_data_it_refreshed(tmp_pa
     assert official_refreshes == [2]
     assert index["cacheStatus"]["cacheHit"] is True
     assert results.json()["items"][0]["companyName"] == "refreshed"
+
+
+def _raise_market_scan_failure(settings):
+    raise RuntimeError("official refresh failed")
+
+
+@pytest.fixture
+def real_data_refresh_stub(tmp_path, monkeypatch):
+    # Isolates the refresh job service and scan cache from every other test's shared module
+    # singletons, so this test's own success/failed job is the only one in scope and the
+    # cooldown it exercises cannot leak in from - or into - another test. Also clears the
+    # unrelated scan rate limiter (10 req/60s, keyed by client host - shared process-wide and
+    # never scoped per test), so its own older 429 cannot mask the cooldown 429 under test.
+    deps_module._scan_rate_store.clear()
+    monkeypatch.setattr(market_module, "refresh_job_service", RefreshJobService())
+    monkeypatch.setattr(
+        market_module,
+        "scan_cache_service",
+        ScanCacheService(tmp_path / "market_scan_cache.json", tmp_path / "cache_refresh_state.json"),
+    )
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=False))
+    monkeypatch.setattr(market_module, "_scan_market_cache_context", lambda settings: {"provider": "official"})
+    monkeypatch.setattr(
+        market_module, "_scan_market_payload_after_official_refresh", lambda settings: _stub_market_scan("cooldown")
+    )
+
+
+def test_market_refresh_cooldown_blocks_a_new_key_but_the_idempotent_repeat_still_succeeds(real_data_refresh_stub):
+    key = f"api-{uuid4().hex}"
+    first = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": key})
+
+    assert first.status_code == 202
+    assert _wait_for_terminal_refresh_job(first.json()["statusUrl"])["status"] == "success"
+
+    blocked = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) >= 1
+    assert blocked.headers["cache-control"] == "no-store"
+    assert "detail" in blocked.json()
+
+    # A repeat of the original key is still resolved by the idempotency lookup, which runs
+    # before the cooldown check, so it returns the earlier job rather than 429ing too.
+    repeat = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": key})
+
+    assert repeat.status_code == 202
+    assert repeat.json()["jobId"] == first.json()["jobId"]
+
+
+def test_market_refresh_cooldown_also_applies_after_a_failed_job(real_data_refresh_stub, monkeypatch):
+    # Same rule as the Worker's terminal-job cooldown: a failed job starts it too, just like a
+    # success does, only with the shorter local window.
+    monkeypatch.setattr(market_module, "_scan_market_payload_after_official_refresh", _raise_market_scan_failure)
+    key = f"api-{uuid4().hex}"
+
+    first = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": key})
+
+    assert first.status_code == 202
+    assert _wait_for_terminal_refresh_job(first.json()["statusUrl"])["status"] == "failed"
+
+    blocked = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) >= 1
+    assert blocked.headers["cache-control"] == "no-store"
+    assert "detail" in blocked.json()
+
+    # The idempotency lookup still runs before the cooldown check, so a repeat of the failed
+    # job's own key returns that same job rather than 429ing too.
+    repeat = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": key})
+
+    assert repeat.status_code == 202
+    assert repeat.json()["jobId"] == first.json()["jobId"]
+
+
+def test_market_refresh_mock_mode_has_no_cooldown():
+    first = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+
+    assert first.status_code == 202
+    assert _wait_for_terminal_refresh_job(first.json()["statusUrl"])["status"] == "success"
+
+    second = client.post("/api/scan/market/refresh", headers={"Idempotency-Key": f"api-{uuid4().hex}"})
+
+    assert second.status_code == 202
 
 
 def test_market_refresh_command_rejects_an_unsafe_idempotency_key():

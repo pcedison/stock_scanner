@@ -19,6 +19,8 @@ from backend.models.holding import Holding
 from backend.models.settings import ScannerSettings
 from backend.services.auth import AUTH_FAILURE_LIMIT, AuthService, AuthUser
 from backend.services.market_query import build_market_generation
+from backend.services.refresh_jobs import RefreshJobService
+from backend.services.scan_cache import ScanCacheService
 from tests.test_cloudflare_worker import build_router_api, load_worker_module, pin_worker_time
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "api_worker_contracts.json").read_text(encoding="utf-8"))
@@ -732,3 +734,137 @@ def test_refresh_command_worker_contract_is_additive_and_payload_bounded(monkeyp
     assert response.headers["Location"] == payload["statusUrl"]
     assert len(json.dumps(payload).encode("utf-8")) < 1024
     assert not {"entry", "watch", "excluded", "cacheStatus"} & set(payload)
+
+
+def test_market_refresh_cooldown_429_matches_fastapi_and_worker(tmp_path, monkeypatch):
+    # FastAPI: run one real-data refresh to a genuine success on an isolated job service/cache
+    # (so no other test's leftover job leaks into this cooldown window), then a forced repeat
+    # with a different key must 429 for the rest of the local cooldown. Also clear the unrelated
+    # scan rate limiter (10 req/60s, keyed by client host - shared process-wide, never scoped
+    # per test), so its own older 429 cannot mask the cooldown 429 under test.
+    deps_module._scan_rate_store.clear()
+    monkeypatch.setattr(market_module, "refresh_job_service", RefreshJobService())
+    monkeypatch.setattr(
+        market_module,
+        "scan_cache_service",
+        ScanCacheService(tmp_path / "market_scan_cache.json", tmp_path / "cache_refresh_state.json"),
+    )
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=False))
+    monkeypatch.setattr(market_module, "_scan_market_cache_context", lambda settings: {"provider": "official"})
+    monkeypatch.setattr(
+        market_module,
+        "_scan_market_payload_after_official_refresh",
+        lambda settings: {
+            "generatedAt": "2026-07-13T00:00:00+00:00",
+            "filingContext": {},
+            "entry": [
+                {
+                    "stockCode": "2330",
+                    "companyName": "contract-cooldown",
+                    "status": "ENTRY",
+                    "summary": "announced",
+                    "reasons": [],
+                }
+            ],
+            "watch": [],
+            "excluded": [],
+            "universeSize": 1,
+        },
+    )
+    client = TestClient(main_module.app)
+
+    fastapi_first = client.post("/api/scan/market/refresh", headers={"idempotency-key": "cooldown-parity-first"})
+    assert fastapi_first.status_code == 202
+    assert _poll_fastapi_refresh_job(client, fastapi_first.json()["statusUrl"])["status"] == "success"
+
+    fastapi_blocked = client.post("/api/scan/market/refresh", headers={"idempotency-key": "cooldown-parity-next"})
+
+    # Worker: seed a D1 row for a job that finished moments ago, matching the terminal-job
+    # cooldown the Worker itself enforces (cloudflare/worker_refresh_jobs.py:226-230).
+    worker, api, db = build_router_api(
+        monkeypatch, r2={"public/manifest.json": {"generatedAt": "2026-07-13T00:00:00+00:00"}}
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    db.refresh_jobs.append(
+        {
+            "id": "f" * 32,
+            "job_type": "market_scan",
+            "cache_key": "previous-generation",
+            "idempotency_key": "previous-key",
+            "status": "success",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-13T12:00:00+00:00",
+            "finished_at": "2026-07-13T12:00:30+00:00",
+            "updated_at": "2026-07-13T12:00:30+00:00",
+        }
+    )
+
+    worker_blocked = run_worker_fetch(
+        api, "POST", "/api/scan/market/refresh", headers={"idempotency-key": "cooldown-parity-worker"}
+    )
+
+    assert fastapi_blocked.status_code == worker_status(worker_blocked) == 429
+    assert int(fastapi_blocked.headers["retry-after"]) >= 1
+    assert int(worker_blocked.headers["retry-after"]) >= 1
+    assert fastapi_blocked.headers["cache-control"] == "no-store"
+    assert "detail" in fastapi_blocked.json()
+    assert "detail" in worker_payload(worker_blocked)
+
+
+def _raise_market_refresh_failure(settings):
+    raise RuntimeError("official refresh failed")
+
+
+def test_market_refresh_cooldown_429_after_failed_job_matches_fastapi_and_worker(tmp_path, monkeypatch):
+    # Same rule as the Worker's terminal-job cooldown (READ_RECENT_TERMINAL_SQL matches
+    # success or failed): a failed job starts the cooldown too, not just a success. Also clear
+    # the unrelated scan rate limiter (10 req/60s, keyed by client host - shared process-wide,
+    # never scoped per test), so its own older 429 cannot mask the cooldown 429 under test.
+    deps_module._scan_rate_store.clear()
+    monkeypatch.setattr(market_module, "refresh_job_service", RefreshJobService())
+    monkeypatch.setattr(
+        market_module,
+        "scan_cache_service",
+        ScanCacheService(tmp_path / "market_scan_cache.json", tmp_path / "cache_refresh_state.json"),
+    )
+    monkeypatch.setattr(deps_module, "load_settings", lambda: ScannerSettings(use_mock_data=False))
+    monkeypatch.setattr(market_module, "_scan_market_cache_context", lambda settings: {"provider": "official"})
+    monkeypatch.setattr(market_module, "_scan_market_payload_after_official_refresh", _raise_market_refresh_failure)
+    client = TestClient(main_module.app)
+
+    fastapi_first = client.post("/api/scan/market/refresh", headers={"idempotency-key": "cooldown-parity-failed-first"})
+    assert fastapi_first.status_code == 202
+    assert _poll_fastapi_refresh_job(client, fastapi_first.json()["statusUrl"])["status"] == "failed"
+
+    fastapi_blocked = client.post("/api/scan/market/refresh", headers={"idempotency-key": "cooldown-parity-failed-next"})
+
+    # Worker: seed a D1 row for a `failed` job that finished moments ago - the same terminal
+    # statuses READ_RECENT_TERMINAL_SQL matches (cloudflare/worker_refresh_jobs.py:38,59).
+    worker, api, db = build_router_api(
+        monkeypatch, r2={"public/manifest.json": {"generatedAt": "2026-07-13T00:00:00+00:00"}}
+    )
+    pin_worker_time(monkeypatch, worker, "2026-07-13T12:01:00+00:00")
+    db.refresh_jobs.append(
+        {
+            "id": "e" * 32,
+            "job_type": "market_scan",
+            "cache_key": "previous-generation",
+            "idempotency_key": "previous-key-failed",
+            "status": "failed",
+            "reason": "routine_refresh",
+            "queued_at": "2026-07-13T12:00:00+00:00",
+            "finished_at": "2026-07-13T12:00:30+00:00",
+            "updated_at": "2026-07-13T12:00:30+00:00",
+        }
+    )
+
+    worker_blocked = run_worker_fetch(
+        api, "POST", "/api/scan/market/refresh", headers={"idempotency-key": "cooldown-parity-worker-failed"}
+    )
+
+    assert fastapi_blocked.status_code == worker_status(worker_blocked) == 429
+    assert int(fastapi_blocked.headers["retry-after"]) >= 1
+    assert int(worker_blocked.headers["retry-after"]) >= 1
+    assert fastapi_blocked.headers["cache-control"] == "no-store"
+    assert "detail" in fastapi_blocked.json()
+    assert "detail" in worker_payload(worker_blocked)

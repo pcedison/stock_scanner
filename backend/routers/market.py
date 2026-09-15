@@ -47,7 +47,7 @@ from backend.services.market_query import (
     query_market_generation,
 )
 from backend.services.market_scan import data_sources_status_payload
-from backend.services.refresh_jobs import normalize_idempotency_key
+from backend.services.refresh_jobs import RefreshCooldownError, normalize_idempotency_key
 from backend.services.scan_cache import refresh_policy, scan_cache_key
 from backend.services.scheduler import should_wake_up
 
@@ -203,8 +203,11 @@ def _remembered_market_generation(generation_id: str) -> MarketGeneration | None
         return _market_generations.get(generation_id)
 
 
-def _market_query_error(status_code: int, detail: str) -> HTTPException:
-    return HTTPException(status_code=status_code, detail=detail, headers=_MARKET_QUERY_HEADERS)
+def _market_query_error(status_code: int, detail: str, *, headers: dict[str, str] | None = None) -> HTTPException:
+    combined_headers = dict(_MARKET_QUERY_HEADERS)
+    if headers:
+        combined_headers.update(headers)
+    return HTTPException(status_code=status_code, detail=detail, headers=combined_headers)
 
 
 def _compact_market_query_scan(scan: dict) -> dict:
@@ -339,6 +342,11 @@ def scan_market_results(request: Request, response: Response) -> dict:
 # It is deliberately not the cache key: that key moves when a refresh rewrites the official files.
 MARKET_REFRESH_JOB_SCOPE = "market_scan"
 
+# Same rule as the Worker's terminal-job cooldown (success or failed), shorter window for
+# local development (60s vs 3600s) so a client cannot force back-to-back official rebuilds
+# locally either. Mock mode never applies this: it does not touch real data sources.
+LOCAL_REFRESH_COOLDOWN_SECONDS = 60
+
 
 def _rebuild_market_scan(settings: ScannerSettings) -> None:
     """The forced counterpart of `scan_market_cached()`: rebuild instead of serving the cache."""
@@ -368,12 +376,17 @@ def refresh_market_scan(request: Request, response: Response) -> dict:
         client_key = normalize_idempotency_key(request.headers.get("idempotency-key"))
     except ValueError as exc:
         raise _market_query_error(422, str(exc)) from None
-    job = refresh_job_service.start(
-        lambda: _rebuild_market_scan(settings),
-        scope=MARKET_REFRESH_JOB_SCOPE,
-        reason=refresh_policy()["reason"],
-        idempotency_key=client_key,
-    )
+    cooldown_seconds = 0 if settings.use_mock_data else LOCAL_REFRESH_COOLDOWN_SECONDS
+    try:
+        job = refresh_job_service.start(
+            lambda: _rebuild_market_scan(settings),
+            scope=MARKET_REFRESH_JOB_SCOPE,
+            reason=refresh_policy()["reason"],
+            idempotency_key=client_key,
+            cooldown_seconds=cooldown_seconds,
+        )
+    except RefreshCooldownError as exc:
+        raise _market_query_error(429, str(exc), headers={"Retry-After": str(exc.retry_after_seconds)}) from exc
     status_url = f"/api/scan/market/refresh/{job['jobId']}"
     response.headers.update(_MARKET_QUERY_HEADERS)
     response.headers["Location"] = status_url
