@@ -3176,3 +3176,25 @@ def test_manifest_without_next_refresh_after_is_stale_immediately(monkeypatch):
     # minIntervalSeconds is internal (the terminal-job cooldown ceiling), never served in
     # the HTTP payload; check it against the policy dict directly.
     assert api.cache_policy()["minIntervalSeconds"] == 3600
+
+
+def test_worker_report_response_matches_the_shared_renderer(monkeypatch):
+    # The seed build renders the static market report with backend.services.report_render;
+    # the Worker keeps its own copy for the holdings report. Both must stay byte-identical.
+    from backend.services import report_render
+
+    worker = load_worker_module(monkeypatch)
+    payload = {
+        "generatedAt": "2026-09-15T10:00:00+00:00",
+        "dataSource": "OfficialDataProvider",
+        "entry": [{"stockCode": "2330", "companyName": "台積電", "status": "ENTRY", "summary": "E4 PER 低"}],
+        "watch": [{"stockCode": "2317", "companyName": "鴻海", "status": "WATCH", "summary": "a, b"}],
+        "excluded": [],
+        "results": [{"stockCode": "2454", "companyName": "聯發科", "status": "HOLD", "summary": "持有"}],
+    }
+
+    csv_report = worker.report_response(payload, "csv", "台股市場掃描報告", "market_scan")
+    markdown = worker.report_response(payload, "markdown", "台股市場掃描報告", "market_scan")
+
+    assert csv_report.body == report_render.render_market_report_csv(payload)
+    assert markdown.body == report_render.render_market_report_markdown(payload, "台股市場掃描報告")

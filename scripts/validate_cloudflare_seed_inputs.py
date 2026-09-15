@@ -34,6 +34,11 @@ def default_failed_companies_csv(data_dir: Path = Path("data")) -> Path:
 
 
 DEFAULT_FAILED_COMPANIES_CSV = default_failed_companies_csv()
+MARKET_REPORT_CSV_ENTRY = "cloudflare_seed/reports/market_scan.csv"
+MARKET_REPORT_MD_ENTRY = "cloudflare_seed/reports/market_scan.md"
+MARKET_REPORT_ENTRIES = {MARKET_REPORT_CSV_ENTRY, MARKET_REPORT_MD_ENTRY}
+MARKET_REPORT_CSV_HEADER = "category,stockCode,companyName,status,summary"
+
 REQUIRED_ENTRIES = {
     "official_fundamentals_history.json",
     "official_history_backfill_progress.json",
@@ -183,6 +188,7 @@ def _is_allowed_seed_member(name: str) -> bool:
     static_names = {
         *REQUIRED_ENTRIES,
         "cloudflare_seed/market_scan_summary.json",
+        *MARKET_REPORT_ENTRIES,
     }
     if name in static_names or name.startswith("cloudflare_seed/market_scan/v2/"):
         return True
@@ -508,6 +514,23 @@ def _validate_market_v2(
     return actual_metrics
 
 
+def _validate_market_report_entries(archive: zipfile.ZipFile, names: set[str]) -> None:
+    """The Worker streams these exports verbatim, so a seed that ships them must ship both in the fixed format.
+
+    A seed built before the exports existed is still accepted until the committed zip has been
+    regenerated; the Worker keeps its fallback until then.
+    """
+    present = MARKET_REPORT_ENTRIES & names
+    if not present:
+        return
+    missing_reports = sorted(MARKET_REPORT_ENTRIES - names)
+    if missing_reports:
+        raise ValueError(f"Seed zip is missing market report exports: {', '.join(missing_reports)}")
+    header = archive.read(MARKET_REPORT_CSV_ENTRY).decode("utf-8-sig").splitlines()[:1]
+    if header != [MARKET_REPORT_CSV_HEADER]:
+        raise ValueError(f"{MARKET_REPORT_CSV_ENTRY} must start with the header {MARKET_REPORT_CSV_HEADER}")
+
+
 def validate_seed_zip(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ValueError(f"Seed zip does not exist: {path}")
@@ -528,6 +551,7 @@ def validate_seed_zip(path: Path) -> dict[str, Any]:
         missing = sorted(REQUIRED_ENTRIES - names)
         if missing:
             raise ValueError(f"Seed zip is missing required entries: {', '.join(missing)}")
+        _validate_market_report_entries(archive, names)
 
         history = _load_json_from_zip(archive, "official_fundamentals_history.json")
         monthly_history = _load_json_from_zip(archive, "monthly_revenue_history.json")

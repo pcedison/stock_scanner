@@ -506,6 +506,10 @@ def test_offline_seed_copy_rebuilds_v2_generation_and_manifest_fields(tmp_path, 
     assert manifest["marketGenerationId"]
     assert (output / "market_scan_index.json").is_file()
     assert (output / "market_scan" / "v2" / manifest["marketGenerationId"] / "index.json").is_file()
+    # A manifest copied from an older seed must still declare the static report exports.
+    assert (output / "reports" / "market_scan.csv").is_file()
+    assert "reports/market_scan.csv" in manifest["files"]
+    assert "reports/market_scan.md" in manifest["files"]
 
 
 def test_live_seed_main_writes_v2_generation_and_manifest_fields(tmp_path, monkeypatch):
@@ -801,3 +805,23 @@ def test_assert_seed_quality_rejects_stale_financial_freshness(monkeypatch):
             {str(index): {} for index in range(1000)},
             fallback_source=None,
         )
+
+
+def test_write_market_reports_renders_the_static_exports_in_the_worker_format(tmp_path, monkeypatch):
+    monkeypatch.setattr(seed_build, "OUT_DIR", tmp_path)
+    scan = _v2_scan_fixture()
+
+    seed_build.write_market_reports(scan)
+
+    csv_lines = (tmp_path / "reports" / "market_scan.csv").read_text(encoding="utf-8").splitlines()
+    expected_rows = sum(len(scan.get(category) or []) for category in ("entry", "watch", "excluded", "results"))
+    assert csv_lines[0] == "category,stockCode,companyName,status,summary"
+    assert len(csv_lines) == expected_rows + 1
+    markdown = (tmp_path / "reports" / "market_scan.md").read_text(encoding="utf-8")
+    assert markdown.startswith("# 台股市場掃描報告")
+    assert f"- 產生時間：{scan['generatedAt']}" in markdown
+
+
+def test_manifest_files_list_declares_the_static_report_exports():
+    assert seed_build.MARKET_REPORT_CSV == "reports/market_scan.csv"
+    assert seed_build.MARKET_REPORT_MD == "reports/market_scan.md"

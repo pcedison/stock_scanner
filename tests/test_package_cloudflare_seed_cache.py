@@ -39,6 +39,7 @@ def _write_package_inputs(tmp_path: Path) -> tuple[Path, Path, str, set[str]]:
     orphan.parent.mkdir(parents=True)
     orphan.write_text("{}", encoding="utf-8")
 
+    (seed_dir / "reports").mkdir(parents=True, exist_ok=True)
     for name in package_module.SEED_FILES:
         (seed_dir / name).write_text("{}", encoding="utf-8")
     (seed_dir / "analysis_shards").mkdir()
@@ -269,3 +270,16 @@ def test_package_rejects_source_outside_allowed_root(tmp_path):
                 "safe.json",
                 allowed_root=allowed_root,
             )
+
+
+def test_package_includes_the_static_market_report_exports(tmp_path, monkeypatch):
+    seed_dir, data_dir, _generation_id, _expected = _write_package_inputs(tmp_path)
+    monkeypatch.setattr(package_module, "ROOT_DIR", tmp_path)
+    archive_path = data_dir / "seed.zip"
+
+    package_module.package_seed_cache(archive_path, data_dir / "seed.sha256", seed_dir)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        names = set(archive.namelist())
+    assert "cloudflare_seed/reports/market_scan.csv" in names
+    assert "cloudflare_seed/reports/market_scan.md" in names

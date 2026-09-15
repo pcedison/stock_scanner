@@ -97,6 +97,9 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
         "holding_analysis_by_code.json",
     ):
         (seed_dir / name).write_text("{}", encoding="utf-8")
+    (seed_dir / "reports").mkdir()
+    (seed_dir / "reports" / "market_scan.csv").write_text("category,stockCode,companyName,status,summary\r\n", encoding="utf-8")
+    (seed_dir / "reports" / "market_scan.md").write_text("# report\n", encoding="utf-8")
     (seed_dir / "analysis_shards" / "23.json").write_text("{}", encoding="utf-8")
     (seed_dir / "holding_analysis_shards" / "23.json").write_text("{}", encoding="utf-8")
     generation_id = "a" * 24
@@ -142,6 +145,8 @@ def test_cloudflare_seed_upload_plan_covers_public_shards_official_and_seed_zip(
 
     assert "public/manifest.json" in keys
     assert "public/market_scan_summary.json" in keys
+    assert "public/reports/market_scan.csv" in keys
+    assert "public/reports/market_scan.md" in keys
     assert "public/analysis_shards/23.json" in keys
     assert "public/holding_analysis_shards/23.json" in keys
     assert "official/monthly_revenue_history.json" in keys
