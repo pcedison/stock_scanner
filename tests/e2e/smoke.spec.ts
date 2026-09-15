@@ -113,7 +113,6 @@ test("overview loads market counts once and login neither re-downloads nor re-sc
 });
 
 test("manual refresh failure preserves the last-good market index", async ({ page, isMobile }) => {
-  await useMarketV2(page);
   const index = marketV2Index(205, 0);
   const jobId = "d".repeat(32);
   let failRefresh = true;
@@ -471,18 +470,7 @@ function marketV2Page(index: any, category: "entry" | "watch" | "excluded", curs
   };
 }
 
-async function useMarketV2(page) {
-  await page.route("**/api/runtime-config", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ schemaVersion: 1, marketScanApiVersion: "v2", edgeCacheEnabled: false }),
-    }),
-  );
-}
-
 test("paged market and market index lazy load bounded windows", async ({ page, isMobile }) => {
-  await useMarketV2(page);
   const index = marketV2Index();
   const resultRequests: { category: string; cursor: number }[] = [];
   let legacyCalls = 0;
@@ -547,7 +535,6 @@ test("paged market and market index lazy load bounded windows", async ({ page, i
 });
 
 test("last-known-good shell keeps validated market index offline", async ({ page, isMobile }) => {
-  await useMarketV2(page);
   const index = marketV2Index(12, 0);
   await page.addInitScript((storedIndex) => {
     localStorage.setItem("tw_stock_scanner.market_index.v2", JSON.stringify(storedIndex));
@@ -572,7 +559,6 @@ test("refresh command posts once and refresh polling preserves rows until genera
   page,
   isMobile,
 }) => {
-  await useMarketV2(page);
   const firstIndex = marketV2Index(205, 0, "a".repeat(24));
   const nextIndex = marketV2Index(12, 0, "b".repeat(24));
   let activeIndex = firstIndex;

@@ -250,10 +250,6 @@
     error.code = "STALE_MARKET_GENERATION";
     return error;
   }
-  function marketApiVersion() {
-    // The whole-scan v1 read is retired; paginated v2 is the only market API.
-    return "v2";
-  }
   function createMarketQueryClient({ apiJson, storage, apiPageSize = API_PAGE_SIZE, uiPageSize = UI_PAGE_SIZE }) {
     requireValue(typeof apiJson === "function", "apiJson is required");
     requireValue(apiPageSize === API_PAGE_SIZE && uiPageSize === UI_PAGE_SIZE, "unsupported page size");
@@ -457,21 +453,16 @@
     return { loadWindow, refresh, forceRefresh: () => refresh({ force: true }) };
   }
   function createMarketCountUi(options) {
-    const { state, apiVersion, queryAll, labels, activeTab, activeColumn, groupScan, renderOps } = options;
-    const getApiVersion = options.getApiVersion || (() => apiVersion);
-    function renderOverview(scan = state.marketScan, selectedTab = state.activeMarketDisclosureTab) {
+    const { state, queryAll, labels, activeTab, activeColumn, renderOps } = options;
+    function renderOverview(selectedTab = state.activeMarketDisclosureTab) {
       if (typeof document === "undefined") return;
       const keys = CATEGORIES;
       const values = Object.fromEntries(keys.map((key) => [key, "--"]));
-      const apiVersion = getApiVersion() === "v2" ? "v2" : "v1";
-      const source = apiVersion === "v2" ? state.marketIndex : scan;
+      const source = state.marketIndex;
       const note = source?.generatedAt ? `${new Date(source.generatedAt).toLocaleDateString()} 更新` : "等待掃描";
       const tab = activeTab(selectedTab);
-      if (apiVersion === "v2" && state.marketIndex) {
-        keys.forEach((key) => (values[key] = state.marketIndex.disclosures[tab][key].count));
-      } else if (scan) {
-        const grouped = groupScan(scan);
-        keys.forEach((key) => (values[key] = grouped?.[tab]?.[key]?.length ?? 0));
+      if (source) {
+        keys.forEach((key) => (values[key] = source.disclosures[tab][key].count));
       }
       keys.forEach((key) => {
         const count = document.querySelector(`#overview-${key}-count`);
@@ -481,17 +472,11 @@
       });
       renderOps(source);
     }
-    function updateNavigation(grouped = null, selectedTab = state.activeMarketDisclosureTab) {
-      const apiVersion = getApiVersion() === "v2" ? "v2" : "v1";
+    function updateNavigation(selectedTab = state.activeMarketDisclosureTab) {
       const tab = activeTab(selectedTab);
       queryAll("[data-market-column-nav]").forEach((button) => {
         const category = button.dataset.marketColumnNav;
-        const count =
-          apiVersion === "v2" && state.marketIndex
-            ? state.marketIndex.disclosures[tab][category].count
-            : grouped
-              ? (grouped?.[tab]?.[category]?.length ?? 0)
-              : null;
+        const count = state.marketIndex ? state.marketIndex.disclosures[tab][category].count : null;
         button.classList.toggle("active", category === activeColumn());
         button.textContent =
           count === null ? labels[category] || category : `${labels[category] || category} (${count})`;
@@ -509,7 +494,6 @@
     createMarketQueryCoordinator,
     createMarketCountUi,
     pageCacheKey,
-    marketApiVersion,
     requiredApiCursors,
     validateMarketIndex,
   };

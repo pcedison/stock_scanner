@@ -7,10 +7,10 @@
     root.StockScannerMarketScan = helpers;
   }
 })(typeof globalThis !== "undefined" ? globalThis : null, function createMarketScanModule() {
-  // Market-scan result classification, grouping, sorting and lookup helpers.
-  // The only app-state coupling (active disclosure tab / column and the current
-  // market scan) is injected via `getState()`; `safeText` is borrowed from the
-  // normalization module. Bodies are otherwise unchanged from app.js.
+  // Market-scan result classification and lookup helpers.
+  // The only app-state coupling (active disclosure tab / column) is injected via
+  // `getState()`; `safeText` is borrowed from the normalization module. Result
+  // lookup goes through the v2 loaded-page index via `findLoadedResult`.
   function createMarketScan({ getState, safeText, findLoadedResult = () => null }) {
     const MARKET_RESULT_COLUMNS = [
       ["entry", "適合進場"],
@@ -72,61 +72,12 @@
       return result.status === "INSUFFICIENT_DATA" && hasPublishedScanData(result, filingContext);
     }
 
-    function groupMarketScanResults(scan) {
-      const grouped = {
-        announced: { entry: [], watch: [], excluded: [] },
-        pending: { entry: [], watch: [], excluded: [] },
-      };
-      for (const [key] of MARKET_RESULT_COLUMNS) {
-        for (const result of scan?.[key] || []) {
-          const groupKey = hasPublishedScanData(result, scan?.filingContext) ? "announced" : "pending";
-          grouped[groupKey][key].push(result);
-        }
-      }
-      return grouped;
-    }
-
-    function countMarketGroup(group) {
-      return MARKET_RESULT_COLUMNS.reduce((total, [key]) => total + (group?.[key]?.length || 0), 0);
-    }
-
     function activeMarketDisclosureKey(tab = getState().activeMarketDisclosureTab) {
       return MARKET_DISCLOSURE_TABS.some((item) => item.key === tab) ? tab : "announced";
     }
 
     function activeMarketColumnKey() {
       return MARKET_COLUMN_LABELS[getState().activeMarketColumn] ? getState().activeMarketColumn : "entry";
-    }
-
-    function ruleByCode(result = {}, code = "") {
-      const reasons = Array.isArray(result.reasons) ? result.reasons : [];
-      return reasons.find((reason) => reason?.code === code) || null;
-    }
-
-    function numericFromText(value) {
-      const match = String(value || "")
-        .replace(",", "")
-        .match(/-?\d+(?:\.\d+)?/);
-      return match ? Number(match[0]) : null;
-    }
-
-    function e4PerValue(result = {}) {
-      const e4 = ruleByCode(result, "E4");
-      const fromMessage = numericFromText(e4?.message);
-      if (Number.isFinite(fromMessage)) return fromMessage;
-      return null;
-    }
-
-    function sortMarketResultsForDisplay(columnKey, results = []) {
-      const normalized = Array.isArray(results) ? [...results] : [];
-      if (columnKey !== "entry") return normalized;
-      return normalized.sort((left, right) => {
-        const leftPer = e4PerValue(left);
-        const rightPer = e4PerValue(right);
-        if (Number.isFinite(leftPer) && Number.isFinite(rightPer) && leftPer !== rightPer) return leftPer - rightPer;
-        if (Number.isFinite(leftPer) !== Number.isFinite(rightPer)) return Number.isFinite(leftPer) ? -1 : 1;
-        return safeText(left.stockCode).localeCompare(safeText(right.stockCode));
-      });
     }
 
     function marketColumnNote(columnKey) {
@@ -141,25 +92,12 @@
     }
 
     function findMarketResultById(resultId) {
-      const marketScan = getState().marketScan;
-      if (!marketScan) {
-        const [groupKey, columnKey, stockCode] = String(resultId || "").split(":");
-        const loaded = findLoadedResult(stockCode);
-        return loaded && marketResultId(loaded, groupKey, columnKey) === resultId ? loaded : null;
-      }
-      const grouped = groupMarketScanResults(marketScan);
-      for (const tab of MARKET_DISCLOSURE_TABS) {
-        for (const [columnKey] of MARKET_RESULT_COLUMNS) {
-          for (const result of grouped?.[tab.key]?.[columnKey] || []) {
-            if (marketResultId(result, tab.key, columnKey) === resultId) return result;
-          }
-        }
-      }
-      return null;
+      const [groupKey, columnKey, stockCode] = String(resultId || "").split(":");
+      const loaded = findLoadedResult(stockCode);
+      return loaded && marketResultId(loaded, groupKey, columnKey) === resultId ? loaded : null;
     }
 
     return {
-      MARKET_RESULT_COLUMNS,
       MARKET_LIST_PAGE_SIZE,
       MARKET_COLUMN_LABELS,
       MARKET_DISCLOSURE_TABS,
@@ -167,14 +105,8 @@
       hasFinancialReportForContext,
       hasPublishedScanData,
       isPartialPublishedResult,
-      groupMarketScanResults,
-      countMarketGroup,
       activeMarketDisclosureKey,
       activeMarketColumnKey,
-      ruleByCode,
-      numericFromText,
-      e4PerValue,
-      sortMarketResultsForDisplay,
       marketColumnNote,
       marketResultId,
       findMarketResultById,

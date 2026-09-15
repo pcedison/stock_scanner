@@ -7,8 +7,6 @@
     getState,
     escapeHtml,
     safeText,
-    safeRequestId,
-    appendRequestId,
     safeCompanyName,
     displayResultStatus,
     statusClass,
@@ -16,12 +14,9 @@
     renderRule,
     resultActionButtons,
     sortRulesForDisplay,
-    sortMarketResultsForDisplay,
     marketColumnNote,
     marketResultId,
     MARKET_LIST_PAGE_SIZE,
-    MARKET_RESULT_COLUMNS,
-    MARKET_DISCLOSURE_TABS,
   }) {
     function getMarketPage(groupKey, columnKey) {
       return Math.max(0, Number(getState().marketListPages?.[groupKey]?.[columnKey]) || 0);
@@ -33,16 +28,6 @@
         pending: { entry: 0, watch: 0, excluded: 0 },
       };
       state.expandedMarketResultIds = new Set();
-    }
-    function clampMarketListPages(grouped) {
-      const state = getState();
-      for (const tab of MARKET_DISCLOSURE_TABS) {
-        for (const [columnKey] of MARKET_RESULT_COLUMNS) {
-          const total = grouped?.[tab.key]?.[columnKey]?.length || 0;
-          const maxPage = Math.max(0, Math.ceil(total / MARKET_LIST_PAGE_SIZE) - 1);
-          state.marketListPages[tab.key][columnKey] = Math.min(getMarketPage(tab.key, columnKey), maxPage);
-        }
-      }
     }
     function renderMarketPagination(groupKey, columnKey, total) {
       const page = getMarketPage(groupKey, columnKey);
@@ -124,13 +109,10 @@
       `;
     }
     function renderMarketColumn(groupKey, columnKey, title, results) {
-      const page = getMarketPage(groupKey, columnKey);
-      const isWindow = !Array.isArray(results);
-      const sortedResults = isWindow ? results?.items || [] : sortMarketResultsForDisplay(columnKey, results);
-      const visibleResults = isWindow
-        ? sortedResults
-        : sortedResults.slice(page * MARKET_LIST_PAGE_SIZE, (page + 1) * MARKET_LIST_PAGE_SIZE);
-      const total = isWindow ? Math.max(0, Number(results?.total) || 0) : sortedResults.length;
+      // `results` is always a server window: the API returns the page already
+      // ordered and sliced, so the renderer never sorts or slices again.
+      const visibleResults = results?.items || [];
+      const total = Math.max(0, Number(results?.total) || 0);
       const note = marketColumnNote(columnKey);
       return `
         <div class="result-column">
@@ -176,33 +158,9 @@
         </div>
       `;
     }
-    function unavailableMarketScanWarning(scan = {}) {
-      if (scan.cacheStatus?.refreshStatus !== "unavailable") return null;
-      return appendRequestId(
-        "市場資料暫時無法更新，目前顯示最近一次成功掃描。",
-        safeRequestId(scan.cacheStatus.requestId),
-      );
-    }
-    function acceptMarketScan(scan, { resetUi = true } = {}) {
-      const state = getState();
-      state.marketScan = scan;
-      state.marketScanWarning = unavailableMarketScanWarning(scan);
-      if (resetUi && !state.marketScanWarning) resetMarketListUi();
-      return scan;
-    }
-    function renderMarketScanWarning(target) {
-      const state = getState();
-      if (!target || !state.marketScan || !state.marketScanWarning) return;
-      const warning = document.createElement("p");
-      warning.className = "data-source-note market-scan-warning";
-      warning.setAttribute("role", "status");
-      warning.textContent = `保留 ${formatCacheTime(state.marketScan.generatedAt)} 的最近一次成功掃描。${state.marketScanWarning}`;
-      target.prepend(warning);
-    }
     return {
       getMarketPage,
       resetMarketListUi,
-      clampMarketListPages,
       renderMarketPagination,
       renderMarketResultDetails,
       renderMarketResultRow,
@@ -210,8 +168,6 @@
       formatCacheTime,
       cacheRefreshLabel,
       renderScanCacheStatus,
-      acceptMarketScan,
-      renderMarketScanWarning,
     };
   }
   return { createMarketRender };
