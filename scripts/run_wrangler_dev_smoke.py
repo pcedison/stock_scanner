@@ -63,7 +63,7 @@ def _request_json(
     request = Request(safe_url, data=body, headers=request_headers, method=method)
     try:
         # validate_local_smoke_url restricts requests to loopback HTTP.
-        with urlopen(request, timeout=5) as response:  # nosec B310
+        with urlopen(request, timeout=15) as response:  # nosec B310
             payload = json.loads(response.read().decode("utf-8") or "{}")
             response_headers = {key.lower(): value for key, value in response.headers.items()}
             if response.status != expected_status:
@@ -190,6 +190,31 @@ def _stop_process(process: subprocess.Popen) -> None:
             process.kill()
 
 
+# Signals that the Worker is not ready yet. A slow Pyodide cold start answers the first
+# request late: urlopen then raises a bare TimeoutError from the read path (CPython only
+# wraps send-path errors in URLError), which used to escape the retry loop and fail the
+# smoke after one attempt (Validate run 34919026649, 2026-09-15).
+RETRYABLE_SMOKE_ERRORS = (HTTPError, URLError, TimeoutError, json.JSONDecodeError, RuntimeError)
+
+
+def wait_for_worker(process, base_url: str, timeout_seconds: float, *, sleeper=time.sleep) -> dict[str, Any]:
+    """Poll /api/health until the Python Worker answers, then run the refresh smoke."""
+    deadline = time.monotonic() + timeout_seconds
+    url = f"{base_url}/api/health"
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"wrangler dev exited early with code {process.returncode}")
+        try:
+            summary = validate_worker_smoke_payload(_fetch_json(url))
+            summary.update(validate_refresh_smoke(base_url))
+            return summary
+        except RETRYABLE_SMOKE_ERRORS as exc:
+            last_error = exc
+            sleeper(1)
+    raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
+
+
 def run_smoke(port: int, timeout_seconds: int, log_path: Path) -> dict[str, Any]:
     npx = shutil.which("npx")
     if not npx:
@@ -208,22 +233,8 @@ def run_smoke(port: int, timeout_seconds: int, log_path: Path) -> dict[str, Any]
             text=True,
         )
 
-        deadline = time.monotonic() + timeout_seconds
-        base_url = f"http://127.0.0.1:{port}"
-        url = f"{base_url}/api/health"
         try:
-            last_error: Exception | None = None
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise RuntimeError(f"wrangler dev exited early with code {process.returncode}")
-                try:
-                    summary = validate_worker_smoke_payload(_fetch_json(url))
-                    summary.update(validate_refresh_smoke(base_url))
-                    return summary
-                except (HTTPError, URLError, json.JSONDecodeError, RuntimeError) as exc:
-                    last_error = exc
-                    time.sleep(1)
-            raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
+            return wait_for_worker(process, f"http://127.0.0.1:{port}", timeout_seconds)
         finally:
             _stop_process(process)
 
@@ -231,7 +242,7 @@ def run_smoke(port: int, timeout_seconds: int, log_path: Path) -> dict[str, Any]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a local wrangler dev smoke test against the Python Worker.")
     parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--timeout", type=int, default=45)
+    parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--log", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args(argv)
 
